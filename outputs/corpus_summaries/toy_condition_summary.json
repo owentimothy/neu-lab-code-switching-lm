@@ -12,8 +12,8 @@
   "total_word_tokens_excluding_punctuation": 77,
   "total_english_word_tokens": 39,
   "total_spanish_word_tokens": 28,
-  "total_neutral_bivalent_word_tokens": 0,
-  "total_other_word_tokens": 10,
+  "total_neutral_bivalent_word_tokens": 4,
+  "total_other_word_tokens": 6,
   "total_punctuation_tokens": 25,
   "counts_by_category": {
     "en_only": 4,

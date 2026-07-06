@@ -113,6 +113,26 @@ def switch_transitions(text: str) -> tuple[int, int]:
     return en_to_es, es_to_en
 
 
+def switch_transitions_from_labels(labels: list[str]) -> tuple[int, int]:
+    """Count intra-sentential eng->spa and spa->en transitions from token labels.
+
+    Only ``eng`` and ``spa`` labels carry a code-switch signal, so every other
+    label (``punct``, ``neutral``, ``eng&spa``, ``other``) is skipped when
+    building the transition sequence. This is the label-driven counterpart of
+    :func:`switch_transitions`, used so intra-sentential diagnostics rely on the
+    stored token-level labels rather than re-tokenizing raw text.
+    """
+    sequence = [label for label in labels if label in ("eng", "spa")]
+    en_to_es = 0
+    es_to_en = 0
+    for prev, curr in zip(sequence, sequence[1:]):
+        if prev == "eng" and curr == "spa":
+            en_to_es += 1
+        elif prev == "spa" and curr == "eng":
+            es_to_en += 1
+    return en_to_es, es_to_en
+
+
 def tokenize(text: str) -> list[str]:
     """Split ``text`` into word tokens and single-character punctuation tokens.
 
@@ -124,7 +144,14 @@ def tokenize(text: str) -> list[str]:
 
 
 def _token_language_label(token: str) -> str:
-    """Assign one token-level language label to a single ``token``."""
+    """Assign one token-level language label to a single ``token``.
+
+    Word tokens resolve to ``eng&spa`` (bivalent), ``eng``, ``spa``,
+    ``neutral`` (language-neutral proper names / interjections), or ``other``
+    (unknown / out-of-vocabulary). ``neutral`` is kept distinct from ``other``
+    so language-neutral material is never conflated with genuinely unknown
+    tokens.
+    """
     if _WORD_TOKEN_PATTERN.match(token):
         lowered = token.lower()
         if lowered in _BIVALENT_WORDS or (lowered in _EN_WORDS and lowered in _ES_WORDS):
@@ -133,6 +160,8 @@ def _token_language_label(token: str) -> str:
             return "eng"
         if lowered in _ES_WORDS:
             return "spa"
+        if lowered in _NEUTRAL_WORDS:
+            return "neutral"
         return "other"
     if all(ch in _PUNCT_CHARS for ch in token):
         return "punct"
@@ -162,11 +191,11 @@ class TokenAnnotation:
 def annotate_tokens(text: str) -> TokenAnnotation:
     """Tokenize ``text`` and compute per-utterance token-count diagnostics.
 
-    Word tokens exclude punctuation and split into four disjoint buckets:
-    ``eng`` (English), ``spa`` (Spanish), ``eng&spa`` (bivalent, counted as
-    neutral/bivalent), and ``other`` (unknown / proper-name / out-of-vocabulary
-    word tokens). ``other`` tokens are counted separately from ``eng&spa`` and
-    are *not* folded into ``n_neutral_bivalent_word_tokens``, so
+    Word tokens exclude punctuation and split into disjoint buckets:
+    ``eng`` (English), ``spa`` (Spanish), the neutral/bivalent bucket
+    (``neutral`` language-neutral proper names/interjections + ``eng&spa``
+    bivalent tokens), and ``other`` (unknown / out-of-vocabulary word tokens).
+    ``other`` tokens are counted separately from the neutral/bivalent bucket, so
     ``n_word_tokens_excluding_punctuation`` always equals
     ``n_english + n_spanish + n_neutral_bivalent + n_other``.
     """
@@ -175,7 +204,9 @@ def annotate_tokens(text: str) -> TokenAnnotation:
     n_punct = labels.count("punct")
     n_english = labels.count("eng")
     n_spanish = labels.count("spa")
-    n_neutral_bivalent = labels.count("eng&spa")
+    # Both language-neutral (``neutral``) and bivalent (``eng&spa``) word tokens
+    # go in the neutral/bivalent bucket; ``other`` (unknown/OOV) stays separate.
+    n_neutral_bivalent = labels.count("neutral") + labels.count("eng&spa")
     n_other = labels.count("other")
     return TokenAnnotation(
         tokens=tokens,

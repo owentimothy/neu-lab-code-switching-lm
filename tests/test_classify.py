@@ -5,6 +5,7 @@ from cslm.data.classify import (
     classify_utterance,
     inter_sentential_switch,
     switch_transitions,
+    switch_transitions_from_labels,
     token_language_labels,
     tokenize,
 )
@@ -65,6 +66,40 @@ def test_token_language_labels_marks_bivalent_words():
     # "no", "me", "a" are in the toy bivalent list; "gusta" is unknown -> other.
     tokens = tokenize("No me gusta a.")
     assert token_language_labels(tokens) == ["eng&spa", "eng&spa", "other", "eng&spa", "punct"]
+
+
+def test_token_language_labels_marks_neutral_words():
+    # Proper names / interjections in the neutral list are 'neutral', not 'other'.
+    tokens = tokenize("Maria Netflix okay.")
+    assert token_language_labels(tokens) == ["neutral", "neutral", "neutral", "punct"]
+
+
+def test_annotate_tokens_counts_neutral_as_neutral_bivalent_not_other():
+    # Issue 2 regression: neutral proper names count toward the neutral/bivalent
+    # bucket, never 'other'.
+    ann = annotate_tokens("Maria Netflix.")
+    assert ann.n_neutral_bivalent_word_tokens == 2
+    assert ann.n_other_word_tokens == 0
+    assert "other" not in ann.token_language_labels
+
+
+def test_annotate_tokens_neutral_and_bivalent_share_bucket():
+    # 'no' is bivalent (eng&spa); 'Maria' is neutral; both feed neutral/bivalent.
+    ann = annotate_tokens("No Maria.")
+    assert ann.n_neutral_bivalent_word_tokens == 2
+    assert ann.n_other_word_tokens == 0
+
+
+def test_switch_transitions_from_labels_counts_eng_spa_only():
+    # Non eng/spa labels (punct, neutral, eng&spa, other) are ignored.
+    labels = ["eng", "eng", "spa", "spa", "eng", "punct"]
+    assert switch_transitions_from_labels(labels) == (1, 1)
+
+
+def test_switch_transitions_from_labels_skips_non_language_labels():
+    # neutral/other/eng&spa between eng and spa must not create phantom switches.
+    labels = ["eng", "neutral", "other", "eng&spa", "spa"]
+    assert switch_transitions_from_labels(labels) == (1, 0)
 
 
 def test_annotate_tokens_counts_on_code_switched_example():

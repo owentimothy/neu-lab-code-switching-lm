@@ -175,6 +175,18 @@ def test_token_fields_populated_and_consistent_on_toy_rows():
         assert "other" not in row.token_language_labels or row.n_other_word_tokens > 0
 
 
+def test_neutral_utterance_tokens_count_as_neutral_bivalent_not_other():
+    # Issue 2 regression: u010 "Maria Netflix." is neutral_or_bivalent; its
+    # proper-name tokens must be 'neutral' and land in the neutral/bivalent
+    # bucket, not 'other'.
+    rows = _rows_by_id()
+    u010 = rows["u010"]
+    assert u010.language_category == "neutral_or_bivalent"
+    assert u010.token_language_labels == ["neutral", "neutral", "punct"]
+    assert u010.n_neutral_bivalent_word_tokens == 2
+    assert u010.n_other_word_tokens == 0
+
+
 def test_monolingual_toy_words_are_labeled_eng_or_spa_not_other():
     rows = {row.utterance_id: row for row in build_toy_rows(seed=0)}
     # u002 previously labeled common English words ("I", "go", "for") as other;

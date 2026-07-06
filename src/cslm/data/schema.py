@@ -21,7 +21,17 @@ CONDITIONS: frozenset[str] = frozenset({"EnglishMono", "SpanishMono", "MonoCont"
 SPLITS: frozenset[str] = frozenset({"train", "dev", "test"})
 
 # Allowed token-level language labels (see classify.token_language_labels).
-TOKEN_LANGUAGE_LABELS: frozenset[str] = frozenset({"eng", "spa", "eng&spa", "punct", "other"})
+#   eng      - English word token
+#   spa      - Spanish word token
+#   eng&spa  - bivalent word token (equally valid English/Spanish in isolation)
+#   neutral  - language-neutral word token (proper names, interjections, etc.)
+#   punct    - punctuation / symbol token
+#   other    - unknown / out-of-vocabulary word token
+# ``neutral`` and ``eng&spa`` together make up the neutral/bivalent word-token
+# bucket; ``other`` is kept strictly separate from both.
+TOKEN_LANGUAGE_LABELS: frozenset[str] = frozenset(
+    {"eng", "spa", "eng&spa", "neutral", "punct", "other"}
+)
 
 # Allowed inter-sentential switch directions between ordered utterances.
 INTER_SENTENTIAL_DIRECTIONS: frozenset[str] = frozenset({"eng_to_spa", "spa_to_eng"})
@@ -132,6 +142,70 @@ class UtteranceRow:
                 f"invalid inter_sentential_switch_direction_from_previous: {direction!r}; "
                 f"expected None or one of {sorted(INTER_SENTENTIAL_DIRECTIONS)}"
             )
+
+        # When token-level annotations are present, the stored token-count fields
+        # must agree with the labels. ``neutral`` and ``eng&spa`` both count
+        # toward ``n_neutral_bivalent_word_tokens``; ``other`` is separate.
+        if self.tokens:
+            labels = self.token_language_labels
+            n_eng = labels.count("eng")
+            n_spa = labels.count("spa")
+            n_neutral_bivalent = labels.count("neutral") + labels.count("eng&spa")
+            n_other = labels.count("other")
+            n_punct = labels.count("punct")
+            n_word = n_eng + n_spa + n_neutral_bivalent + n_other
+            expected = (
+                ("n_english_word_tokens", self.n_english_word_tokens, n_eng),
+                ("n_spanish_word_tokens", self.n_spanish_word_tokens, n_spa),
+                (
+                    "n_neutral_bivalent_word_tokens",
+                    self.n_neutral_bivalent_word_tokens,
+                    n_neutral_bivalent,
+                ),
+                ("n_other_word_tokens", self.n_other_word_tokens, n_other),
+                ("n_punctuation_tokens", self.n_punctuation_tokens, n_punct),
+                (
+                    "n_word_tokens_excluding_punctuation",
+                    self.n_word_tokens_excluding_punctuation,
+                    n_word,
+                ),
+                (
+                    "n_tokens_including_punctuation",
+                    self.n_tokens_including_punctuation,
+                    n_word + n_punct,
+                ),
+            )
+            for name, actual, want in expected:
+                if actual != want:
+                    raise ValueError(
+                        f"{name}={actual} is inconsistent with token_language_labels "
+                        f"(expected {want})"
+                    )
+
+        # An inter-sentential switch is only well-defined against a known
+        # previous utterance, so all of its supporting fields must be populated.
+        if self.is_inter_sentential_switch_from_previous is True:
+            if self.previous_utterance_id is None:
+                raise ValueError(
+                    "is_inter_sentential_switch_from_previous is True but "
+                    "previous_utterance_id is None"
+                )
+            if self.previous_language_category is None:
+                raise ValueError(
+                    "is_inter_sentential_switch_from_previous is True but "
+                    "previous_language_category is None"
+                )
+            if self.same_speaker_as_previous not in (True, False):
+                raise ValueError(
+                    "is_inter_sentential_switch_from_previous is True but "
+                    "same_speaker_as_previous is not True or False"
+                )
+            if direction not in INTER_SENTENTIAL_DIRECTIONS:
+                raise ValueError(
+                    "is_inter_sentential_switch_from_previous is True but "
+                    f"inter_sentential_switch_direction_from_previous={direction!r} "
+                    f"is not one of {sorted(INTER_SENTENTIAL_DIRECTIONS)}"
+                )
 
     def to_dict(self) -> dict:
         return {

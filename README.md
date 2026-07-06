@@ -65,17 +65,29 @@ metadata the real Bangor Miami preprocessing will need. The extra fields are
 still populated from synthetic toy data only:
 
 - **Token-level annotations**: `raw_text`, `clean_text` (both equal to `text`
-  in the toy pipeline), `tokens`, and `token_language_labels` (one of `eng`,
-  `spa`, `eng&spa`, `punct`, `other` per token).
+  in the toy pipeline; the real pipeline may set `clean_text` to a normalized
+  form distinct from `raw_text`/`text`), `tokens`, and `token_language_labels`
+  (one label per token). The token labels are:
+  - `eng` — English word token.
+  - `spa` — Spanish word token.
+  - `eng&spa` — bivalent word token (equally valid English/Spanish in
+    isolation, e.g. `no`, `a`, `me`).
+  - `neutral` — language-neutral word token (proper names, interjections, e.g.
+    `Maria`, `Netflix`, `okay`).
+  - `punct` — punctuation / symbol token.
+  - `other` — unknown / out-of-vocabulary word token.
 - **Token-count diagnostics**: `n_tokens_including_punctuation`,
   `n_word_tokens_excluding_punctuation`, `n_english_word_tokens`,
   `n_spanish_word_tokens`, `n_neutral_bivalent_word_tokens`,
   `n_other_word_tokens`, `n_punctuation_tokens`.
-  `n_neutral_bivalent_word_tokens` counts **only** `eng&spa` (bivalent) word
-  tokens. Unknown / proper-name / out-of-vocabulary word tokens (labeled
-  `other`) are counted separately in `n_other_word_tokens` and are never folded
-  into the neutral/bivalent bucket, so word tokens split cleanly as
-  `n_english + n_spanish + n_neutral_bivalent + n_other`.
+  `n_neutral_bivalent_word_tokens` counts `neutral` **and** `eng&spa` word
+  tokens together (the language-neutral/bivalent bucket). Only genuinely
+  unknown / out-of-vocabulary word tokens (labeled `other`) go in
+  `n_other_word_tokens`; they are never folded into the neutral/bivalent
+  bucket, so word tokens split cleanly as
+  `n_english + n_spanish + n_neutral_bivalent + n_other`. When token-level
+  annotations are present, `UtteranceRow` validates that these stored counts
+  agree with `token_language_labels`.
 - **Ordered-conversation metadata**: `utterance_index`,
   `previous_utterance_id`, `previous_speaker_id`, `previous_language_category`,
   `same_speaker_as_previous`. All `previous_*` fields (and
@@ -109,6 +121,19 @@ switch counts
 
 Note: `n_word_tokens` now means word tokens **excluding** punctuation (an alias
 of `total_word_tokens_excluding_punctuation`).
+
+**How aggregates are computed.** The token-count totals are **summed from each
+row's stored per-row token-count fields**, not recomputed from text with the toy
+annotator. This preserves gold token-level labels on real corpus rows instead of
+overwriting them with heuristic labels. A row that carries no stored token
+annotation (empty `tokens`) falls back to annotating its `clean_text`.
+Likewise, intra-sentential switch transitions
+(`en_to_es_transitions`, `es_to_en_transitions`, `total_switch_transitions`) are
+derived from each code-switched row's `token_language_labels` (counting only
+`eng`↔`spa` transitions); rows with no stored labels fall back to the toy
+text-based counter applied to `clean_text` — never the raw `text`. These
+intra-sentential counts are kept strictly separate from the inter-sentential
+switch counts.
 
 ### Review-only heuristic fields are placeholders
 

@@ -72,6 +72,76 @@ def test_invalid_inter_sentential_direction_rejected():
         _make_row(inter_sentential_switch_direction_from_previous="en2es")
 
 
+def test_consistent_token_counts_accepted():
+    row = _make_row(
+        tokens=["Hola", "Maria", "."],
+        token_language_labels=["spa", "neutral", "punct"],
+        n_tokens_including_punctuation=3,
+        n_word_tokens_excluding_punctuation=2,
+        n_spanish_word_tokens=1,
+        n_neutral_bivalent_word_tokens=1,  # neutral counts toward neutral/bivalent
+        n_punctuation_tokens=1,
+    )
+    assert row.n_neutral_bivalent_word_tokens == 1
+
+
+def test_inconsistent_word_token_count_rejected():
+    with pytest.raises(ValueError, match="n_english_word_tokens"):
+        _make_row(
+            tokens=["Hello", "world"],
+            token_language_labels=["eng", "other"],
+            n_tokens_including_punctuation=2,
+            n_word_tokens_excluding_punctuation=2,
+            n_english_word_tokens=2,  # labels say only 1 eng
+            n_other_word_tokens=0,
+        )
+
+
+def test_inconsistent_neutral_bivalent_count_rejected():
+    # neutral + eng&spa must both feed n_neutral_bivalent_word_tokens.
+    with pytest.raises(ValueError, match="n_neutral_bivalent_word_tokens"):
+        _make_row(
+            tokens=["Maria", "no"],
+            token_language_labels=["neutral", "eng&spa"],
+            n_tokens_including_punctuation=2,
+            n_word_tokens_excluding_punctuation=2,
+            n_neutral_bivalent_word_tokens=1,  # should be 2
+        )
+
+
+def test_inter_sentential_switch_true_requires_previous_utterance_id():
+    with pytest.raises(ValueError, match="previous_utterance_id is None"):
+        _make_row(
+            is_inter_sentential_switch_from_previous=True,
+            inter_sentential_switch_direction_from_previous="eng_to_spa",
+            previous_language_category="en_only",
+            same_speaker_as_previous=True,
+            previous_utterance_id=None,
+        )
+
+
+def test_inter_sentential_switch_true_requires_same_speaker_flag():
+    with pytest.raises(ValueError, match="same_speaker_as_previous"):
+        _make_row(
+            is_inter_sentential_switch_from_previous=True,
+            inter_sentential_switch_direction_from_previous="eng_to_spa",
+            previous_utterance_id="u000",
+            previous_language_category="en_only",
+            same_speaker_as_previous=None,
+        )
+
+
+def test_inter_sentential_switch_true_requires_direction():
+    with pytest.raises(ValueError, match="direction"):
+        _make_row(
+            is_inter_sentential_switch_from_previous=True,
+            inter_sentential_switch_direction_from_previous=None,
+            previous_utterance_id="u000",
+            previous_language_category="en_only",
+            same_speaker_as_previous=True,
+        )
+
+
 def test_to_dict_includes_new_schema_fields():
     row = _make_row(
         tokens=["Hello"],

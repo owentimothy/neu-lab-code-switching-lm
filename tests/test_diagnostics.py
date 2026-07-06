@@ -201,7 +201,17 @@ def test_to_flat_row_key_order_is_stable_across_calls():
     assert list(flat_a.keys()) == list(flat_b.keys())
 
 
-def _inter_row(uid, *, language_category, speaker_id, is_switch, direction, same_speaker):
+def _inter_row(
+    uid,
+    *,
+    language_category,
+    speaker_id,
+    is_switch,
+    direction,
+    same_speaker,
+    previous_utterance_id=None,
+    previous_language_category=None,
+):
     return UtteranceRow(
         utterance_id=uid,
         text="placeholder",
@@ -211,6 +221,8 @@ def _inter_row(uid, *, language_category, speaker_id, is_switch, direction, same
         split="train",
         language_category=language_category,
         condition_candidates=[],
+        previous_utterance_id=previous_utterance_id,
+        previous_language_category=previous_language_category,
         is_inter_sentential_switch_from_previous=is_switch,
         inter_sentential_switch_direction_from_previous=direction,
         same_speaker_as_previous=same_speaker,
@@ -226,14 +238,17 @@ def test_inter_sentential_switch_counts_and_speaker_split():
         _inter_row(
             "b", language_category="es_only", speaker_id="s1",
             is_switch=True, direction="eng_to_spa", same_speaker=True,  # same speaker
+            previous_utterance_id="a", previous_language_category="en_only",
         ),
         _inter_row(
             "c", language_category="en_only", speaker_id="s2",
             is_switch=True, direction="spa_to_eng", same_speaker=False,  # cross speaker
+            previous_utterance_id="b", previous_language_category="es_only",
         ),
         _inter_row(
             "d", language_category="en_only", speaker_id="s2",
             is_switch=False, direction=None, same_speaker=True,  # no switch
+            previous_utterance_id="c", previous_language_category="en_only",
         ),
     ]
     summary = build_corpus_summary(rows, corpus_name="unit", data_sources=["u"], seed=0)
@@ -242,6 +257,12 @@ def test_inter_sentential_switch_counts_and_speaker_split():
     assert summary.inter_sentential_switches_spa_to_eng == 1
     assert summary.inter_sentential_switches_same_speaker == 1
     assert summary.inter_sentential_switches_cross_speaker == 1
+    # The same/cross-speaker split must partition every counted switch.
+    assert (
+        summary.inter_sentential_switches_same_speaker
+        + summary.inter_sentential_switches_cross_speaker
+        == summary.total_inter_sentential_switches
+    )
 
 
 def test_intra_and_inter_sentential_switches_are_separate():
@@ -315,6 +336,90 @@ def test_duplicate_diagnostics_count_repeated_ids_and_texts():
     summary = build_corpus_summary(rows, corpus_name="unit", data_sources=["u"], seed=0)
     assert summary.n_duplicate_utterance_ids == 1  # "dup" appears twice
     assert summary.n_duplicate_utterance_texts == 1  # "hello world" appears 3x -> 1 repeated value
+
+
+def test_aggregate_token_totals_equal_sum_of_stored_per_row_counts():
+    """Issue 1 regression: summary totals must sum the stored per-row token
+    fields, not re-derive them from clean_text with the toy annotator."""
+    from cslm.data.toy_corpus import SOURCE_NAME, build_toy_rows
+
+    rows = build_toy_rows(seed=0)
+    summary = build_corpus_summary(
+        rows, corpus_name="toy", data_sources=[SOURCE_NAME], seed=0
+    )
+    assert summary.total_tokens_including_punctuation == sum(
+        r.n_tokens_including_punctuation for r in rows
+    )
+    assert summary.total_word_tokens_excluding_punctuation == sum(
+        r.n_word_tokens_excluding_punctuation for r in rows
+    )
+    assert summary.total_english_word_tokens == sum(r.n_english_word_tokens for r in rows)
+    assert summary.total_spanish_word_tokens == sum(r.n_spanish_word_tokens for r in rows)
+    assert summary.total_neutral_bivalent_word_tokens == sum(
+        r.n_neutral_bivalent_word_tokens for r in rows
+    )
+    assert summary.total_other_word_tokens == sum(r.n_other_word_tokens for r in rows)
+    assert summary.total_punctuation_tokens == sum(r.n_punctuation_tokens for r in rows)
+
+
+def test_aggregates_use_stored_counts_over_clean_text_recompute():
+    """If a row's stored counts diverge from what the toy annotator would derive
+    from clean_text, the aggregate must trust the stored counts (gold labels)."""
+    # Real-corpus-style row: gold labels say "gustar" is Spanish, but the toy
+    # annotator would call it 'other'. clean_text != text as well.
+    row = UtteranceRow(
+        utterance_id="g", text="me gustar", source="t", conversation_id="c1",
+        speaker_id="s1", split="train", language_category="es_only",
+        condition_candidates=["SpanishMono"],
+        raw_text="me   gustar", clean_text="me gustar",
+        tokens=["me", "gustar"], token_language_labels=["spa", "spa"],
+        n_tokens_including_punctuation=2, n_word_tokens_excluding_punctuation=2,
+        n_spanish_word_tokens=2,
+    )
+    summary = build_corpus_summary(
+        [row], corpus_name="unit", data_sources=["u"], seed=0
+    )
+    # 2 Spanish word tokens from the stored labels, not 'me'(eng&spa)+'gustar'(other).
+    assert summary.total_spanish_word_tokens == 2
+    assert summary.total_neutral_bivalent_word_tokens == 0
+    assert summary.total_other_word_tokens == 0
+
+
+def test_intra_sentential_transitions_use_stored_labels_not_text():
+    """Issue 3 regression: intra-sentential transitions come from stored token
+    labels, so a clean_text/text mismatch does not change the count."""
+    row = UtteranceRow(
+        utterance_id="c", text="RAW noise I want quiero coffee",
+        source="t", conversation_id="c1", speaker_id="s1", split="dev",
+        language_category="cs_within_utterance", condition_candidates=["CsCont"],
+        clean_text="I want quiero coffee",
+        tokens=["I", "want", "quiero", "coffee"],
+        token_language_labels=["eng", "eng", "spa", "eng"],
+        n_tokens_including_punctuation=4, n_word_tokens_excluding_punctuation=4,
+        n_english_word_tokens=3, n_spanish_word_tokens=1,
+    )
+    summary = build_corpus_summary(
+        [row], corpus_name="unit", data_sources=["u"], seed=0
+    )
+    # eng eng spa eng -> one eng->spa and one spa->eng transition.
+    assert summary.en_to_es_transitions == 1
+    assert summary.es_to_en_transitions == 1
+    assert summary.total_switch_transitions == 2
+
+
+def test_intra_sentential_transitions_fall_back_to_clean_text_without_labels():
+    """A cs row with no stored labels falls back to the text counter on
+    clean_text (never the possibly-noisy raw text)."""
+    row = UtteranceRow(
+        utterance_id="c", text="ignore me: I want quiero coffee",
+        source="t", conversation_id="c1", speaker_id="s1", split="dev",
+        language_category="cs_within_utterance", condition_candidates=["CsCont"],
+        clean_text="I want quiero coffee",
+    )
+    summary = build_corpus_summary(
+        [row], corpus_name="unit", data_sources=["u"], seed=0
+    )
+    assert summary.total_switch_transitions == 2
 
 
 def test_to_flat_row_contains_new_diagnostic_keys():

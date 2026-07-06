@@ -10,7 +10,12 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 
-from cslm.data.classify import annotate_tokens, switch_transitions
+from cslm.data.classify import (
+    TokenAnnotation,
+    annotate_tokens,
+    switch_transitions,
+    switch_transitions_from_labels,
+)
 from cslm.data.schema import CONDITIONS, UtteranceRow
 
 ALL_CATEGORIES: tuple[str, ...] = (
@@ -38,6 +43,29 @@ _SPLITS: tuple[str, ...] = ("train", "dev", "test")
 
 def _pct(numerator: int, denominator: int) -> float:
     return round(100.0 * numerator / denominator, 4) if denominator else 0.0
+
+
+def _row_token_counts(row: UtteranceRow) -> TokenAnnotation:
+    """Return a row's stored token-count fields, or annotate ``clean_text``.
+
+    Prefers the per-row token annotation already stored on the row (the source
+    of truth for real corpus rows with gold labels). Only when the row carries
+    no stored tokens does it fall back to annotating ``clean_text`` with the toy
+    annotator, so count-less rows still contribute correct aggregates.
+    """
+    if row.tokens:
+        return TokenAnnotation(
+            tokens=row.tokens,
+            token_language_labels=row.token_language_labels,
+            n_tokens_including_punctuation=row.n_tokens_including_punctuation,
+            n_word_tokens_excluding_punctuation=row.n_word_tokens_excluding_punctuation,
+            n_english_word_tokens=row.n_english_word_tokens,
+            n_spanish_word_tokens=row.n_spanish_word_tokens,
+            n_neutral_bivalent_word_tokens=row.n_neutral_bivalent_word_tokens,
+            n_other_word_tokens=row.n_other_word_tokens,
+            n_punctuation_tokens=row.n_punctuation_tokens,
+        )
+    return annotate_tokens(row.clean_text)
 
 
 def word_token_count(text: str) -> int:
@@ -260,8 +288,11 @@ def build_corpus_summary(
             c: split_category_counts.get(c, 0) for c in ALL_CATEGORIES
         }
 
-    # Token-count totals, recomputed from clean_text so the aggregates hold for
-    # any row set, including manually constructed rows without stored counts.
+    # Token-count totals, summed from each row's stored token-count fields so
+    # real corpus rows carrying gold token labels are preserved rather than
+    # re-derived with the toy annotator. A row that has no stored token
+    # annotation (empty ``tokens``) falls back to annotating its ``clean_text``,
+    # which keeps aggregates correct for manually constructed count-less rows.
     total_tokens_including_punctuation = 0
     total_word_tokens_excluding_punctuation = 0
     total_english_word_tokens = 0
@@ -270,22 +301,28 @@ def build_corpus_summary(
     total_other_word_tokens = 0
     total_punctuation_tokens = 0
     for row in rows:
-        annotation = annotate_tokens(row.clean_text)
-        total_tokens_including_punctuation += annotation.n_tokens_including_punctuation
-        total_word_tokens_excluding_punctuation += annotation.n_word_tokens_excluding_punctuation
-        total_english_word_tokens += annotation.n_english_word_tokens
-        total_spanish_word_tokens += annotation.n_spanish_word_tokens
-        total_neutral_bivalent_word_tokens += annotation.n_neutral_bivalent_word_tokens
-        total_other_word_tokens += annotation.n_other_word_tokens
-        total_punctuation_tokens += annotation.n_punctuation_tokens
+        counts = _row_token_counts(row)
+        total_tokens_including_punctuation += counts.n_tokens_including_punctuation
+        total_word_tokens_excluding_punctuation += counts.n_word_tokens_excluding_punctuation
+        total_english_word_tokens += counts.n_english_word_tokens
+        total_spanish_word_tokens += counts.n_spanish_word_tokens
+        total_neutral_bivalent_word_tokens += counts.n_neutral_bivalent_word_tokens
+        total_other_word_tokens += counts.n_other_word_tokens
+        total_punctuation_tokens += counts.n_punctuation_tokens
     n_word_tokens = total_word_tokens_excluding_punctuation
 
+    # Intra-sentential switch transitions, derived from stored token labels so
+    # they match the token-count denominators above. Rows without stored labels
+    # fall back to the toy text-based counter on ``clean_text`` (never ``text``).
     en_to_es_total = 0
     es_to_en_total = 0
     for row in rows:
         if row.language_category != "cs_within_utterance":
             continue
-        en_to_es, es_to_en = switch_transitions(row.text)
+        if row.token_language_labels:
+            en_to_es, es_to_en = switch_transitions_from_labels(row.token_language_labels)
+        else:
+            en_to_es, es_to_en = switch_transitions(row.clean_text)
         en_to_es_total += en_to_es
         es_to_en_total += es_to_en
 
