@@ -57,3 +57,66 @@ This writes:
 - `data/processed/toy/utterances.jsonl` — classified toy utterances.
 - `outputs/corpus_summaries/toy_condition_summary.json` — full corpus summary.
 - `outputs/corpus_summaries/toy_condition_summary.csv` — flattened summary row.
+
+### Utterance schema fields
+
+Each row in `utterances.jsonl` carries the core classification fields plus the
+metadata the real Bangor Miami preprocessing will need. The extra fields are
+still populated from synthetic toy data only:
+
+- **Token-level annotations**: `raw_text`, `clean_text` (both equal to `text`
+  in the toy pipeline), `tokens`, and `token_language_labels` (one of `eng`,
+  `spa`, `eng&spa`, `punct`, `other` per token).
+- **Token-count diagnostics**: `n_tokens_including_punctuation`,
+  `n_word_tokens_excluding_punctuation`, `n_english_word_tokens`,
+  `n_spanish_word_tokens`, `n_neutral_bivalent_word_tokens`,
+  `n_other_word_tokens`, `n_punctuation_tokens`.
+  `n_neutral_bivalent_word_tokens` counts **only** `eng&spa` (bivalent) word
+  tokens. Unknown / proper-name / out-of-vocabulary word tokens (labeled
+  `other`) are counted separately in `n_other_word_tokens` and are never folded
+  into the neutral/bivalent bucket, so word tokens split cleanly as
+  `n_english + n_spanish + n_neutral_bivalent + n_other`.
+- **Ordered-conversation metadata**: `utterance_index`,
+  `previous_utterance_id`, `previous_speaker_id`, `previous_language_category`,
+  `same_speaker_as_previous`. All `previous_*` fields (and
+  `same_speaker_as_previous`) are `null` for the first utterance in a
+  conversation.
+- **Inter-sentential switch fields**:
+  `is_inter_sentential_switch_from_previous` and
+  `inter_sentential_switch_direction_from_previous` (`eng_to_spa` /
+  `spa_to_eng`), derived from ordered utterances and kept strictly separate
+  from the within-utterance (intra-sentential) switch diagnostics. These are
+  `null` when a switch is not well-defined (no previous utterance, or either
+  utterance lacks a clear dominant language, e.g. code-switched utterances).
+- **Review-only heuristic fields**: `borrowing_status`,
+  `matrix_language_heuristic`, `equivalence_heuristic`, each paired with a
+  `needs_review_*` boolean.
+
+### Aggregate diagnostics
+
+The corpus summary adds aggregate token totals
+(`total_tokens_including_punctuation`,
+`total_word_tokens_excluding_punctuation`, `total_english_word_tokens`,
+`total_spanish_word_tokens`, `total_neutral_bivalent_word_tokens`,
+`total_other_word_tokens`, `total_punctuation_tokens`), inter-sentential
+switch counts
+(`total_inter_sentential_switches`, `inter_sentential_switches_eng_to_spa`,
+`inter_sentential_switches_spa_to_eng`,
+`inter_sentential_switches_same_speaker`,
+`inter_sentential_switches_cross_speaker`), and leakage/duplicate diagnostics
+(`n_conversation_ids`, `n_conversation_ids_spanning_multiple_splits`,
+`n_duplicate_utterance_ids`, `n_duplicate_utterance_texts`).
+
+Note: `n_word_tokens` now means word tokens **excluding** punctuation (an alias
+of `total_word_tokens_excluding_punctuation`).
+
+### Review-only heuristic fields are placeholders
+
+The `borrowing_status`, `matrix_language_heuristic`, and
+`equivalence_heuristic` fields are **placeholders for later human
+adjudication**. The toy pipeline never assigns them an automatic value (they
+stay `null`); it only sets the paired `needs_review_*` flag to `true` for
+code-switched utterances to mark what will need review. Do not treat these
+fields as ground truth — in particular, automatically assigned equivalence
+labels must not be used as ground truth when evaluating switch-site
+constraints.

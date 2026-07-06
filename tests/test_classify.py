@@ -1,6 +1,14 @@
 import pytest
 
-from cslm.data.classify import classify_utterance, switch_transitions
+from cslm.data.classify import (
+    annotate_tokens,
+    classify_utterance,
+    inter_sentential_switch,
+    switch_transitions,
+    token_language_labels,
+    tokenize,
+)
+from cslm.data.schema import TOKEN_LANGUAGE_LABELS
 
 
 @pytest.mark.parametrize(
@@ -35,3 +43,77 @@ def test_switch_transitions_counts_en_to_es_and_es_to_en():
 def test_switch_transitions_zero_for_monolingual_text():
     en_to_es, es_to_en = switch_transitions("Hello, how are you doing today?")
     assert (en_to_es, es_to_en) == (0, 0)
+
+
+def test_tokenize_splits_words_and_single_punctuation():
+    assert tokenize("Hello, café.") == ["Hello", ",", "café", "."]
+
+
+def test_token_language_labels_length_matches_tokens():
+    tokens = tokenize("I want quiero some coffee cafe please.")
+    labels = token_language_labels(tokens)
+    assert len(labels) == len(tokens)
+    assert set(labels) <= TOKEN_LANGUAGE_LABELS
+
+
+def test_token_language_labels_values():
+    tokens = tokenize("Hello, café.")
+    assert token_language_labels(tokens) == ["eng", "punct", "spa", "punct"]
+
+
+def test_token_language_labels_marks_bivalent_words():
+    # "no", "me", "a" are in the toy bivalent list; "gusta" is unknown -> other.
+    tokens = tokenize("No me gusta a.")
+    assert token_language_labels(tokens) == ["eng&spa", "eng&spa", "other", "eng&spa", "punct"]
+
+
+def test_annotate_tokens_counts_on_code_switched_example():
+    ann = annotate_tokens("I want quiero some coffee cafe please.")
+    assert ann.n_tokens_including_punctuation == 8
+    assert ann.n_word_tokens_excluding_punctuation == 7
+    # i, want, some, coffee, please
+    assert ann.n_english_word_tokens == 5
+    assert ann.n_spanish_word_tokens == 2  # quiero, cafe
+    assert ann.n_neutral_bivalent_word_tokens == 0
+    assert ann.n_other_word_tokens == 0
+    assert ann.n_punctuation_tokens == 1
+
+
+def test_annotate_tokens_separates_other_from_neutral_bivalent():
+    # "no"/"me" are bivalent (eng&spa); "gusta" is unknown -> other. The two
+    # must land in different buckets, not be conflated.
+    ann = annotate_tokens("No me gusta café, gracias.")
+    assert ann.n_neutral_bivalent_word_tokens == 2  # no, me
+    assert ann.n_other_word_tokens == 1  # gusta
+    assert ann.n_spanish_word_tokens == 2  # café, gracias
+    assert ann.n_english_word_tokens == 0
+
+
+def test_annotate_tokens_word_totals_are_consistent():
+    ann = annotate_tokens("No me gusta café, gracias.")
+    assert ann.n_word_tokens_excluding_punctuation == (
+        ann.n_english_word_tokens
+        + ann.n_spanish_word_tokens
+        + ann.n_neutral_bivalent_word_tokens
+        + ann.n_other_word_tokens
+    )
+    assert ann.n_tokens_including_punctuation == (
+        ann.n_word_tokens_excluding_punctuation + ann.n_punctuation_tokens
+    )
+
+
+@pytest.mark.parametrize(
+    ("previous_category", "current_category", "expected"),
+    [
+        (None, "en_only", (None, None)),  # first utterance
+        ("en_only", "es_only", (True, "eng_to_spa")),
+        ("es_only", "en_only", (True, "spa_to_eng")),
+        ("en_only", "en_only", (False, None)),
+        ("es_only", "es_only", (False, None)),
+        ("cs_within_utterance", "en_only", (None, None)),  # no clear dominant prev
+        ("en_only", "cs_within_utterance", (None, None)),  # no clear dominant curr
+        ("neutral_or_bivalent", "es_only", (None, None)),
+    ],
+)
+def test_inter_sentential_switch(previous_category, current_category, expected):
+    assert inter_sentential_switch(previous_category, current_category) == expected

@@ -7,10 +7,10 @@ denominators described there are never conflated.
 
 from __future__ import annotations
 
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 
-from cslm.data.classify import switch_transitions
+from cslm.data.classify import annotate_tokens, switch_transitions
 from cslm.data.schema import CONDITIONS, UtteranceRow
 
 ALL_CATEGORIES: tuple[str, ...] = (
@@ -41,8 +41,12 @@ def _pct(numerator: int, denominator: int) -> float:
 
 
 def word_token_count(text: str) -> int:
-    """Whitespace token count, per the "word tokens" diagnostic field."""
-    return len(text.split())
+    """Word-token count (excluding punctuation) for ``text``.
+
+    Delegates to the shared toy tokenizer so this matches the per-utterance
+    ``n_word_tokens_excluding_punctuation`` field exactly.
+    """
+    return annotate_tokens(text).n_word_tokens_excluding_punctuation
 
 
 @dataclass
@@ -52,8 +56,22 @@ class CorpusSummary:
     seed: int
     n_conversations: int
     n_utterances: int
+    # ``n_word_tokens`` now means word tokens EXCLUDING punctuation; it is kept
+    # as an alias of ``total_word_tokens_excluding_punctuation`` for
+    # backward compatibility.
     n_word_tokens: int
     n_subword_tokens: int | None
+    # Aggregate token-count totals (see per-utterance token diagnostics).
+    total_tokens_including_punctuation: int
+    total_word_tokens_excluding_punctuation: int
+    total_english_word_tokens: int
+    total_spanish_word_tokens: int
+    # ``eng&spa`` (bivalent) word tokens only; ``other`` word tokens are
+    # aggregated separately in ``total_other_word_tokens`` so the two are
+    # never conflated.
+    total_neutral_bivalent_word_tokens: int
+    total_other_word_tokens: int
+    total_punctuation_tokens: int
     counts_by_category: dict[str, int]
     pct_of_all_utterances: dict[str, float]
     # Keyed only by the language-containing categories (en_only, es_only,
@@ -65,12 +83,25 @@ class CorpusSummary:
     exclusion_reasons: dict[str, int]
     split_counts: dict[str, int]
     split_language_composition: dict[str, dict[str, int]]
+    # Intra-sentential (within-utterance) switch diagnostics.
     cs_intra_sentential_count: int
     cs_pct_of_all_utterances: float
     cs_pct_of_language_containing_utterances: float
     en_to_es_transitions: int
     es_to_en_transitions: int
     total_switch_transitions: int
+    # Inter-sentential (between-utterance) switch diagnostics, kept strictly
+    # separate from the intra-sentential counts above.
+    total_inter_sentential_switches: int
+    inter_sentential_switches_eng_to_spa: int
+    inter_sentential_switches_spa_to_eng: int
+    inter_sentential_switches_same_speaker: int
+    inter_sentential_switches_cross_speaker: int
+    # Leakage and duplicate diagnostics.
+    n_conversation_ids: int
+    n_conversation_ids_spanning_multiple_splits: int
+    n_duplicate_utterance_ids: int
+    n_duplicate_utterance_texts: int
     condition_candidate_counts: dict[str, int]
 
     def to_dict(self) -> dict:
@@ -82,6 +113,15 @@ class CorpusSummary:
             "n_utterances": self.n_utterances,
             "n_word_tokens": self.n_word_tokens,
             "n_subword_tokens": self.n_subword_tokens,
+            "total_tokens_including_punctuation": self.total_tokens_including_punctuation,
+            "total_word_tokens_excluding_punctuation": (
+                self.total_word_tokens_excluding_punctuation
+            ),
+            "total_english_word_tokens": self.total_english_word_tokens,
+            "total_spanish_word_tokens": self.total_spanish_word_tokens,
+            "total_neutral_bivalent_word_tokens": self.total_neutral_bivalent_word_tokens,
+            "total_other_word_tokens": self.total_other_word_tokens,
+            "total_punctuation_tokens": self.total_punctuation_tokens,
             "counts_by_category": self.counts_by_category,
             "pct_of_all_utterances": self.pct_of_all_utterances,
             "pct_of_language_containing_utterances": self.pct_of_language_containing_utterances,
@@ -98,6 +138,21 @@ class CorpusSummary:
             "en_to_es_transitions": self.en_to_es_transitions,
             "es_to_en_transitions": self.es_to_en_transitions,
             "total_switch_transitions": self.total_switch_transitions,
+            "total_inter_sentential_switches": self.total_inter_sentential_switches,
+            "inter_sentential_switches_eng_to_spa": self.inter_sentential_switches_eng_to_spa,
+            "inter_sentential_switches_spa_to_eng": self.inter_sentential_switches_spa_to_eng,
+            "inter_sentential_switches_same_speaker": (
+                self.inter_sentential_switches_same_speaker
+            ),
+            "inter_sentential_switches_cross_speaker": (
+                self.inter_sentential_switches_cross_speaker
+            ),
+            "n_conversation_ids": self.n_conversation_ids,
+            "n_conversation_ids_spanning_multiple_splits": (
+                self.n_conversation_ids_spanning_multiple_splits
+            ),
+            "n_duplicate_utterance_ids": self.n_duplicate_utterance_ids,
+            "n_duplicate_utterance_texts": self.n_duplicate_utterance_texts,
             "condition_candidate_counts": self.condition_candidate_counts,
         }
 
@@ -111,6 +166,15 @@ class CorpusSummary:
             "n_utterances": self.n_utterances,
             "n_word_tokens": self.n_word_tokens,
             "n_subword_tokens": self.n_subword_tokens,
+            "total_tokens_including_punctuation": self.total_tokens_including_punctuation,
+            "total_word_tokens_excluding_punctuation": (
+                self.total_word_tokens_excluding_punctuation
+            ),
+            "total_english_word_tokens": self.total_english_word_tokens,
+            "total_spanish_word_tokens": self.total_spanish_word_tokens,
+            "total_neutral_bivalent_word_tokens": self.total_neutral_bivalent_word_tokens,
+            "total_other_word_tokens": self.total_other_word_tokens,
+            "total_punctuation_tokens": self.total_punctuation_tokens,
             "n_language_containing_utterances": self.n_language_containing_utterances,
             "n_excluded_utterances": self.n_excluded_utterances,
             "cs_intra_sentential_count": self.cs_intra_sentential_count,
@@ -121,6 +185,21 @@ class CorpusSummary:
             "en_to_es_transitions": self.en_to_es_transitions,
             "es_to_en_transitions": self.es_to_en_transitions,
             "total_switch_transitions": self.total_switch_transitions,
+            "total_inter_sentential_switches": self.total_inter_sentential_switches,
+            "inter_sentential_switches_eng_to_spa": self.inter_sentential_switches_eng_to_spa,
+            "inter_sentential_switches_spa_to_eng": self.inter_sentential_switches_spa_to_eng,
+            "inter_sentential_switches_same_speaker": (
+                self.inter_sentential_switches_same_speaker
+            ),
+            "inter_sentential_switches_cross_speaker": (
+                self.inter_sentential_switches_cross_speaker
+            ),
+            "n_conversation_ids": self.n_conversation_ids,
+            "n_conversation_ids_spanning_multiple_splits": (
+                self.n_conversation_ids_spanning_multiple_splits
+            ),
+            "n_duplicate_utterance_ids": self.n_duplicate_utterance_ids,
+            "n_duplicate_utterance_texts": self.n_duplicate_utterance_texts,
         }
         for category in ALL_CATEGORIES:
             flat[f"count__{category}"] = self.counts_by_category[category]
@@ -181,7 +260,25 @@ def build_corpus_summary(
             c: split_category_counts.get(c, 0) for c in ALL_CATEGORIES
         }
 
-    n_word_tokens = sum(word_token_count(row.text) for row in rows)
+    # Token-count totals, recomputed from clean_text so the aggregates hold for
+    # any row set, including manually constructed rows without stored counts.
+    total_tokens_including_punctuation = 0
+    total_word_tokens_excluding_punctuation = 0
+    total_english_word_tokens = 0
+    total_spanish_word_tokens = 0
+    total_neutral_bivalent_word_tokens = 0
+    total_other_word_tokens = 0
+    total_punctuation_tokens = 0
+    for row in rows:
+        annotation = annotate_tokens(row.clean_text)
+        total_tokens_including_punctuation += annotation.n_tokens_including_punctuation
+        total_word_tokens_excluding_punctuation += annotation.n_word_tokens_excluding_punctuation
+        total_english_word_tokens += annotation.n_english_word_tokens
+        total_spanish_word_tokens += annotation.n_spanish_word_tokens
+        total_neutral_bivalent_word_tokens += annotation.n_neutral_bivalent_word_tokens
+        total_other_word_tokens += annotation.n_other_word_tokens
+        total_punctuation_tokens += annotation.n_punctuation_tokens
+    n_word_tokens = total_word_tokens_excluding_punctuation
 
     en_to_es_total = 0
     es_to_en_total = 0
@@ -191,6 +288,40 @@ def build_corpus_summary(
         en_to_es, es_to_en = switch_transitions(row.text)
         en_to_es_total += en_to_es
         es_to_en_total += es_to_en
+
+    # Inter-sentential switches, aggregated from the per-row switch flags that
+    # toy_corpus derives from ordered conversation structure. Kept separate
+    # from the intra-sentential transition counts above.
+    total_inter_sentential = 0
+    inter_eng_to_spa = 0
+    inter_spa_to_eng = 0
+    inter_same_speaker = 0
+    inter_cross_speaker = 0
+    for row in rows:
+        if not row.is_inter_sentential_switch_from_previous:
+            continue
+        total_inter_sentential += 1
+        if row.inter_sentential_switch_direction_from_previous == "eng_to_spa":
+            inter_eng_to_spa += 1
+        elif row.inter_sentential_switch_direction_from_previous == "spa_to_eng":
+            inter_spa_to_eng += 1
+        if row.same_speaker_as_previous is True:
+            inter_same_speaker += 1
+        elif row.same_speaker_as_previous is False:
+            inter_cross_speaker += 1
+
+    # Leakage and duplicate diagnostics.
+    splits_by_conversation: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        splits_by_conversation[row.conversation_id].add(row.split)
+    n_conversation_ids = len(splits_by_conversation)
+    n_conversation_ids_spanning_multiple_splits = sum(
+        1 for splits in splits_by_conversation.values() if len(splits) > 1
+    )
+    utterance_id_counts = Counter(row.utterance_id for row in rows)
+    n_duplicate_utterance_ids = sum(1 for count in utterance_id_counts.values() if count > 1)
+    utterance_text_counts = Counter(row.clean_text for row in rows)
+    n_duplicate_utterance_texts = sum(1 for count in utterance_text_counts.values() if count > 1)
 
     condition_candidate_counts = {c: 0 for c in sorted(CONDITIONS)}
     for row in rows:
@@ -205,6 +336,13 @@ def build_corpus_summary(
         n_utterances=n_utterances,
         n_word_tokens=n_word_tokens,
         n_subword_tokens=n_subword_tokens,
+        total_tokens_including_punctuation=total_tokens_including_punctuation,
+        total_word_tokens_excluding_punctuation=total_word_tokens_excluding_punctuation,
+        total_english_word_tokens=total_english_word_tokens,
+        total_spanish_word_tokens=total_spanish_word_tokens,
+        total_neutral_bivalent_word_tokens=total_neutral_bivalent_word_tokens,
+        total_other_word_tokens=total_other_word_tokens,
+        total_punctuation_tokens=total_punctuation_tokens,
         counts_by_category=counts_by_category,
         pct_of_all_utterances=pct_of_all,
         pct_of_language_containing_utterances=pct_of_language_containing,
@@ -221,5 +359,14 @@ def build_corpus_summary(
         en_to_es_transitions=en_to_es_total,
         es_to_en_transitions=es_to_en_total,
         total_switch_transitions=en_to_es_total + es_to_en_total,
+        total_inter_sentential_switches=total_inter_sentential,
+        inter_sentential_switches_eng_to_spa=inter_eng_to_spa,
+        inter_sentential_switches_spa_to_eng=inter_spa_to_eng,
+        inter_sentential_switches_same_speaker=inter_same_speaker,
+        inter_sentential_switches_cross_speaker=inter_cross_speaker,
+        n_conversation_ids=n_conversation_ids,
+        n_conversation_ids_spanning_multiple_splits=n_conversation_ids_spanning_multiple_splits,
+        n_duplicate_utterance_ids=n_duplicate_utterance_ids,
+        n_duplicate_utterance_texts=n_duplicate_utterance_texts,
         condition_candidate_counts=condition_candidate_counts,
     )

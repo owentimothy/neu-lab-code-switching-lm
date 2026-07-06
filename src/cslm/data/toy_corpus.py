@@ -10,7 +10,11 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from cslm.data.classify import classify_utterance
+from cslm.data.classify import (
+    annotate_tokens,
+    classify_utterance,
+    inter_sentential_switch,
+)
 from cslm.data.conditions import condition_candidates_for_category
 from cslm.data.schema import UtteranceRow
 
@@ -25,15 +29,32 @@ class _RawUtterance:
     speaker_id: str
 
 
+# Ordering within a conversation_id is the appearance order in this tuple; the
+# inter-sentential switch diagnostics are derived from it. The mono
+# conversations are deliberately arranged so the generated toy summary
+# exercises both inter-sentential switch directions and both speaker types:
+#
+#   conv01: u002 (en) -> u004 (es), spk2 -> spk1  => eng_to_spa, cross-speaker
+#   conv02: u003 (en) -> u006 (es), spk1 -> spk1  => eng_to_spa, same-speaker
+#   conv06: u018 (es) -> u017 (en), spk1 -> spk1  => spa_to_eng, same-speaker
+#
+# so the aggregate covers eng_to_spa + spa_to_eng and same-speaker +
+# cross-speaker switches.
 _RAW_UTTERANCES: tuple[_RawUtterance, ...] = (
-    # en_only
+    # conv01: en/es dialogue between two speakers (cross-speaker switch).
     _RawUtterance("u001", "Hello, how are you doing today?", "conv01", "spk1"),
     _RawUtterance("u002", "I want to go to the store for some coffee.", "conv01", "spk2"),
-    _RawUtterance("u003", "The dog ran very fast yesterday.", "conv02", "spk1"),
-    # es_only
     _RawUtterance("u004", "Hola, como estas hoy?", "conv01", "spk1"),
     _RawUtterance("u005", "Quiero un cafe por favor.", "conv01", "spk2"),
-    _RawUtterance("u006", "El perro corrio muy rapido ayer.", "conv02", "spk2"),
+    # conv02: one speaker switching en -> es (same-speaker eng_to_spa switch).
+    _RawUtterance("u003", "The dog ran very fast yesterday.", "conv02", "spk1"),
+    _RawUtterance("u006", "El perro corrio muy rapido ayer.", "conv02", "spk1"),
+    # conv06: one speaker switching es -> en (same-speaker spa_to_eng switch).
+    # This is the fourth language-containing conversation (with conv01, conv02,
+    # conv03), enough for the stratified split below to guarantee every split
+    # contains at least one language-containing utterance regardless of seed.
+    _RawUtterance("u018", "Buenos dias, gracias mucho.", "conv06", "spk1"),
+    _RawUtterance("u017", "Good morning, thanks very much.", "conv06", "spk1"),
     # cs_within_utterance
     _RawUtterance("u007", "I want quiero some coffee cafe please.", "conv03", "spk1"),
     _RawUtterance("u008", "Hola friend, how are you como estas?", "conv03", "spk2"),
@@ -49,13 +70,6 @@ _RAW_UTTERANCES: tuple[_RawUtterance, ...] = (
     # metadata_or_noise
     _RawUtterance("u015", "[laughs]", "conv05", "spk2"),
     _RawUtterance("u016", "SPEAKER1:", "conv05", "spk1"),
-    # en_only / es_only, in their own conversation. This gives the
-    # language-containing stratum 4 conversations total (with conv01,
-    # conv02, conv03), which is enough for the stratified split below to
-    # guarantee every split contains at least one language-containing
-    # utterance regardless of shuffle seed.
-    _RawUtterance("u017", "Good morning, thanks very much.", "conv06", "spk1"),
-    _RawUtterance("u018", "Buenos dias, gracias mucho.", "conv06", "spk2"),
 )
 
 _LANGUAGE_CONTAINING_CATEGORIES = frozenset({"en_only", "es_only", "cs_within_utterance"})
@@ -114,12 +128,39 @@ def build_toy_rows(
         )
     )
 
+    # Ordered-conversation context, derived from the order in which utterances
+    # appear per conversation_id. _RAW_UTTERANCES is the canonical order.
+    index_by_conversation: dict[str, int] = {}
+    previous_by_conversation: dict[str, _RawUtterance] = {}
+
     rows: list[UtteranceRow] = []
     for raw in _RAW_UTTERANCES:
         category = category_by_utterance[raw.utterance_id]
         candidates = condition_candidates_for_category(
             category, include_neutral_or_bivalent=include_neutral_or_bivalent
         )
+        annotation = annotate_tokens(raw.text)
+
+        utterance_index = index_by_conversation.get(raw.conversation_id, 0)
+        previous = previous_by_conversation.get(raw.conversation_id)
+        if previous is None:
+            previous_utterance_id = None
+            previous_speaker_id = None
+            previous_category = None
+            same_speaker_as_previous = None
+        else:
+            previous_utterance_id = previous.utterance_id
+            previous_speaker_id = previous.speaker_id
+            previous_category = category_by_utterance[previous.utterance_id]
+            same_speaker_as_previous = raw.speaker_id == previous.speaker_id
+
+        is_inter_switch, inter_direction = inter_sentential_switch(previous_category, category)
+
+        # Code-switched utterances are exactly the ones whose borrowing /
+        # matrix-language / equivalence status will need human adjudication,
+        # so flag them for review without assigning any automatic value.
+        needs_review = category == "cs_within_utterance"
+
         rows.append(
             UtteranceRow(
                 utterance_id=raw.utterance_id,
@@ -130,8 +171,35 @@ def build_toy_rows(
                 split=split_by_conversation[raw.conversation_id],
                 language_category=category,
                 condition_candidates=candidates,
+                raw_text=raw.text,
+                clean_text=raw.text,
+                tokens=annotation.tokens,
+                token_language_labels=annotation.token_language_labels,
+                n_tokens_including_punctuation=annotation.n_tokens_including_punctuation,
+                n_word_tokens_excluding_punctuation=(
+                    annotation.n_word_tokens_excluding_punctuation
+                ),
+                n_english_word_tokens=annotation.n_english_word_tokens,
+                n_spanish_word_tokens=annotation.n_spanish_word_tokens,
+                n_neutral_bivalent_word_tokens=annotation.n_neutral_bivalent_word_tokens,
+                n_other_word_tokens=annotation.n_other_word_tokens,
+                n_punctuation_tokens=annotation.n_punctuation_tokens,
+                utterance_index=utterance_index,
+                previous_utterance_id=previous_utterance_id,
+                previous_speaker_id=previous_speaker_id,
+                previous_language_category=previous_category,
+                same_speaker_as_previous=same_speaker_as_previous,
+                is_inter_sentential_switch_from_previous=is_inter_switch,
+                inter_sentential_switch_direction_from_previous=inter_direction,
+                needs_review_borrowing=needs_review,
+                needs_review_matrix_language=needs_review,
+                needs_review_equivalence=needs_review,
             )
         )
+
+        index_by_conversation[raw.conversation_id] = utterance_index + 1
+        previous_by_conversation[raw.conversation_id] = raw
+
     return rows
 
 
