@@ -18,8 +18,8 @@ from cslm.data.schema import TOKEN_LANGUAGE_LABELS
         ("I want to go to the store for some coffee.", "en_only"),
         ("Hola, como estas hoy?", "es_only"),
         ("Quiero un cafe por favor.", "es_only"),
-        ("I want quiero some coffee cafe please.", "cs_within_utterance"),
-        ("Hola friend, how are you como estas?", "cs_within_utterance"),
+        ("I want una empanada please.", "cs_within_utterance"),
+        ("Hola friend, are you going to la fiesta?", "cs_within_utterance"),
         ("Maria Netflix.", "neutral_or_bivalent"),
         ("Okay Juan.", "neutral_or_bivalent"),
         ("...", "punctuation_or_empty"),
@@ -34,10 +34,10 @@ def test_classify_utterance(text, expected_category):
 
 
 def test_switch_transitions_counts_en_to_es_and_es_to_en():
-    en_to_es, es_to_en = switch_transitions("I want quiero some coffee cafe please.")
-    # known-language sequence: want(en) quiero(es) some(en) coffee(en) cafe(es) please(en)
-    assert en_to_es == 2
-    assert es_to_en == 2
+    en_to_es, es_to_en = switch_transitions("I want una empanada please.")
+    # known-language sequence: i(en) want(en) una(es) empanada(es) please(en)
+    assert en_to_es == 1
+    assert es_to_en == 1
 
 
 def test_switch_transitions_zero_for_monolingual_text():
@@ -50,7 +50,7 @@ def test_tokenize_splits_words_and_single_punctuation():
 
 
 def test_token_language_labels_length_matches_tokens():
-    tokens = tokenize("I want quiero some coffee cafe please.")
+    tokens = tokenize("I want una empanada please.")
     labels = token_language_labels(tokens)
     assert len(labels) == len(tokens)
     assert set(labels) <= TOKEN_LANGUAGE_LABELS
@@ -68,12 +68,12 @@ def test_token_language_labels_marks_bivalent_words():
 
 
 def test_annotate_tokens_counts_on_code_switched_example():
-    ann = annotate_tokens("I want quiero some coffee cafe please.")
-    assert ann.n_tokens_including_punctuation == 8
-    assert ann.n_word_tokens_excluding_punctuation == 7
-    # i, want, some, coffee, please
-    assert ann.n_english_word_tokens == 5
-    assert ann.n_spanish_word_tokens == 2  # quiero, cafe
+    ann = annotate_tokens("I want una empanada please.")
+    assert ann.n_tokens_including_punctuation == 6
+    assert ann.n_word_tokens_excluding_punctuation == 5
+    # i, want, please
+    assert ann.n_english_word_tokens == 3
+    assert ann.n_spanish_word_tokens == 2  # una, empanada
     assert ann.n_neutral_bivalent_word_tokens == 0
     assert ann.n_other_word_tokens == 0
     assert ann.n_punctuation_tokens == 1

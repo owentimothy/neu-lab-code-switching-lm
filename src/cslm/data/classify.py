@@ -33,7 +33,7 @@ _ES_WORDS: frozenset[str] = frozenset(
         "vas", "tienda", "quiero", "cafe", "café", "por", "favor", "perro",
         "corrio", "corrió", "rapido", "rápido", "muy", "ayer", "amigo",
         "escuela", "trabajo", "hoy", "buenos", "dias", "días", "gracias",
-        "mucho", "si", "sí",
+        "mucho", "si", "sí", "empanada", "fiesta",
     }
 )
 _NEUTRAL_WORDS: frozenset[str] = frozenset({"maria", "juan", "ok", "okay", "netflix", "wifi"})

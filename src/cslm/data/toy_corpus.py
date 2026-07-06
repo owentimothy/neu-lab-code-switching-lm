@@ -56,8 +56,8 @@ _RAW_UTTERANCES: tuple[_RawUtterance, ...] = (
     _RawUtterance("u018", "Buenos dias, gracias mucho.", "conv06", "spk1"),
     _RawUtterance("u017", "Good morning, thanks very much.", "conv06", "spk1"),
     # cs_within_utterance
-    _RawUtterance("u007", "I want quiero some coffee cafe please.", "conv03", "spk1"),
-    _RawUtterance("u008", "Hola friend, how are you como estas?", "conv03", "spk2"),
+    _RawUtterance("u007", "I want una empanada please.", "conv03", "spk1"),
+    _RawUtterance("u008", "Hola friend, are you going to la fiesta?", "conv03", "spk2"),
     _RawUtterance("u009", "The perro ran rapido to la escuela today.", "conv03", "spk1"),
     # neutral_or_bivalent
     _RawUtterance("u010", "Maria Netflix.", "conv04", "spk1"),
