@@ -76,6 +76,11 @@ def build_toy_rows(
     group (en_only, es_only, cs_within_utterance) and an other group before
     splitting, so that train/dev/test each receive at least one
     language-containing conversation regardless of shuffle seed.
+
+    Raises:
+        ValueError: if ``train_frac``/``dev_frac`` would leave any split
+            without a language-containing conversation, given the toy
+            fixture's fixed number of language-containing conversations.
     """
     category_by_utterance = {
         raw.utterance_id: classify_utterance(raw.text) for raw in _RAW_UTTERANCES
@@ -98,6 +103,7 @@ def build_toy_rows(
         seed=seed,
         train_frac=train_frac,
         dev_frac=dev_frac,
+        require_all_splits=True,
     )
     split_by_conversation.update(
         _assign_splits(
@@ -130,9 +136,19 @@ def build_toy_rows(
 
 
 def _assign_splits(
-    keys: list[str], *, seed: int, train_frac: float, dev_frac: float
+    keys: list[str],
+    *,
+    seed: int,
+    train_frac: float,
+    dev_frac: float,
+    require_all_splits: bool = False,
 ) -> dict[str, str]:
-    """Deterministically assign each key (e.g. conversation_id) to a split."""
+    """Deterministically assign each key (e.g. conversation_id) to a split.
+
+    If ``require_all_splits`` is set, raises ``ValueError`` when the given
+    fractions would leave train, dev, or test empty for this many keys,
+    instead of silently producing an empty split.
+    """
     rng = random.Random(seed)
     shuffled = keys[:]
     rng.shuffle(shuffled)
@@ -140,6 +156,15 @@ def _assign_splits(
     n = len(shuffled)
     n_train = round(n * train_frac)
     n_dev = round(n * dev_frac)
+    n_test = n - n_train - n_dev
+
+    if require_all_splits and (n_train < 1 or n_dev < 1 or n_test < 1):
+        raise ValueError(
+            f"train_frac={train_frac!r}, dev_frac={dev_frac!r} would leave a "
+            f"split empty for {n} language-containing conversations "
+            f"(train={n_train}, dev={n_dev}, test={n_test}); choose fractions "
+            "that leave at least one conversation per split"
+        )
 
     split_by_key: dict[str, str] = {}
     for i, key in enumerate(shuffled):

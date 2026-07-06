@@ -1,3 +1,5 @@
+import pytest
+
 from cslm.data.diagnostics import build_corpus_summary
 from cslm.data.toy_corpus import SOURCE_NAME, build_toy_rows
 
@@ -67,3 +69,35 @@ def test_every_split_has_a_language_containing_utterance():
         assert split_categories & language_containing, (
             f"split {split!r} has no language-containing utterance"
         )
+
+
+@pytest.mark.parametrize(
+    "train_frac, dev_frac",
+    [
+        (0.5, 0.25),
+        (0.25, 0.5),
+        (0.5, 0.3),
+    ],
+)
+def test_non_default_split_fractions_still_guarantee_language_content(train_frac, dev_frac):
+    rows = build_toy_rows(seed=0, train_frac=train_frac, dev_frac=dev_frac)
+    language_containing = {"en_only", "es_only", "cs_within_utterance"}
+    for split in ("train", "dev", "test"):
+        split_categories = {row.language_category for row in rows if row.split == split}
+        assert split_categories & language_containing, (
+            f"split {split!r} has no language-containing utterance"
+        )
+
+
+@pytest.mark.parametrize(
+    "train_frac, dev_frac",
+    [
+        (0.9, 0.05),  # rounds dev down to 0 of 4 language-containing conversations
+        (0.95, 0.025),  # rounds both dev and test down to 0
+        (0.9, 0.3),  # fractions overlap, leaving no room for test
+        (0.4, 0.4),  # rounds test down to 0
+    ],
+)
+def test_split_fractions_that_cannot_guarantee_language_content_raise(train_frac, dev_frac):
+    with pytest.raises(ValueError, match="language-containing"):
+        build_toy_rows(seed=0, train_frac=train_frac, dev_frac=dev_frac)

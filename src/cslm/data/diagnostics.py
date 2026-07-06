@@ -22,9 +22,16 @@ ALL_CATEGORIES: tuple[str, ...] = (
     "mixed_or_uncertain",
     "metadata_or_noise",
 )
-_LANGUAGE_CONTAINING_CATEGORIES = frozenset({"en_only", "es_only", "cs_within_utterance"})
-_EXCLUDED_CATEGORIES = frozenset(
-    {"neutral_or_bivalent", "punctuation_or_empty", "mixed_or_uncertain", "metadata_or_noise"}
+# Ordered tuples, not sets: their iteration order determines the key order
+# of dicts that get serialized to JSON/CSV, and frozenset iteration order is
+# not stable across interpreter runs (PYTHONHASHSEED). Order matches
+# ALL_CATEGORIES.
+_LANGUAGE_CONTAINING_CATEGORIES: tuple[str, ...] = ("en_only", "es_only", "cs_within_utterance")
+_EXCLUDED_CATEGORIES: tuple[str, ...] = (
+    "neutral_or_bivalent",
+    "punctuation_or_empty",
+    "mixed_or_uncertain",
+    "metadata_or_noise",
 )
 _SPLITS: tuple[str, ...] = ("train", "dev", "test")
 

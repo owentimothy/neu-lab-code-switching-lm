@@ -34,10 +34,10 @@
   "n_language_containing_utterances": 11,
   "n_excluded_utterances": 7,
   "exclusion_reasons": {
+    "neutral_or_bivalent": 2,
     "punctuation_or_empty": 2,
     "mixed_or_uncertain": 1,
-    "metadata_or_noise": 2,
-    "neutral_or_bivalent": 2
+    "metadata_or_noise": 2
   },
   "split_counts": {
     "train": 11,

@@ -38,6 +38,6 @@ def write_summary_json(summary_dict: dict, path: Path) -> None:
 def write_summary_csv(flat_row: dict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(flat_row.keys()))
+        writer = csv.DictWriter(f, fieldnames=list(flat_row.keys()), lineterminator="\n")
         writer.writeheader()
         writer.writerow(flat_row)
