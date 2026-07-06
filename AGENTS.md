@@ -4,10 +4,10 @@
 
 Build a reproducible experimental pipeline comparing masked language models trained under different corpus conditions:
 
-1. EnglishMono: English monolingual baseline.
-2. SpanishMono: Spanish monolingual baseline.
-3. MonoCont: English and Spanish monolingual texts concatenated.
-4. CsCont: English, Spanish, and English/Spanish code-switched dialogue.
+1. EnglishMono: English monolingual baseline
+2. SpanishMono: Spanish monolingual baseline
+3. MonoCont: English monolingual + Spanish monolingual concatenated
+4. CsCont: English + Spanish + code-switched dialogue
 
 The core research question is whether code-switching exposure changes model behavior on syntactic probes, especially:
 
@@ -47,25 +47,7 @@ toy corpus -> classified utterances -> corpus summary report
 - `SpanishMono` should contain Spanish monolingual material only.
 - `MonoCont` should contain English monolingual and Spanish monolingual material only, with no genuine code-switched utterances.
 - `CsCont` should contain English monolingual, Spanish monolingual, and English/Spanish code-switched dialogue.
-- Do not mix code-switched material into `EnglishMono`, `SpanishMono`, or `MonoCont`.
-- Track corpus size, language balance, token counts, and random seed for every condition.
-- Do not make theoretical claims from corpus labels alone.
-- Claims about `CsCont` must be supported by saved corpus diagnostics.
-
-## Model-condition logic
-
-The four conditions serve different interpretive roles:
-
-- `EnglishMono`: estimates behavior after English-only exposure.
-- `SpanishMono`: estimates behavior after Spanish-only exposure.
-- `MonoCont`: estimates behavior after bilingual exposure without code-switching.
-- `CsCont`: estimates behavior after bilingual exposure with code-switching.
-
-The key contrast for code-switching exposure is:
-
-`CsCont` vs `MonoCont`
-
-The monolingual baselines are interpretive anchors. They help determine whether `MonoCont` and `CsCont` shift toward English-like or Spanish-like expectations.
+- Do not mix code-switched material into `MonoCont`, `EnglishMono`, or `SpanishMono`.
 
 ## Corpus composition rules
 
@@ -83,19 +65,26 @@ When processing bilingual or code-switching data, classify each utterance into o
 
 Do not silently discard rows. Save counts of kept and discarded rows with exclusion reasons.
 
-## Condition-candidate rules
+## Model-condition logic
 
-Each utterance may be eligible for more than one model condition. Represent this as `condition_candidates`, not as a single forced label.
+The four conditions serve different interpretive roles:
 
-Expected eligibility:
+- `EnglishMono`: estimates behavior after English-only exposure.
+- `SpanishMono`: estimates behavior after Spanish-only exposure.
+- `MonoCont`: estimates behavior after bilingual exposure without code-switching.
+- `CsCont`: estimates behavior after bilingual exposure with code-switching.
 
-- `en_only`: eligible for `EnglishMono`, `MonoCont`, and `CsCont`.
-- `es_only`: eligible for `SpanishMono`, `MonoCont`, and `CsCont`.
-- `cs_within_utterance`: eligible for `CsCont` only.
-- `neutral_or_bivalent`: eligible only if an explicit inclusion policy is defined.
-- `punctuation_or_empty`: exclude.
-- `mixed_or_uncertain`: exclude unless manually resolved.
-- `metadata_or_noise`: exclude.
+The key contrast for code-switching exposure is:
+
+`CsCont` vs `MonoCont`
+
+The monolingual baselines are interpretive anchors. They help determine whether `MonoCont` and `CsCont` shift toward English-like or Spanish-like expectations.
+
+## Tokenizer rule
+
+Unless explicitly changed later, use the same tokenizer/vocabulary across all model conditions. This keeps model comparisons cleaner by making training corpus composition the main difference across conditions.
+
+Do not let `EnglishMono` and `SpanishMono` use incompatible vocabularies unless the experiment is explicitly redesigned around tokenizer differences.
 
 ## Required corpus diagnostics
 
@@ -146,11 +135,48 @@ Support two eventual sampling strategies:
 
 Always report both target proportions and realized proportions.
 
-## Tokenizer rule
+## Real corpus preprocessing strategy
 
-Unless explicitly changed later, use the same tokenizer/vocabulary across all model conditions. This keeps model comparisons cleaner by making training corpus composition the main difference across conditions.
+Before processing Bangor Miami, extend the toy pipeline so the schema can represent real corpus structure.
 
-Do not let `EnglishMono` and `SpanishMono` use incompatible vocabularies unless the experiment is explicitly redesigned around tokenizer differences.
+The real corpus pipeline must preserve token-level language labels whenever available, not only utterance-level categories.
+
+Required real-corpus fields include:
+
+- raw_text and clean_text
+- tokens
+- token_language_labels
+- utterance_index within conversation
+- speaker_id when available
+- previous_utterance_id
+- previous_speaker_id
+- same_speaker_as_previous
+- token counts including punctuation
+- word-token counts excluding punctuation
+- English word-token counts
+- Spanish word-token counts
+- neutral/bivalent token counts
+- punctuation token counts
+- intra-sentential switch counts
+- English -> Spanish and Spanish -> English transition counts
+- inter-sentential switch counts based on ordered utterances
+- same-speaker vs. cross-speaker inter-sentential switching
+- leakage diagnostics for conversations spanning multiple splits
+- duplicate utterance diagnostics across splits
+
+Do not silently classify contested linguistic phenomena.
+
+The following fields may be included as nullable heuristic fields with `needs_review` flags:
+
+- borrowing vs. live-switch status
+- matrix-language ID
+- insertion vs. alternation
+- equivalence-site status
+- switch boundary type
+- bound/free morpheme boundary
+- content/function morpheme at switch
+
+Do not use automatically assigned equivalence labels as ground truth for evaluating switch-site constraints.
 
 ## Validation
 

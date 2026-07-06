@@ -135,6 +135,49 @@ Always distinguish between:
 
 Do not mix these denominators.
 
+## Real corpus preprocessing strategy
+
+Before processing Bangor Miami, extend the toy pipeline so the schema can represent real corpus structure.
+
+The real corpus pipeline must preserve token-level language labels whenever available, not only utterance-level categories.
+
+Required real-corpus fields include:
+
+- raw_text and clean_text
+- tokens
+- token_language_labels
+- utterance_index within conversation
+- speaker_id when available
+- previous_utterance_id
+- previous_speaker_id
+- same_speaker_as_previous
+- token counts including punctuation
+- word-token counts excluding punctuation
+- English word-token counts
+- Spanish word-token counts
+- neutral/bivalent token counts
+- punctuation token counts
+- intra-sentential switch counts
+- English -> Spanish and Spanish -> English transition counts
+- inter-sentential switch counts based on ordered utterances
+- same-speaker vs. cross-speaker inter-sentential switching
+- leakage diagnostics for conversations spanning multiple splits
+- duplicate utterance diagnostics across splits
+
+Do not silently classify contested linguistic phenomena.
+
+The following fields may be included as nullable heuristic fields with `needs_review` flags:
+
+- borrowing vs. live-switch status
+- matrix-language ID
+- insertion vs. alternation
+- equivalence-site status
+- switch boundary type
+- bound/free morpheme boundary
+- content/function morpheme at switch
+
+Do not use automatically assigned equivalence labels as ground truth for evaluating switch-site constraints.
+
 ## Sampling rules
 
 Sampling proportions should be configurable, not hard-coded.
