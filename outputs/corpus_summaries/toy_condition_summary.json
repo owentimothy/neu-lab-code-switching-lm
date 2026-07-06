@@ -1,0 +1,88 @@
+{
+  "corpus_name": "toy",
+  "data_sources": [
+    "toy_synthetic_v1"
+  ],
+  "seed": 0,
+  "n_conversations": 6,
+  "n_utterances": 18,
+  "n_word_tokens": 78,
+  "n_subword_tokens": null,
+  "counts_by_category": {
+    "en_only": 4,
+    "es_only": 4,
+    "cs_within_utterance": 3,
+    "neutral_or_bivalent": 2,
+    "punctuation_or_empty": 2,
+    "mixed_or_uncertain": 1,
+    "metadata_or_noise": 2
+  },
+  "pct_of_all_utterances": {
+    "en_only": 22.2222,
+    "es_only": 22.2222,
+    "cs_within_utterance": 16.6667,
+    "neutral_or_bivalent": 11.1111,
+    "punctuation_or_empty": 11.1111,
+    "mixed_or_uncertain": 5.5556,
+    "metadata_or_noise": 11.1111
+  },
+  "pct_of_language_containing_utterances": {
+    "en_only": 36.3636,
+    "es_only": 36.3636,
+    "cs_within_utterance": 27.2727
+  },
+  "n_language_containing_utterances": 11,
+  "n_excluded_utterances": 7,
+  "exclusion_reasons": {
+    "punctuation_or_empty": 2,
+    "mixed_or_uncertain": 1,
+    "metadata_or_noise": 2,
+    "neutral_or_bivalent": 2
+  },
+  "split_counts": {
+    "train": 11,
+    "dev": 2,
+    "test": 5
+  },
+  "split_language_composition": {
+    "train": {
+      "en_only": 2,
+      "es_only": 2,
+      "cs_within_utterance": 3,
+      "neutral_or_bivalent": 2,
+      "punctuation_or_empty": 2,
+      "mixed_or_uncertain": 0,
+      "metadata_or_noise": 0
+    },
+    "dev": {
+      "en_only": 1,
+      "es_only": 1,
+      "cs_within_utterance": 0,
+      "neutral_or_bivalent": 0,
+      "punctuation_or_empty": 0,
+      "mixed_or_uncertain": 0,
+      "metadata_or_noise": 0
+    },
+    "test": {
+      "en_only": 1,
+      "es_only": 1,
+      "cs_within_utterance": 0,
+      "neutral_or_bivalent": 0,
+      "punctuation_or_empty": 0,
+      "mixed_or_uncertain": 1,
+      "metadata_or_noise": 2
+    }
+  },
+  "cs_intra_sentential_count": 3,
+  "cs_pct_of_all_utterances": 16.6667,
+  "cs_pct_of_language_containing_utterances": 27.2727,
+  "en_to_es_transitions": 6,
+  "es_to_en_transitions": 6,
+  "total_switch_transitions": 12,
+  "condition_candidate_counts": {
+    "CsCont": 11,
+    "EnglishMono": 4,
+    "MonoCont": 8,
+    "SpanishMono": 4
+  }
+}
