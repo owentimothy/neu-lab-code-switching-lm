@@ -1,13 +1,13 @@
-cat > CLAUDE.md <<'EOF'
 # Project: Code-switching LM probes for integrated bilingual syntax
 
 ## Goal
 
 Build a reproducible experimental pipeline comparing masked language models trained under different corpus conditions:
 
-1. MonoCont: English and Spanish monolingual texts concatenated.
-2. CsCont: English, Spanish, and English/Spanish code-switched dialogue.
-3. SpanishMono: Spanish monolingual baseline.
+1. EnglishMono: English monolingual baseline.
+2. SpanishMono: Spanish monolingual baseline.
+3. MonoCont: English and Spanish monolingual texts concatenated.
+4. CsCont: English, Spanish, and English/Spanish code-switched dialogue.
 
 The core research question is whether code-switching exposure changes model behavior on syntactic probes, especially:
 
@@ -43,10 +43,29 @@ toy corpus -> classified utterances -> corpus summary report
 ## Experimental rules
 
 - Keep model conditions strictly separated.
-- Do not mix CsCont data into MonoCont.
+- `EnglishMono` should contain English monolingual material only.
+- `SpanishMono` should contain Spanish monolingual material only.
+- `MonoCont` should contain English monolingual and Spanish monolingual material only, with no genuine code-switched utterances.
+- `CsCont` should contain English monolingual, Spanish monolingual, and English/Spanish code-switched dialogue.
+- Do not mix code-switched material into `EnglishMono`, `SpanishMono`, or `MonoCont`.
 - Track corpus size, language balance, token counts, and random seed for every condition.
 - Do not make theoretical claims from corpus labels alone.
-- Claims about CsCont must be supported by saved corpus diagnostics.
+- Claims about `CsCont` must be supported by saved corpus diagnostics.
+
+## Model-condition logic
+
+The four conditions serve different interpretive roles:
+
+- `EnglishMono`: estimates behavior after English-only exposure.
+- `SpanishMono`: estimates behavior after Spanish-only exposure.
+- `MonoCont`: estimates behavior after bilingual exposure without code-switching.
+- `CsCont`: estimates behavior after bilingual exposure with code-switching.
+
+The key contrast for code-switching exposure is:
+
+`CsCont` vs `MonoCont`
+
+The monolingual baselines are interpretive anchors. They help determine whether `MonoCont` and `CsCont` shift toward English-like or Spanish-like expectations.
 
 ## Corpus composition rules
 
@@ -63,6 +82,20 @@ When processing bilingual or code-switching data, classify each utterance into o
 - `metadata_or_noise`: transcription markers, comments, speaker labels, or unusable metadata.
 
 Do not silently discard rows. Save counts of kept and discarded rows with exclusion reasons.
+
+## Condition-candidate rules
+
+Each utterance may be eligible for more than one model condition. Represent this as `condition_candidates`, not as a single forced label.
+
+Expected eligibility:
+
+- `en_only`: eligible for `EnglishMono`, `MonoCont`, and `CsCont`.
+- `es_only`: eligible for `SpanishMono`, `MonoCont`, and `CsCont`.
+- `cs_within_utterance`: eligible for `CsCont` only.
+- `neutral_or_bivalent`: eligible only if an explicit inclusion policy is defined.
+- `punctuation_or_empty`: exclude.
+- `mixed_or_uncertain`: exclude unless manually resolved.
+- `metadata_or_noise`: exclude.
 
 ## Required corpus diagnostics
 
@@ -113,6 +146,12 @@ Support two eventual sampling strategies:
 
 Always report both target proportions and realized proportions.
 
+## Tokenizer rule
+
+Unless explicitly changed later, use the same tokenizer/vocabulary across all model conditions. This keeps model comparisons cleaner by making training corpus composition the main difference across conditions.
+
+Do not let `EnglishMono` and `SpanishMono` use incompatible vocabularies unless the experiment is explicitly redesigned around tokenizer differences.
+
 ## Validation
 
 Before making large changes, run:
@@ -120,3 +159,12 @@ Before making large changes, run:
 ```bash
 pytest
 ruff check .
+```
+
+## Do not do yet
+
+- Do not train a model.
+- Do not download large datasets.
+- Do not process real Bangor Miami data.
+- Do not implement final probe analysis.
+- Do not put core experiment logic in notebooks.
