@@ -1,2 +1,2 @@
-n_files,n_word_rows,n_utterances,n_skipped_footer_lines,n_speakers,n_needs_review_mixed_morpheme,langid_999,langid_eng,langid_eng&spa,langid_eng&spa+eng,langid_eng+spa,langid_spa,label_eng,label_eng&spa,label_mixed_morpheme,label_punct,label_spa,category_cs_within_utterance,category_en_only,category_es_only,category_neutral_or_bivalent,category_punctuation_or_empty
-2,13961,1956,2,5,4,1956,6150,325,3,1,5526,6150,325,4,1956,5526,94,960,785,34,83
+n_files,n_word_rows,n_utterances,n_skipped_footer_lines,n_speakers,n_needs_review_mixed_morpheme,langid_999,langid_eng,langid_eng&spa,langid_eng&spa+eng,langid_eng+spa,langid_spa,label_eng,label_eng&spa,label_metadata,label_mixed_morpheme,label_punct,label_spa,category_cs_within_utterance,category_en_only,category_es_only,category_metadata_or_noise,category_neutral_or_bivalent,category_punctuation_or_empty
+2,13961,1956,2,5,4,1956,6150,325,3,1,5526,6150,324,1,4,1956,5526,94,960,785,1,33,83

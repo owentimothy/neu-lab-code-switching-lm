@@ -24,7 +24,8 @@
   },
   "token_label_counts": {
     "eng": 6150,
-    "eng&spa": 325,
+    "eng&spa": 324,
+    "metadata": 1,
     "mixed_morpheme": 4,
     "punct": 1956,
     "spa": 5526
@@ -33,7 +34,8 @@
     "cs_within_utterance": 94,
     "en_only": 960,
     "es_only": 785,
-    "neutral_or_bivalent": 34,
+    "metadata_or_noise": 1,
+    "neutral_or_bivalent": 33,
     "punctuation_or_empty": 83
   },
   "n_needs_review_mixed_morpheme": 4,
@@ -57,7 +59,8 @@
       },
       "token_label_counts": {
         "eng": 6037,
-        "eng&spa": 187,
+        "eng&spa": 186,
+        "metadata": 1,
         "mixed_morpheme": 3,
         "punct": 1072,
         "spa": 291
@@ -66,7 +69,8 @@
         "cs_within_utterance": 44,
         "en_only": 953,
         "es_only": 33,
-        "neutral_or_bivalent": 26,
+        "metadata_or_noise": 1,
+        "neutral_or_bivalent": 25,
         "punctuation_or_empty": 16
       },
       "n_needs_review_mixed_morpheme": 3

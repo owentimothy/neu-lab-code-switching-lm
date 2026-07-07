@@ -83,6 +83,30 @@ def test_map_langid_to_token_label():
     assert map_langid_to_token_label("deu", "x") == "other"
 
 
+def test_www_surface_is_metadata_regardless_of_langid():
+    # The real export mislabels the ``www`` redaction marker as ``eng&spa``; a
+    # ``www`` *surface* must still normalize to metadata, never bivalent/other.
+    assert map_langid_to_token_label("eng&spa", "www") == "metadata"
+    assert map_langid_to_token_label("eng", "WWW") == "metadata"
+    assert map_langid_to_token_label("999", "www") == "metadata"
+    # A normal bivalent word/name is unaffected by the fix.
+    assert map_langid_to_token_label("eng&spa", "Oprah") == "eng&spa"
+
+
+def test_www_surface_utterance_categories():
+    def labels(pairs):
+        return [map_langid_to_token_label(langid, surface) for surface, langid in pairs]
+
+    # www + punctuation only -> metadata_or_noise.
+    only_www = labels([("www", "eng&spa"), (".", "999")])
+    assert only_www == ["metadata", "punct"]
+    assert derive_language_category(only_www) == "metadata_or_noise"
+
+    # www mixed with real linguistic material -> mixed_or_uncertain.
+    mixed = labels([("hello", "eng"), ("www", "eng&spa"), (".", "999")])
+    assert derive_language_category(mixed) == "mixed_or_uncertain"
+
+
 def test_map_langid_labels_are_in_vocabulary():
     for langid in ("eng", "spa", "eng&spa", "999", "www", "eng+spa", "", "deu"):
         assert map_langid_to_token_label(langid, ".") in BANGOR_TOKEN_LABELS
@@ -238,6 +262,18 @@ def test_real_sample_file(path, filename, n_words, n_utts, footer_skips, langid_
         assert utt.language_category
         # CG-words utterances do not mix speakers.
         assert len({w.speaker for w in utt.words}) == 1
+
+
+@_REAL_FILES
+def test_www_surface_is_metadata_on_real_sample():
+    # herring1 utterance 431 is a bare ``www`` redaction (langid mislabeled
+    # ``eng&spa``). It must land in metadata_or_noise, not neutral_or_bivalent.
+    parsed = parse_cgwords_file(HERRING1)
+    utterances = {u.utterance_id: u for u in group_utterances(parsed.words)}
+    utt = utterances["herring1_000431"]
+    assert [s.lower() for s in utt.surfaces][:1] == ["www"]
+    assert utt.token_labels[0] == "metadata"
+    assert utt.language_category == "metadata_or_noise"
 
 
 @_REAL_FILES

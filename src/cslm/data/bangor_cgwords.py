@@ -85,12 +85,17 @@ def map_langid_to_token_label(langid: str, surface: str) -> str:
     * ``999`` with a punctuation surface -> ``punct``; a ``999`` row whose
       surface is *not* punctuation is not silently trusted and becomes
       ``other``.
-    * ``www`` -> ``metadata`` (non-consenting / unrepresented speech marker).
+    * a ``www`` surface, or a ``www`` ``langid`` -> ``metadata``
+      (non-consenting / unrepresented speech marker). The surface check wins
+      even when the export mislabels the ``langid`` (e.g. ``www`` tagged
+      ``eng&spa``), so redacted speech is never treated as bivalent material.
     * anything containing ``+`` (``eng+spa``, ``spa+eng``, ``eng&spa+eng``, ...)
       -> ``mixed_morpheme``. Within-word morpheme mixing is contested and is not
       treated as clean English/Spanish material.
     * empty / unknown -> ``other``.
     """
+    if (surface or "").strip().lower() == "www":
+        return "metadata"
     lang = (langid or "").strip()
     if lang == "eng":
         return "eng"
