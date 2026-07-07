@@ -1,0 +1,111 @@
+{
+  "n_files": 2,
+  "conversation_ids": [
+    "herring1",
+    "herring2"
+  ],
+  "n_word_rows": 13961,
+  "n_utterances": 1956,
+  "n_skipped_footer_lines": 2,
+  "speakers": [
+    "CHL",
+    "LAU",
+    "MIG",
+    "OSE",
+    "TOM"
+  ],
+  "source_langid_counts": {
+    "999": 1956,
+    "eng": 6150,
+    "eng&spa": 325,
+    "eng&spa+eng": 3,
+    "eng+spa": 1,
+    "spa": 5526
+  },
+  "token_label_counts": {
+    "eng": 6150,
+    "eng&spa": 324,
+    "metadata": 1,
+    "mixed_morpheme": 4,
+    "punct": 1956,
+    "spa": 5526
+  },
+  "language_category_counts": {
+    "cs_within_utterance": 94,
+    "en_only": 960,
+    "es_only": 785,
+    "metadata_or_noise": 1,
+    "neutral_or_bivalent": 33,
+    "punctuation_or_empty": 83
+  },
+  "n_needs_review_mixed_morpheme": 4,
+  "per_file": [
+    {
+      "conversation_id": "herring1",
+      "n_word_rows": 7590,
+      "n_utterances": 1072,
+      "n_skipped_footer_lines": 1,
+      "speakers": [
+        "CHL",
+        "LAU",
+        "OSE"
+      ],
+      "source_langid_counts": {
+        "999": 1072,
+        "eng": 6037,
+        "eng&spa": 187,
+        "eng&spa+eng": 3,
+        "spa": 291
+      },
+      "token_label_counts": {
+        "eng": 6037,
+        "eng&spa": 186,
+        "metadata": 1,
+        "mixed_morpheme": 3,
+        "punct": 1072,
+        "spa": 291
+      },
+      "language_category_counts": {
+        "cs_within_utterance": 44,
+        "en_only": 953,
+        "es_only": 33,
+        "metadata_or_noise": 1,
+        "neutral_or_bivalent": 25,
+        "punctuation_or_empty": 16
+      },
+      "n_needs_review_mixed_morpheme": 3
+    },
+    {
+      "conversation_id": "herring2",
+      "n_word_rows": 6371,
+      "n_utterances": 884,
+      "n_skipped_footer_lines": 1,
+      "speakers": [
+        "MIG",
+        "TOM"
+      ],
+      "source_langid_counts": {
+        "999": 884,
+        "eng": 113,
+        "eng&spa": 138,
+        "eng+spa": 1,
+        "spa": 5235
+      },
+      "token_label_counts": {
+        "eng": 113,
+        "eng&spa": 138,
+        "mixed_morpheme": 1,
+        "punct": 884,
+        "spa": 5235
+      },
+      "language_category_counts": {
+        "cs_within_utterance": 50,
+        "en_only": 7,
+        "es_only": 752,
+        "neutral_or_bivalent": 8,
+        "punctuation_or_empty": 67
+      },
+      "n_needs_review_mixed_morpheme": 1
+    }
+  ]
+}

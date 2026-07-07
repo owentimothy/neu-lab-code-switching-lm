@@ -1,6 +1,10 @@
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
 .venv/
+
+# Restricted raw corpus data (TalkBank ethics / consent) and derived verbatim text.
+data/raw/bangor/
+data/processed/bangor_sample/
