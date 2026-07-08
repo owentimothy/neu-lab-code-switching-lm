@@ -142,3 +142,18 @@ Smallest next PR after this one:
 **Recommendation: Option A first** (synthetic tests only, no raw CALLHOME
 committed), with **Option B** pursued in parallel as the gate for any future
 real-data aggregate, and **Option C** sequenced after the parser scaffold.
+
+## Parser scaffold status
+A synthetic-only CHAT parser scaffold now exists at
+`src/cslm/data/callhome_chat.py` (`parse_chat_lines` / `parse_chat_file` →
+`CallhomeTranscript` of `CallhomeUtterance`).
+
+- It is **source-faithful only**: it preserves headers, main speaker tiers, and
+  dependent tiers verbatim, records parser warnings (orphan dependent tiers,
+  continuation / unknown lines), and infers a simple nullable language from
+  `@Languages`.
+- It does **not** tokenize, clean, normalize disfluencies, language-label
+  tokens, project into `UtteranceRow`, or generate condition datasets.
+- It is developed and tested against **synthetic** `.cha` content only
+  (`tests/test_callhome_chat.py`); no real CALLHOME transcript text is used.
+- Real CALLHOME files remain **local / gitignored** under `data/raw/callhome/`.
