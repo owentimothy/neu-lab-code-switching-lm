@@ -8,3 +8,9 @@ __pycache__/
 # Restricted raw corpus data (TalkBank ethics / consent) and derived verbatim text.
 data/raw/bangor/
 data/processed/bangor_sample/
+
+# Restricted CALLHOME raw transcripts/archives (LDC/TalkBank; keep local only).
+# Scoped to the raw callhome directories on purpose (not a global *.cha), so
+# synthetic .cha test fixtures elsewhere can still be committed.
+data/raw/callhome/
+data/raw/callhome_*/
