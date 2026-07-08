@@ -59,7 +59,9 @@ Applies to source labels with within-word `+` mixing (`eng+spa`, `spa+eng`,
 - `mixed_morpheme` is **not** collapsed into `other`.
 - `metadata` is **not** collapsed into `other` or `punct`.
 - `mixed_morpheme` tokens **do not** create ordinary `eng ↔ spa` switch
-  transitions (only `eng`/`spa` labels contribute to transition sequences).
+  transitions (only `eng`/`spa` labels contribute to transition sequences), but
+  they are **not ignored** for switch-site analysis: they feed a separate
+  morpheme-level / internal switch-site diagnostic (see §7).
 - `mixed_morpheme` tokens **do not** automatically promote a row to
   `cs_within_utterance`.
 - Rows carrying `needs_review_mixed_morpheme = true` are **withheld from
@@ -127,7 +129,76 @@ Applies to nonlexical filled pauses and backchannels (the `um`-type and
   removed) for sensitivity analysis only — derived from the preserved source,
   never replacing it.
 
-## 7. Tests required before / with implementation
+## 7. Switch-site localization (Prof. Esti clarification)
+
+Ordinary token-level `eng ↔ spa` transition counting stays as in §3 (bivalent
+and mixed-morpheme labels are skipped in that sequence). This section adds a
+**separate switch-site localization diagnostic** so boundary *positions* are not
+lost. All examples below are abstract label sequences; brackets denote one
+utterance's token labels in order.
+
+### 7.1 `eng&spa` / bivalent bridge localization
+
+The bivalent token itself never *is* a switch, but it can *bridge* one. Decide
+by the nearest real-language (`eng` / `spa`) neighbors:
+
+- **Same-frame → no switch.** The bivalent sits between same-language material:
+  - `[eng eng eng&spa eng eng]` → no switch
+  - `[spa spa eng&spa spa spa]` → no switch
+- **Bridge → one switch, boundary AFTER the bivalent token.** The token
+  following the bivalent is the first token in the new language:
+  - `[eng eng&spa spa]` → boundary after `eng&spa`; the `spa` token is first in
+    the new language
+  - `[spa eng&spa eng]` → boundary after `eng&spa`; the `eng` token is first in
+    the new language
+
+Policy implication: **do not merely skip `eng&spa` and lose the boundary
+location.** For switch-site diagnostics, record that the boundary falls *after*
+the bivalent/cognate token.
+
+### 7.2 Mixed-morpheme internal switch-site localization
+
+For `+`-mixed labels the switch site can fall **inside** the token. Decompose the
+label into its ordered morpheme languages (e.g. `eng+spa` → `[eng, spa]`;
+`spa+eng` → `[spa, eng]`; a bivalent-first label such as `eng&spa+eng` applies
+the §7.1 bridge rule to its internal boundary).
+
+- **One switch site** — the surrounding tokens match the adjacent morpheme:
+  - `[eng eng+spa spa]` → one site, **inside** the token after the English
+    morpheme (the trailing Spanish morpheme continues into the following `spa`)
+  - `[spa spa+eng eng]` → one site, inside the token after the Spanish morpheme
+- **Two switch sites** — the token is re-entered by the outer frame:
+  - `[eng eng+spa eng]` → (1) inside the token after the English morpheme; (2)
+    after the token, switching back into English
+  - `[spa spa+eng spa]` → (1) inside the token after the Spanish morpheme; (2)
+    after the token, switching back into Spanish
+
+Distinctions preserved:
+
+- `mixed_morpheme` is **still not** an ordinary token-level `eng ↔ spa`
+  transition.
+- `mixed_morpheme` is **not ignored** for switch-site analysis; it contributes
+  to the separate morpheme-level / internal switch-site diagnostic.
+- This **does not** change the conservative condition policy: rows with
+  `needs_review_mixed_morpheme = true` remain **withheld from `EnglishMono`,
+  `SpanishMono`, and `MonoCont` by default** (§3).
+
+### 7.3 Diagnostic separation
+
+Three switch families are kept **strictly distinct** and never summed into one
+number:
+
+- **Ordinary token-level `eng ↔ spa` transitions** (§3 / existing counter).
+- **Bivalent bridge boundaries** (§7.1) — localized *after* an `eng&spa` token.
+- **Internal / morpheme-level switch sites** (§7.2) — localized *inside* a
+  `mixed_morpheme` token, plus any re-entry boundary immediately after it.
+
+These localization diagnostics are computed from `token_language_labels` and
+`source_token_language_labels`; whether the counts are stored on `UtteranceRow`
+or produced only in the diagnostics layer is an implementation choice that does
+**not** change the token-label vocabulary or the condition policy.
+
+## 8. Tests required before / with implementation
 
 - Source `langid`s are preserved in `source_token_language_labels`.
 - `mixed_morpheme` tokens are projected and counted
@@ -143,3 +214,14 @@ Applies to nonlexical filled pauses and backchannels (the `um`-type and
 - Rows with real lexical English + Spanish remain `cs_within_utterance` after
   neutralization.
 - The toy word-list classifier is never used on Bangor rows.
+- Switch-site localization (§7):
+  - Same-frame bivalent (`[eng eng eng&spa eng eng]`, `[spa spa eng&spa spa spa]`)
+    yields no switch and no bridge boundary.
+  - Bridge bivalent (`[eng eng&spa spa]`, `[spa eng&spa eng]`) yields exactly one
+    boundary, localized *after* the `eng&spa` token.
+  - One-site mixed morpheme (`[eng eng+spa spa]`, `[spa spa+eng eng]`) yields one
+    internal switch site.
+  - Two-site mixed morpheme (`[eng eng+spa eng]`, `[spa spa+eng spa]`) yields one
+    internal site plus one re-entry boundary after the token.
+  - Ordinary token-level `eng ↔ spa` transition counts are unchanged by bivalent
+    and mixed-morpheme tokens (the three switch families stay separate).
