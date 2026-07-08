@@ -14,6 +14,8 @@
   "total_spanish_word_tokens": 28,
   "total_neutral_bivalent_word_tokens": 4,
   "total_other_word_tokens": 6,
+  "total_mixed_morpheme_word_tokens": 0,
+  "total_metadata_tokens": 0,
   "total_punctuation_tokens": 25,
   "counts_by_category": {
     "en_only": 4,

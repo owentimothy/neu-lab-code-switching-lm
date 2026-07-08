@@ -142,6 +142,81 @@ def test_inter_sentential_switch_true_requires_direction():
         )
 
 
+def test_mixed_morpheme_and_metadata_labels_accepted():
+    # mixed_morpheme is a word token; metadata is neither word nor punctuation.
+    row = _make_row(
+        tokens=["tagueé", "www", "."],
+        token_language_labels=["mixed_morpheme", "metadata", "punct"],
+        n_tokens_including_punctuation=3,
+        n_word_tokens_excluding_punctuation=1,
+        n_mixed_morpheme_word_tokens=1,
+        n_metadata_tokens=1,
+        n_punctuation_tokens=1,
+        needs_review_mixed_morpheme=True,
+    )
+    assert row.n_mixed_morpheme_word_tokens == 1
+    assert row.n_metadata_tokens == 1
+    assert row.needs_review_mixed_morpheme is True
+
+
+def test_inconsistent_mixed_morpheme_count_rejected():
+    with pytest.raises(ValueError, match="n_mixed_morpheme_word_tokens"):
+        _make_row(
+            tokens=["tagueé", "the"],
+            token_language_labels=["mixed_morpheme", "eng"],
+            n_tokens_including_punctuation=2,
+            n_word_tokens_excluding_punctuation=2,
+            n_english_word_tokens=1,
+            n_mixed_morpheme_word_tokens=0,  # should be 1
+        )
+
+
+def test_metadata_excluded_from_word_tokens():
+    with pytest.raises(ValueError, match="n_word_tokens_excluding_punctuation"):
+        _make_row(
+            tokens=["www"],
+            token_language_labels=["metadata"],
+            n_tokens_including_punctuation=1,
+            n_word_tokens_excluding_punctuation=1,  # metadata is not a word token
+            n_metadata_tokens=1,
+        )
+
+
+def test_source_token_language_labels_length_mismatch_rejected():
+    with pytest.raises(ValueError, match="source_token_language_labels length"):
+        _make_row(
+            tokens=["Hola", "."],
+            token_language_labels=["spa", "punct"],
+            source_token_language_labels=["spa"],  # too short
+            n_tokens_including_punctuation=2,
+            n_word_tokens_excluding_punctuation=1,
+            n_spanish_word_tokens=1,
+            n_punctuation_tokens=1,
+        )
+
+
+def test_source_token_language_labels_round_trip_via_to_dict():
+    row = _make_row(
+        tokens=["Ana's", "."],
+        token_language_labels=["mixed_morpheme", "punct"],
+        source_token_language_labels=["eng&spa+eng", "999"],
+        n_tokens_including_punctuation=2,
+        n_word_tokens_excluding_punctuation=1,
+        n_mixed_morpheme_word_tokens=1,
+        n_punctuation_tokens=1,
+        needs_review_mixed_morpheme=True,
+    )
+    d = row.to_dict()
+    assert d["source_token_language_labels"] == ["eng&spa+eng", "999"]
+    assert d["n_mixed_morpheme_word_tokens"] == 1
+    assert d["n_metadata_tokens"] == 0
+    assert d["needs_review_mixed_morpheme"] is True
+    # Reconstructing from the dict preserves all new fields.
+    rebuilt = UtteranceRow(**d)
+    assert rebuilt.source_token_language_labels == ["eng&spa+eng", "999"]
+    assert rebuilt.needs_review_mixed_morpheme is True
+
+
 def test_to_dict_includes_new_schema_fields():
     row = _make_row(
         tokens=["Hello"],
@@ -158,13 +233,16 @@ def test_to_dict_includes_new_schema_fields():
         "clean_text",
         "tokens",
         "token_language_labels",
+        "source_token_language_labels",
         "n_tokens_including_punctuation",
         "n_word_tokens_excluding_punctuation",
         "n_english_word_tokens",
         "n_spanish_word_tokens",
         "n_neutral_bivalent_word_tokens",
         "n_other_word_tokens",
+        "n_mixed_morpheme_word_tokens",
         "n_punctuation_tokens",
+        "n_metadata_tokens",
         "utterance_index",
         "previous_utterance_id",
         "previous_speaker_id",
@@ -178,6 +256,7 @@ def test_to_dict_includes_new_schema_fields():
         "needs_review_matrix_language",
         "equivalence_heuristic",
         "needs_review_equivalence",
+        "needs_review_mixed_morpheme",
     ):
         assert key in d
     assert d["tokens"] == ["Hello"]

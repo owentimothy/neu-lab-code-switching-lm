@@ -64,6 +64,8 @@ def _row_token_counts(row: UtteranceRow) -> TokenAnnotation:
             n_neutral_bivalent_word_tokens=row.n_neutral_bivalent_word_tokens,
             n_other_word_tokens=row.n_other_word_tokens,
             n_punctuation_tokens=row.n_punctuation_tokens,
+            n_mixed_morpheme_word_tokens=row.n_mixed_morpheme_word_tokens,
+            n_metadata_tokens=row.n_metadata_tokens,
         )
     return annotate_tokens(row.clean_text)
 
@@ -99,6 +101,11 @@ class CorpusSummary:
     # never conflated.
     total_neutral_bivalent_word_tokens: int
     total_other_word_tokens: int
+    # ``mixed_morpheme`` word tokens and ``metadata`` (non-word, non-punct)
+    # tokens; both default to 0 for toy corpora. Kept as their own totals so the
+    # word-bucket and total-token decompositions stay exact for real corpora.
+    total_mixed_morpheme_word_tokens: int
+    total_metadata_tokens: int
     total_punctuation_tokens: int
     counts_by_category: dict[str, int]
     pct_of_all_utterances: dict[str, float]
@@ -149,6 +156,8 @@ class CorpusSummary:
             "total_spanish_word_tokens": self.total_spanish_word_tokens,
             "total_neutral_bivalent_word_tokens": self.total_neutral_bivalent_word_tokens,
             "total_other_word_tokens": self.total_other_word_tokens,
+            "total_mixed_morpheme_word_tokens": self.total_mixed_morpheme_word_tokens,
+            "total_metadata_tokens": self.total_metadata_tokens,
             "total_punctuation_tokens": self.total_punctuation_tokens,
             "counts_by_category": self.counts_by_category,
             "pct_of_all_utterances": self.pct_of_all_utterances,
@@ -202,6 +211,8 @@ class CorpusSummary:
             "total_spanish_word_tokens": self.total_spanish_word_tokens,
             "total_neutral_bivalent_word_tokens": self.total_neutral_bivalent_word_tokens,
             "total_other_word_tokens": self.total_other_word_tokens,
+            "total_mixed_morpheme_word_tokens": self.total_mixed_morpheme_word_tokens,
+            "total_metadata_tokens": self.total_metadata_tokens,
             "total_punctuation_tokens": self.total_punctuation_tokens,
             "n_language_containing_utterances": self.n_language_containing_utterances,
             "n_excluded_utterances": self.n_excluded_utterances,
@@ -299,6 +310,8 @@ def build_corpus_summary(
     total_spanish_word_tokens = 0
     total_neutral_bivalent_word_tokens = 0
     total_other_word_tokens = 0
+    total_mixed_morpheme_word_tokens = 0
+    total_metadata_tokens = 0
     total_punctuation_tokens = 0
     for row in rows:
         counts = _row_token_counts(row)
@@ -308,6 +321,8 @@ def build_corpus_summary(
         total_spanish_word_tokens += counts.n_spanish_word_tokens
         total_neutral_bivalent_word_tokens += counts.n_neutral_bivalent_word_tokens
         total_other_word_tokens += counts.n_other_word_tokens
+        total_mixed_morpheme_word_tokens += counts.n_mixed_morpheme_word_tokens
+        total_metadata_tokens += counts.n_metadata_tokens
         total_punctuation_tokens += counts.n_punctuation_tokens
     n_word_tokens = total_word_tokens_excluding_punctuation
 
@@ -379,6 +394,8 @@ def build_corpus_summary(
         total_spanish_word_tokens=total_spanish_word_tokens,
         total_neutral_bivalent_word_tokens=total_neutral_bivalent_word_tokens,
         total_other_word_tokens=total_other_word_tokens,
+        total_mixed_morpheme_word_tokens=total_mixed_morpheme_word_tokens,
+        total_metadata_tokens=total_metadata_tokens,
         total_punctuation_tokens=total_punctuation_tokens,
         counts_by_category=counts_by_category,
         pct_of_all_utterances=pct_of_all,
