@@ -1,0 +1,85 @@
+{
+  "n_files": 2,
+  "conversation_ids": [
+    "herring1",
+    "herring2"
+  ],
+  "n_source_word_rows": 13961,
+  "n_projected_utterance_rows": 1956,
+  "counts_by_language_category": {
+    "en_only": 930,
+    "es_only": 787,
+    "cs_within_utterance": 92,
+    "neutral_or_bivalent": 63,
+    "punctuation_or_empty": 83,
+    "mixed_or_uncertain": 0,
+    "metadata_or_noise": 1
+  },
+  "row_level_condition_candidate_counts": {
+    "EnglishMono": 927,
+    "SpanishMono": 786,
+    "MonoCont": 1713,
+    "CsCont": 1809
+  },
+  "final_source_by_condition": {
+    "EnglishMono": "dedicated_english_monolingual_corpus",
+    "SpanishMono": "dedicated_spanish_monolingual_corpus",
+    "MonoCont": "dedicated_english_and_spanish_monolingual_corpora",
+    "CsCont": "bangor_bilingual_interaction"
+  },
+  "bangor_final_source_role": "CsCont",
+  "bangor_cscont_contribution": {
+    "n_rows": 1809,
+    "by_language_category": {
+      "en_only": 930,
+      "es_only": 787,
+      "cs_within_utterance": 92,
+      "neutral_or_bivalent": 0,
+      "punctuation_or_empty": 0,
+      "mixed_or_uncertain": 0,
+      "metadata_or_noise": 0
+    },
+    "n_needs_review_mixed_morpheme_rows": 4
+  },
+  "bangor_rows_eligible_but_not_final_source": {
+    "n_en_only_rows_eligible_englishmono": 927,
+    "n_es_only_rows_eligible_spanishmono": 786,
+    "note": "Eligible at the row level but NOT used as final EnglishMono / SpanishMono / MonoCont source; Bangor contributes only to CsCont."
+  },
+  "realized_proportions": {
+    "of_all_rows": {
+      "en_only": 47.546,
+      "es_only": 40.2352,
+      "cs_within_utterance": 4.7035,
+      "neutral_or_bivalent": 3.2209,
+      "punctuation_or_empty": 4.2434,
+      "mixed_or_uncertain": 0.0,
+      "metadata_or_noise": 0.0511
+    },
+    "of_cscont_rows": {
+      "en_only": 51.4096,
+      "es_only": 43.5047,
+      "cs_within_utterance": 5.0857,
+      "neutral_or_bivalent": 0.0,
+      "punctuation_or_empty": 0.0,
+      "mixed_or_uncertain": 0.0,
+      "metadata_or_noise": 0.0
+    }
+  },
+  "sampling": {
+    "strategy": "naturalistic",
+    "targets": null,
+    "balancing": "deferred",
+    "note": "Realized proportions only; balancing/oversampling is a future policy decision."
+  },
+  "checks": {
+    "monocont_excludes_cs_within_utterance": true,
+    "monocont_excludes_mixed_morpheme_review": true,
+    "mixed_morpheme_rows_cscont_only": true,
+    "cscont_includes_en_es_cs_rows": true,
+    "excluded_categories_have_no_conditions": true,
+    "neutral_bivalent_excluded_by_default": true
+  },
+  "writes_training_datasets": false,
+  "note": "Aggregate manifest only. Reports row-level eligibility and the recommended Bangor CsCont-only source role; does not write final training datasets or any transcript-bearing rows."
+}
