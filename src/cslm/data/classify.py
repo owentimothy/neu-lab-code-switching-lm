@@ -186,6 +186,10 @@ class TokenAnnotation:
     n_neutral_bivalent_word_tokens: int
     n_other_word_tokens: int
     n_punctuation_tokens: int
+    # Real-corpus (Bangor) buckets. The toy annotator never produces these, so
+    # they default to 0; projected rows populate them from stored counts.
+    n_mixed_morpheme_word_tokens: int = 0
+    n_metadata_tokens: int = 0
 
 
 def annotate_tokens(text: str) -> TokenAnnotation:

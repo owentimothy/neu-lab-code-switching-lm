@@ -21,16 +21,20 @@ CONDITIONS: frozenset[str] = frozenset({"EnglishMono", "SpanishMono", "MonoCont"
 SPLITS: frozenset[str] = frozenset({"train", "dev", "test"})
 
 # Allowed token-level language labels (see classify.token_language_labels).
-#   eng      - English word token
-#   spa      - Spanish word token
-#   eng&spa  - bivalent word token (equally valid English/Spanish in isolation)
-#   neutral  - language-neutral word token (proper names, interjections, etc.)
-#   punct    - punctuation / symbol token
-#   other    - unknown / out-of-vocabulary word token
+#   eng            - English word token
+#   spa            - Spanish word token
+#   eng&spa        - bivalent word token (equally valid English/Spanish in isolation)
+#   neutral        - language-neutral word token (proper names, interjections, etc.)
+#   punct          - punctuation / symbol token
+#   other          - unknown / out-of-vocabulary word token
+#   mixed_morpheme - single word token with within-word language mixing
+#                    (Bangor ``eng+spa`` / ``spa+eng`` / ``eng&spa+eng``)
+#   metadata       - non-linguistic marker (Bangor ``www`` redaction); counted as
+#                    neither a word token nor punctuation
 # ``neutral`` and ``eng&spa`` together make up the neutral/bivalent word-token
-# bucket; ``other`` is kept strictly separate from both.
+# bucket; ``other`` and ``mixed_morpheme`` are each kept strictly separate.
 TOKEN_LANGUAGE_LABELS: frozenset[str] = frozenset(
-    {"eng", "spa", "eng&spa", "neutral", "punct", "other"}
+    {"eng", "spa", "eng&spa", "neutral", "punct", "other", "mixed_morpheme", "metadata"}
 )
 
 # Allowed inter-sentential switch directions between ordered utterances.
@@ -65,6 +69,12 @@ class UtteranceRow:
     clean_text: str | None = None
     tokens: list[str] = field(default_factory=list)
     token_language_labels: list[str] = field(default_factory=list)
+    # Raw source token-level language labels (e.g. Bangor ``langid``:
+    # ``eng&spa+eng``, ``999``, ``www``). Preserved verbatim so normalization
+    # into ``token_language_labels`` stays lossless and auditable. ``None`` for
+    # toy rows; when present it must be the same length as ``tokens`` but has no
+    # controlled vocabulary.
+    source_token_language_labels: list[str] | None = None
 
     # Token-count diagnostics.
     n_tokens_including_punctuation: int = 0
@@ -76,7 +86,12 @@ class UtteranceRow:
     # instead, so the two are never conflated.
     n_neutral_bivalent_word_tokens: int = 0
     n_other_word_tokens: int = 0
+    # ``mixed_morpheme`` word tokens (within-word language mixing). Counted as a
+    # word token but kept separate from ``other``.
+    n_mixed_morpheme_word_tokens: int = 0
     n_punctuation_tokens: int = 0
+    # ``metadata`` tokens (e.g. ``www``): neither word tokens nor punctuation.
+    n_metadata_tokens: int = 0
 
     # Ordered-conversation metadata. ``previous_*`` and
     # ``same_speaker_as_previous`` are ``None`` for the first utterance in a
@@ -103,6 +118,8 @@ class UtteranceRow:
     needs_review_matrix_language: bool = False
     equivalence_heuristic: str | None = None
     needs_review_equivalence: bool = False
+    # Flags a row containing a ``mixed_morpheme`` token for later human review.
+    needs_review_mixed_morpheme: bool = False
 
     def __post_init__(self) -> None:
         if not self.utterance_id:
@@ -136,6 +153,17 @@ class UtteranceRow:
                 f"expected values from {sorted(TOKEN_LANGUAGE_LABELS)}"
             )
 
+        # Raw source labels, when present, run parallel to ``tokens`` but carry
+        # no controlled vocabulary (they preserve the original export verbatim).
+        if self.source_token_language_labels is not None and len(
+            self.source_token_language_labels
+        ) != len(self.tokens):
+            raise ValueError(
+                "source_token_language_labels length "
+                f"({len(self.source_token_language_labels)}) must match tokens length "
+                f"({len(self.tokens)})"
+            )
+
         direction = self.inter_sentential_switch_direction_from_previous
         if direction is not None and direction not in INTER_SENTENTIAL_DIRECTIONS:
             raise ValueError(
@@ -152,8 +180,12 @@ class UtteranceRow:
             n_spa = labels.count("spa")
             n_neutral_bivalent = labels.count("neutral") + labels.count("eng&spa")
             n_other = labels.count("other")
+            n_mixed = labels.count("mixed_morpheme")
+            n_metadata = labels.count("metadata")
             n_punct = labels.count("punct")
-            n_word = n_eng + n_spa + n_neutral_bivalent + n_other
+            # ``mixed_morpheme`` counts as a word token; ``metadata`` counts as
+            # neither a word token nor punctuation.
+            n_word = n_eng + n_spa + n_neutral_bivalent + n_other + n_mixed
             expected = (
                 ("n_english_word_tokens", self.n_english_word_tokens, n_eng),
                 ("n_spanish_word_tokens", self.n_spanish_word_tokens, n_spa),
@@ -163,7 +195,13 @@ class UtteranceRow:
                     n_neutral_bivalent,
                 ),
                 ("n_other_word_tokens", self.n_other_word_tokens, n_other),
+                (
+                    "n_mixed_morpheme_word_tokens",
+                    self.n_mixed_morpheme_word_tokens,
+                    n_mixed,
+                ),
                 ("n_punctuation_tokens", self.n_punctuation_tokens, n_punct),
+                ("n_metadata_tokens", self.n_metadata_tokens, n_metadata),
                 (
                     "n_word_tokens_excluding_punctuation",
                     self.n_word_tokens_excluding_punctuation,
@@ -172,7 +210,7 @@ class UtteranceRow:
                 (
                     "n_tokens_including_punctuation",
                     self.n_tokens_including_punctuation,
-                    n_word + n_punct,
+                    n_word + n_punct + n_metadata,
                 ),
             )
             for name, actual, want in expected:
@@ -221,13 +259,20 @@ class UtteranceRow:
             "clean_text": self.clean_text,
             "tokens": list(self.tokens),
             "token_language_labels": list(self.token_language_labels),
+            "source_token_language_labels": (
+                list(self.source_token_language_labels)
+                if self.source_token_language_labels is not None
+                else None
+            ),
             "n_tokens_including_punctuation": self.n_tokens_including_punctuation,
             "n_word_tokens_excluding_punctuation": self.n_word_tokens_excluding_punctuation,
             "n_english_word_tokens": self.n_english_word_tokens,
             "n_spanish_word_tokens": self.n_spanish_word_tokens,
             "n_neutral_bivalent_word_tokens": self.n_neutral_bivalent_word_tokens,
             "n_other_word_tokens": self.n_other_word_tokens,
+            "n_mixed_morpheme_word_tokens": self.n_mixed_morpheme_word_tokens,
             "n_punctuation_tokens": self.n_punctuation_tokens,
+            "n_metadata_tokens": self.n_metadata_tokens,
             "utterance_index": self.utterance_index,
             "previous_utterance_id": self.previous_utterance_id,
             "previous_speaker_id": self.previous_speaker_id,
@@ -245,4 +290,5 @@ class UtteranceRow:
             "needs_review_matrix_language": self.needs_review_matrix_language,
             "equivalence_heuristic": self.equivalence_heuristic,
             "needs_review_equivalence": self.needs_review_equivalence,
+            "needs_review_mixed_morpheme": self.needs_review_mixed_morpheme,
         }
