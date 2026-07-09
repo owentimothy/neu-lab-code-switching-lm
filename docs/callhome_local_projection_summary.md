@@ -17,8 +17,10 @@
   over the gitignored `data/raw/callhome/{eng,spa}/` folders and prints
   **aggregate counts only**: a projection summary (total rows, rows by source, by
   screening outcome, by condition candidate, `n_needs_review`,
-  `n_blocked_from_all_conditions`) and a screening summary (decisions by outcome,
-  decisions by reason code).
+  `n_blocked_from_all_conditions`), a screening summary (decisions by outcome,
+  decisions by reason code), and a **validation summary** (decisions by validated
+  status, by validation method, by reason code). All three sections are
+  aggregate-only and non-transcript.
 - `tests/test_summarize_callhome_projection_local.py` — **synthetic-only** tests
   over temporary fake CALLHOME directories; no real files are read.
 
@@ -34,6 +36,11 @@ rows stay `needs_review` / `default_unscreened` (admitted to no condition), and
 punctuation-/residue-only rows are `excluded` / `empty_or_nonlexical`. The
 `clean` path requires positive source validation (only `explicit_source_validation`
 in unit tests today) and is **never** exercised by this CLI.
+
+The **validation summary** section reports these default decisions in aggregate:
+under default behavior every row is `not_validated` (validated count `0`,
+`explicit_override` count `0`), confirming the zero-clean baseline. It contains
+counts only — no transcript text, refs, or free notes.
 
 ## Safety design
 - Output contains **no** utterance text, tokens, header values, participant

@@ -46,8 +46,13 @@ from cslm.data.callhome_screening_diagnostics import (
 )
 from cslm.data.callhome_screening_heuristics import build_screening_decisions_by_turn
 from cslm.data.callhome_source_validation import (
+    CallhomeSourceValidationDecision,
     combine_screening_and_validation,
     default_source_validation,
+)
+from cslm.data.callhome_source_validation_diagnostics import (
+    CallhomeSourceValidationSummary,
+    summarize_source_validation_decisions,
 )
 from cslm.utils.paths import project_root
 
@@ -56,15 +61,20 @@ LANGUAGE_DIRS: tuple[str, ...] = ("eng", "spa")
 
 @dataclass
 class LocalCallhomeSummaries:
-    """The aggregate projection and screening summaries for a local scan."""
+    """The aggregate projection, screening, and validation summaries for a scan."""
 
     projection: CallhomeProjectionSummary
     screening: CallhomeScreeningSummary
+    validation: CallhomeSourceValidationSummary
 
 
 def collect_rows_and_decisions(
     root: Path,
-) -> tuple[list[CallhomeProjectedRow], list[CallhomeScreeningDecision]]:
+) -> tuple[
+    list[CallhomeProjectedRow],
+    list[CallhomeScreeningDecision],
+    list[CallhomeSourceValidationDecision],
+]:
     """Parse, screen, validate, and project every ``.cha`` under ``root/{eng,spa}``.
 
     Structural screening heuristics produce a per-turn ``CallhomeScreeningDecision``;
@@ -76,11 +86,13 @@ def collect_rows_and_decisions(
 
     ``explicit_source_validation`` is deliberately **not** used in this real-data
     script. Files that fail to parse are skipped (never surfaced). Returns
-    projected rows and structural screening decisions only — no transcript-bearing
-    content is retained.
+    projected rows, structural screening decisions, and the (content-free)
+    per-row default validation decisions — no transcript-bearing content is
+    retained.
     """
     rows: list[CallhomeProjectedRow] = []
     decisions: list[CallhomeScreeningDecision] = []
+    validation_decisions: list[CallhomeSourceValidationDecision] = []
     for label in LANGUAGE_DIRS:
         lang_dir = root / label
         if not lang_dir.exists():
@@ -106,7 +118,10 @@ def collect_rows_and_decisions(
                 )
             )
             decisions.extend(turn_decisions.values())
-    return rows, decisions
+            # One default validation decision per turn, so validation counts
+            # align with the row/decision counts.
+            validation_decisions.extend(validation for _ in turn_decisions)
+    return rows, decisions, validation_decisions
 
 
 def summarize_local(root: Path) -> LocalCallhomeSummaries:
@@ -115,10 +130,11 @@ def summarize_local(root: Path) -> LocalCallhomeSummaries:
     A missing root or missing language directories yield all-zero summaries
     (with stable keys) rather than an error.
     """
-    rows, decisions = collect_rows_and_decisions(root)
+    rows, decisions, validation_decisions = collect_rows_and_decisions(root)
     return LocalCallhomeSummaries(
         projection=summarize_projected_rows(rows),
         screening=summarize_screening_decisions(decisions),
+        validation=summarize_source_validation_decisions(validation_decisions),
     )
 
 
@@ -151,6 +167,20 @@ def format_summary_lines(summaries: LocalCallhomeSummaries) -> list[str]:
         lines.append(f"  {outcome:<24}: {count}")
     lines.append("decisions by reason code:")
     for code, count in scr.decisions_by_reason_code.items():
+        lines.append(f"  {code:<26}: {count}")
+
+    val = summaries.validation
+    lines.append("")
+    lines.append("== validation summary ==")
+    lines.append(f"total decisions               : {val.n_decisions}")
+    lines.append("decisions by validated status:")
+    for status, count in val.decisions_by_validated_status.items():
+        lines.append(f"  {status:<24}: {count}")
+    lines.append("decisions by validation method:")
+    for method, count in val.decisions_by_validation_method.items():
+        lines.append(f"  {method:<24}: {count}")
+    lines.append("decisions by reason code:")
+    for code, count in val.decisions_by_reason_code.items():
         lines.append(f"  {code:<26}: {count}")
     return lines
 
