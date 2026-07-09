@@ -5,7 +5,9 @@ Runs the full local pipeline over GITIGNORED CALLHOME files:
 
     parse (callhome_chat)
       -> screen with conservative heuristics (callhome_screening_heuristics)
-      -> project using screening outcomes (callhome_project)
+      -> combine with default (not_validated) source validation
+         (callhome_source_validation)
+      -> project using the final outcomes (callhome_project)
       -> aggregate projection + screening diagnostics
 
 and prints **aggregate counts only**. It never prints utterance text, tokens,
@@ -43,6 +45,10 @@ from cslm.data.callhome_screening_diagnostics import (
     summarize_screening_decisions,
 )
 from cslm.data.callhome_screening_heuristics import build_screening_decisions_by_turn
+from cslm.data.callhome_source_validation import (
+    combine_screening_and_validation,
+    default_source_validation,
+)
 from cslm.utils.paths import project_root
 
 LANGUAGE_DIRS: tuple[str, ...] = ("eng", "spa")
@@ -59,11 +65,18 @@ class LocalCallhomeSummaries:
 def collect_rows_and_decisions(
     root: Path,
 ) -> tuple[list[CallhomeProjectedRow], list[CallhomeScreeningDecision]]:
-    """Parse, screen, and project every ``.cha`` under ``root/{eng,spa}``.
+    """Parse, screen, validate, and project every ``.cha`` under ``root/{eng,spa}``.
 
-    Screening uses the conservative structural heuristics; the resulting outcomes
-    drive projection. Files that fail to parse are skipped (never surfaced).
-    Returns projected rows and screening decisions only — no transcript-bearing
+    Structural screening heuristics produce a per-turn ``CallhomeScreeningDecision``;
+    each is combined with the **default** (``not_validated``) source-language
+    validation via ``combine_screening_and_validation`` to yield the final
+    outcome that drives projection. Because the default never validates, no row
+    becomes ``clean`` here (source directory alone is not verification). This wires
+    in the validation join point while preserving the zero-clean baseline.
+
+    ``explicit_source_validation`` is deliberately **not** used in this real-data
+    script. Files that fail to parse are skipped (never surfaced). Returns
+    projected rows and structural screening decisions only — no transcript-bearing
     content is retained.
     """
     rows: list[CallhomeProjectedRow] = []
@@ -72,6 +85,9 @@ def collect_rows_and_decisions(
         lang_dir = root / label
         if not lang_dir.exists():
             continue
+        # One content-free default validation per language directory. Reused
+        # across turns; it never marks a row validated.
+        validation = default_source_validation(label)
         for path in sorted(lang_dir.glob("*.cha")):
             try:
                 transcript = parse_chat_file(path)
@@ -80,7 +96,10 @@ def collect_rows_and_decisions(
             turn_decisions = build_screening_decisions_by_turn(
                 transcript, language_label=label
             )
-            outcomes = {turn: d.outcome for turn, d in turn_decisions.items()}
+            outcomes = {
+                turn: combine_screening_and_validation(decision, validation)
+                for turn, decision in turn_decisions.items()
+            }
             rows.extend(
                 project_transcript(
                     transcript, language_label=label, screening_by_turn=outcomes
