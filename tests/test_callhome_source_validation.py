@@ -209,9 +209,66 @@ def test_inconsistent_validated_false_combinations_raise():
         )
 
 
+def test_validated_rejects_extra_or_mixed_positive_reasons():
+    # lexicon method + an extra explicit reason must be rejected.
+    with pytest.raises(ValueError):
+        CallhomeSourceValidationDecision(
+            is_validated=True,
+            expected_language="eng",
+            validation_method="lexicon_exact_match",
+            reason_codes=["lexicon_expected_only", "explicit_source_validation"],
+        )
+    # explicit method + an extra lexicon reason must be rejected.
+    with pytest.raises(ValueError):
+        CallhomeSourceValidationDecision(
+            is_validated=True,
+            expected_language="eng",
+            validation_method="explicit_override",
+            reason_codes=["explicit_source_validation", "lexicon_expected_only"],
+        )
+
+
+def test_validated_rejects_duplicate_reason_codes():
+    with pytest.raises(ValueError):
+        CallhomeSourceValidationDecision(
+            is_validated=True,
+            expected_language="eng",
+            validation_method="lexicon_exact_match",
+            reason_codes=["lexicon_expected_only", "lexicon_expected_only"],
+        )
+
+
+def test_not_validated_rejects_duplicate_reason_codes():
+    with pytest.raises(ValueError):
+        CallhomeSourceValidationDecision(
+            is_validated=False,
+            expected_language="eng",
+            validation_method="not_validated",
+            reason_codes=["not_validated", "not_validated"],
+        )
+
+
+def test_lexicon_method_singleton_reason_is_accepted():
+    d = CallhomeSourceValidationDecision(
+        is_validated=True,
+        expected_language="spa",
+        validation_method="lexicon_exact_match",
+        reason_codes=["lexicon_expected_only"],
+    )
+    assert d.is_validated is True
+
+
 def test_vocabularies_are_the_expected_labels():
-    assert VALIDATION_METHODS == {"explicit_override", "not_validated"}
-    assert VALIDATION_REASON_CODES == {"explicit_source_validation", "not_validated"}
+    assert VALIDATION_METHODS == {
+        "explicit_override",
+        "lexicon_exact_match",
+        "not_validated",
+    }
+    assert VALIDATION_REASON_CODES == {
+        "explicit_source_validation",
+        "lexicon_expected_only",
+        "not_validated",
+    }
 
 
 def test_no_transcript_text_in_decisions():

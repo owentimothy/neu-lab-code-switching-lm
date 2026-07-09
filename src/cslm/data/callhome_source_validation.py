@@ -22,10 +22,20 @@ from cslm.data.callhome_screening import (
 )
 
 # Fixed, safe vocabularies (no transcript-derived content).
-VALIDATION_METHODS: frozenset[str] = frozenset({"explicit_override", "not_validated"})
-VALIDATION_REASON_CODES: frozenset[str] = frozenset(
-    {"explicit_source_validation", "not_validated"}
+VALIDATION_METHODS: frozenset[str] = frozenset(
+    {"explicit_override", "lexicon_exact_match", "not_validated"}
 )
+VALIDATION_REASON_CODES: frozenset[str] = frozenset(
+    {"explicit_source_validation", "lexicon_expected_only", "not_validated"}
+)
+
+# Each positive (is_validated=True) validation method carries exactly one
+# required positive reason code. Adding a future positive method means adding a
+# (method -> reason) entry here; the consistency check below is table-driven.
+_POSITIVE_METHOD_REQUIRED_REASON: dict[str, str] = {
+    "explicit_override": "explicit_source_validation",
+    "lexicon_exact_match": "lexicon_expected_only",
+}
 
 # Screening reason codes that block clean promotion even when a row is
 # source-validated. Empty/non-lexical and unsupported-language rows are already
@@ -60,28 +70,29 @@ class CallhomeSourceValidationDecision:
         unknown = set(self.reason_codes) - VALIDATION_REASON_CODES
         if unknown:
             raise ValueError(f"unknown validation reason codes: {sorted(unknown)}")
-        # The boolean, method, and reason codes must agree.
+        # The boolean, method, and reason codes must agree *exactly*. Requiring a
+        # singleton reason list rejects extra/mixed positive reasons, a stray
+        # ``not_validated``, and duplicate reason codes in one check.
         if self.is_validated:
-            if self.validation_method != "explicit_override":
+            if self.validation_method not in _POSITIVE_METHOD_REQUIRED_REASON:
                 raise ValueError(
-                    "is_validated=True requires validation_method 'explicit_override'"
+                    "is_validated=True requires a positive validation_method "
+                    f"(one of {sorted(_POSITIVE_METHOD_REQUIRED_REASON)})"
                 )
-            if "explicit_source_validation" not in self.reason_codes:
+            required_reason = _POSITIVE_METHOD_REQUIRED_REASON[self.validation_method]
+            if self.reason_codes != [required_reason]:
                 raise ValueError(
-                    "is_validated=True requires reason code 'explicit_source_validation'"
+                    f"is_validated=True with method {self.validation_method!r} requires "
+                    f"reason_codes == [{required_reason!r}]"
                 )
-            if "not_validated" in self.reason_codes:
-                raise ValueError("is_validated=True must not include reason 'not_validated'")
         else:
             if self.validation_method != "not_validated":
                 raise ValueError(
                     "is_validated=False requires validation_method 'not_validated'"
                 )
-            if "not_validated" not in self.reason_codes:
-                raise ValueError("is_validated=False requires reason code 'not_validated'")
-            if "explicit_source_validation" in self.reason_codes:
+            if self.reason_codes != ["not_validated"]:
                 raise ValueError(
-                    "is_validated=False must not include reason 'explicit_source_validation'"
+                    "is_validated=False requires reason_codes == ['not_validated']"
                 )
 
 
@@ -105,8 +116,11 @@ def explicit_source_validation(language_label: str) -> CallhomeSourceValidationD
     """A **controlled**, explicit positive validation (tests / future use only).
 
     This is the deliberate, opt-in signal that a caller asserts a row is
-    monolingual in its source language. It is intentionally the *only* way to
-    obtain ``is_validated=True`` in this scaffold; no automatic validation exists.
+    monolingual in its source language. It is **one** controlled positive path
+    (the synthetic ``callhome_lexicon_validation`` scaffold is another); neither
+    is automatic. No real-data automatic validation is enabled by the local
+    summary script, so real CALLHOME rows stay ``not_validated`` and ``clean``
+    stays zero.
     """
     if language_label not in SUPPORTED_LANGUAGE_LABELS:
         raise ValueError(f"unsupported language_label: {language_label!r}")
