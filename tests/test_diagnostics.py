@@ -117,6 +117,51 @@ def test_token_count_totals():
     ) == summary.total_word_tokens_excluding_punctuation
 
 
+def test_mixed_morpheme_and_metadata_totals_and_decomposition():
+    # A projected-style row carrying a mixed_morpheme word token and a metadata
+    # (www) token, so the new totals are exercised.
+    rows = [
+        UtteranceRow(
+            utterance_id="m", text="STEM_s the www .", source="bangor",
+            conversation_id="c1", speaker_id="s1", split="train",
+            language_category="en_only", condition_candidates=["CsCont"],
+            tokens=["STEM_s", "the", "www", "."],
+            token_language_labels=["mixed_morpheme", "eng", "metadata", "punct"],
+            source_token_language_labels=["eng&spa+eng", "eng", "www", "999"],
+            n_tokens_including_punctuation=4,
+            n_word_tokens_excluding_punctuation=2,  # mixed + eng (metadata excluded)
+            n_english_word_tokens=1,
+            n_mixed_morpheme_word_tokens=1,
+            n_metadata_tokens=1,
+            n_punctuation_tokens=1,
+            needs_review_mixed_morpheme=True,
+        ),
+    ]
+    summary = build_corpus_summary(rows, corpus_name="unit", data_sources=["u"], seed=0)
+    assert summary.total_mixed_morpheme_word_tokens == 1
+    assert summary.total_metadata_tokens == 1
+    # Word bucket decomposition now includes mixed_morpheme.
+    assert (
+        summary.total_english_word_tokens
+        + summary.total_spanish_word_tokens
+        + summary.total_neutral_bivalent_word_tokens
+        + summary.total_other_word_tokens
+        + summary.total_mixed_morpheme_word_tokens
+    ) == summary.total_word_tokens_excluding_punctuation
+    # Total tokens decomposition includes punctuation and metadata.
+    assert (
+        summary.total_word_tokens_excluding_punctuation
+        + summary.total_punctuation_tokens
+        + summary.total_metadata_tokens
+    ) == summary.total_tokens_including_punctuation
+
+
+def test_mixed_and_metadata_totals_default_zero_for_toy_rows():
+    summary = _summary()
+    assert summary.total_mixed_morpheme_word_tokens == 0
+    assert summary.total_metadata_tokens == 0
+
+
 def test_switch_transitions():
     summary = _summary()
     assert summary.en_to_es_transitions == 1
@@ -431,6 +476,8 @@ def test_to_flat_row_contains_new_diagnostic_keys():
         "total_spanish_word_tokens",
         "total_neutral_bivalent_word_tokens",
         "total_other_word_tokens",
+        "total_mixed_morpheme_word_tokens",
+        "total_metadata_tokens",
         "total_punctuation_tokens",
         "total_inter_sentential_switches",
         "inter_sentential_switches_eng_to_spa",

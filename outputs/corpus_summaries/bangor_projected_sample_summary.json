@@ -1,0 +1,46 @@
+{
+  "n_files": 2,
+  "conversation_ids": [
+    "herring1",
+    "herring2"
+  ],
+  "n_source_word_rows": 13961,
+  "n_projected_utterance_rows": 1956,
+  "counts_by_language_category": {
+    "en_only": 930,
+    "es_only": 787,
+    "cs_within_utterance": 92,
+    "neutral_or_bivalent": 63,
+    "punctuation_or_empty": 83,
+    "mixed_or_uncertain": 0,
+    "metadata_or_noise": 1
+  },
+  "condition_candidate_counts": {
+    "CsCont": 1809,
+    "EnglishMono": 927,
+    "MonoCont": 1713,
+    "SpanishMono": 786
+  },
+  "total_tokens_including_punctuation": 13961,
+  "total_word_tokens_excluding_punctuation": 12004,
+  "total_english_word_tokens": 6089,
+  "total_spanish_word_tokens": 5526,
+  "total_neutral_bivalent_word_tokens": 385,
+  "total_other_word_tokens": 0,
+  "total_mixed_morpheme_word_tokens": 4,
+  "total_metadata_tokens": 1,
+  "total_punctuation_tokens": 1956,
+  "n_needs_review_mixed_morpheme_rows": 4,
+  "n_metadata_or_noise_rows": 1,
+  "n_neutralized_disfluency_tokens": 61,
+  "ordinary_token_switch_count": 129,
+  "ordinary_eng_to_spa_switch_count": 62,
+  "ordinary_spa_to_eng_switch_count": 67,
+  "n_rows_with_ordinary_token_switches": 92,
+  "checks": {
+    "mixed_morpheme_rows_cscont_only": true,
+    "metadata_rows_have_no_conditions": true,
+    "source_label_length_alignment_ok": true
+  },
+  "switch_site_localization_todo": "Full switch-site localization is a follow-up PR. It must compute three separate families and never sum them into one number: (1) ordinary token-level eng<->spa transitions, (2) bivalent eng&spa bridge boundaries, (3) mixed_morpheme internal/re-entry switch sites."
+}
