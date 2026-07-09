@@ -1,28 +1,34 @@
 #!/usr/bin/env python
-"""LOCAL-ONLY, aggregate-only projection summary for CALLHOME `.cha` files.
+"""LOCAL-ONLY, aggregate-only projection + screening summary for CALLHOME `.cha`.
 
-Runs the existing parser -> projector -> diagnostics pipeline over local,
-GITIGNORED CALLHOME files and prints **aggregate counts only**. It never prints
-utterance text, tokens, header values, participant names, raw speaker ids, raw
-filenames, ``speaker_ref``, or ``source_file_ref``.
+Runs the full local pipeline over GITIGNORED CALLHOME files:
+
+    parse (callhome_chat)
+      -> screen with conservative heuristics (callhome_screening_heuristics)
+      -> project using screening outcomes (callhome_project)
+      -> aggregate projection + screening diagnostics
+
+and prints **aggregate counts only**. It never prints utterance text, tokens,
+header values, participant names, raw speaker ids, raw filenames, ``speaker_ref``,
+``source_file_ref``, or screening ``notes``.
 
 Run from the repo root (defaults to the gitignored data/raw/callhome/):
 
     python scripts/summarize_callhome_projection_local.py
     python scripts/summarize_callhome_projection_local.py --root path/to/callhome
 
-Expects language subdirectories ``eng/`` and ``spa/`` under the root. Real
-screening is not implemented yet, so **every projected row defaults to
-``needs_review``** (nothing is admitted to a condition) unless a test supplies a
-synthetic screening function. Per Decision B this script **writes no files**;
-its stdout is an aggregate, non-transcript summary only. Do not redirect it into
-a tracked file, and do not commit generated summaries.
+Expects language subdirectories ``eng/`` and ``spa/`` under the root. Screening
+is conservative structural-only (parser warnings, empty/non-lexical rows) — it is
+**not** real language ID, so no row is auto-marked ``clean`` and lexical rows
+stay ``needs_review``. Per Decision B this script **writes no files**; its stdout
+is an aggregate, non-transcript summary only. Do not redirect it into a tracked
+file, and do not commit generated summaries.
 """
 
 from __future__ import annotations
 
 import argparse
-from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from cslm.data.callhome_chat import parse_chat_file
@@ -31,37 +37,37 @@ from cslm.data.callhome_projection_diagnostics import (
     CallhomeProjectionSummary,
     summarize_projected_rows,
 )
-from cslm.data.callhome_screening import default_decision
+from cslm.data.callhome_screening import CallhomeScreeningDecision
+from cslm.data.callhome_screening_diagnostics import (
+    CallhomeScreeningSummary,
+    summarize_screening_decisions,
+)
+from cslm.data.callhome_screening_heuristics import build_screening_decisions_by_turn
 from cslm.utils.paths import project_root
 
 LANGUAGE_DIRS: tuple[str, ...] = ("eng", "spa")
 
-# A screening function maps (language_label, conversation_id, turn_index) to a
-# screening outcome. The real screening step is not implemented, so the default
-# marks every row needs_review; tests may inject a synthetic function.
-ScreeningFn = Callable[[str, str, int], str]
+
+@dataclass
+class LocalCallhomeSummaries:
+    """The aggregate projection and screening summaries for a local scan."""
+
+    projection: CallhomeProjectionSummary
+    screening: CallhomeScreeningSummary
 
 
-def default_screening(language_label: str, conversation_id: str, turn_index: int) -> str:
-    """Default screening: admit nothing until real screening exists.
-
-    Delegates to the screening scaffold's conservative default so the outcome is
-    defined in one place (currently ``needs_review``).
-    """
-    return default_decision().outcome
-
-
-def collect_projected_rows(
+def collect_rows_and_decisions(
     root: Path,
-    *,
-    screening_fn: ScreeningFn = default_screening,
-) -> list[CallhomeProjectedRow]:
-    """Parse and project every ``.cha`` under ``root/{eng,spa}`` into rows.
+) -> tuple[list[CallhomeProjectedRow], list[CallhomeScreeningDecision]]:
+    """Parse, screen, and project every ``.cha`` under ``root/{eng,spa}``.
 
-    Files that fail to parse are skipped (never surfaced). Returns projected
-    rows only; no transcript-bearing content is retained.
+    Screening uses the conservative structural heuristics; the resulting outcomes
+    drive projection. Files that fail to parse are skipped (never surfaced).
+    Returns projected rows and screening decisions only — no transcript-bearing
+    content is retained.
     """
     rows: list[CallhomeProjectedRow] = []
+    decisions: list[CallhomeScreeningDecision] = []
     for label in LANGUAGE_DIRS:
         lang_dir = root / label
         if not lang_dir.exists():
@@ -71,54 +77,62 @@ def collect_projected_rows(
                 transcript = parse_chat_file(path)
             except (OSError, UnicodeDecodeError, ValueError):
                 continue
-            screening_by_turn = {
-                utt.turn_index: screening_fn(
-                    label, transcript.conversation_id, utt.turn_index
-                )
-                for utt in transcript.utterances
-            }
+            turn_decisions = build_screening_decisions_by_turn(
+                transcript, language_label=label
+            )
+            outcomes = {turn: d.outcome for turn, d in turn_decisions.items()}
             rows.extend(
                 project_transcript(
-                    transcript,
-                    language_label=label,
-                    screening_by_turn=screening_by_turn,
+                    transcript, language_label=label, screening_by_turn=outcomes
                 )
             )
-    return rows
+            decisions.extend(turn_decisions.values())
+    return rows, decisions
 
 
-def summarize_local_projection(
-    root: Path,
-    *,
-    screening_fn: ScreeningFn = default_screening,
-) -> CallhomeProjectionSummary:
-    """Collect projected rows under ``root`` and return an aggregate summary.
+def summarize_local(root: Path) -> LocalCallhomeSummaries:
+    """Collect rows + decisions under ``root`` and return aggregate summaries.
 
-    A missing root or missing language directories yield an all-zero summary
+    A missing root or missing language directories yield all-zero summaries
     (with stable keys) rather than an error.
     """
-    rows = collect_projected_rows(root, screening_fn=screening_fn)
-    return summarize_projected_rows(rows)
+    rows, decisions = collect_rows_and_decisions(root)
+    return LocalCallhomeSummaries(
+        projection=summarize_projected_rows(rows),
+        screening=summarize_screening_decisions(decisions),
+    )
 
 
-def format_summary_lines(summary: CallhomeProjectionSummary) -> list[str]:
-    """Render the summary as aggregate-count lines (no transcript content)."""
+def format_summary_lines(summaries: LocalCallhomeSummaries) -> list[str]:
+    """Render both summaries as aggregate-count lines (no transcript content)."""
+    proj = summaries.projection
+    scr = summaries.screening
+
     lines = [
-        f"total rows                    : {summary.n_rows}",
+        "== projection summary ==",
+        f"total rows                    : {proj.n_rows}",
         "rows by source:",
     ]
-    for source, count in summary.rows_by_source.items():
+    for source, count in proj.rows_by_source.items():
         lines.append(f"  {source:<24}: {count}")
     lines.append("rows by screening outcome:")
-    for outcome, count in summary.rows_by_screening_outcome.items():
+    for outcome, count in proj.rows_by_screening_outcome.items():
         lines.append(f"  {outcome:<24}: {count}")
     lines.append("rows by condition candidate:")
-    for cond, count in summary.rows_by_condition_candidate.items():
+    for cond, count in proj.rows_by_condition_candidate.items():
         lines.append(f"  {cond:<24}: {count}")
-    lines.append(f"n_needs_review                : {summary.n_needs_review}")
-    lines.append(
-        f"n_blocked_from_all_conditions : {summary.n_blocked_from_all_conditions}"
-    )
+    lines.append(f"n_needs_review                : {proj.n_needs_review}")
+    lines.append(f"n_blocked_from_all_conditions : {proj.n_blocked_from_all_conditions}")
+
+    lines.append("")
+    lines.append("== screening summary ==")
+    lines.append(f"total decisions               : {scr.n_decisions}")
+    lines.append("decisions by outcome:")
+    for outcome, count in scr.decisions_by_outcome.items():
+        lines.append(f"  {outcome:<24}: {count}")
+    lines.append("decisions by reason code:")
+    for code, count in scr.decisions_by_reason_code.items():
+        lines.append(f"  {code:<26}: {count}")
     return lines
 
 
@@ -138,8 +152,8 @@ def main() -> None:
         print(f"No local CALLHOME root found (expected eng/ and spa/ under {root.name}/).")
         print("Reporting zero counts.")
 
-    summary = summarize_local_projection(root)
-    for line in format_summary_lines(summary):
+    summaries = summarize_local(root)
+    for line in format_summary_lines(summaries):
         print(line)
 
 
