@@ -139,6 +139,52 @@ def test_collect_returns_rows_and_decisions(tmp_path):
     assert decisions[0].reason_codes == ["default_unscreened"]
 
 
+def test_default_validation_keeps_clean_zero(tmp_path):
+    # Wiring default source validation must NOT admit any row to clean, and no
+    # condition candidates may appear, even for structurally clean lexical rows.
+    mod = _load_script()
+    root = tmp_path / "callhome"
+    _write(root, "eng", "synth_secretfile_eng_0.cha", _cha(["syn_alpha syn_beta .", "syn_gamma ."]))
+    _write(root, "spa", "synth_secretfile_spa_0.cha", _cha(["syn_delta ."], lang="spa"))
+    summaries = mod.summarize_local(root)
+    proj, scr = summaries.projection, summaries.screening
+    # No clean rows via projection or screening.
+    assert proj.rows_by_screening_outcome["clean"] == 0
+    assert scr.decisions_by_outcome["clean"] == 0
+    # No condition candidates at all under the default.
+    assert proj.rows_by_condition_candidate == {
+        "EnglishMono": 0,
+        "SpanishMono": 0,
+        "MonoCont": 0,
+    }
+    assert proj.n_blocked_from_all_conditions == proj.n_rows
+
+
+def test_default_validation_preserves_structural_outcomes(tmp_path):
+    # Combining with not_validated leaves structural outcomes unchanged:
+    # lexical -> needs_review, punctuation/residue -> excluded.
+    mod = _load_script()
+    root = tmp_path / "callhome"
+    _write(root, "eng", "synth_mix.cha", _cha(["syn_alpha .", ".", "xxx ."]))
+    proj = mod.summarize_local(root).projection
+    assert proj.rows_by_screening_outcome["needs_review"] == 1
+    assert proj.rows_by_screening_outcome["excluded"] == 2
+    assert proj.rows_by_screening_outcome["clean"] == 0
+
+
+def test_local_script_does_not_use_explicit_source_validation():
+    # The real-data script must never CALL or import the explicit (positive)
+    # validation. (A mention in a comment explaining that it is not used is fine,
+    # so we check for a call/import form rather than any occurrence.)
+    source = _SCRIPT_PATH.read_text(encoding="utf-8")
+    assert "explicit_source_validation(" not in source  # no call
+    assert "import explicit_source_validation" not in source
+    # And confirm the default path is present and imported.
+    mod = _load_script()
+    assert hasattr(mod, "default_source_validation")
+    assert hasattr(mod, "combine_screening_and_validation")
+
+
 def test_missing_root_reports_zero_counts(tmp_path):
     mod = _load_script()
     summaries = mod.summarize_local(tmp_path / "does_not_exist")
