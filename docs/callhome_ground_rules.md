@@ -80,6 +80,21 @@ Unless official rules explicitly say otherwise, adopt this conservative policy:
 - **If unclear**: keep CALLHOME-derived summaries **local/uncommitted** until
   confirmed.
 
+
+## TalkBank / CABank permission response — 2026-07-09
+
+On 2026-07-09, after the project sent a permission-confirmation email to the TalkBank / CABank support route, Brian MacWhinney replied that the proposed use "seems fine" and instructed us to stick with the described guidelines.
+
+We interpret this as conditional written approval for the two uses described in the email:
+
+1. committing aggregate, non-transcript CALLHOME summaries to the public repository, provided they contain no transcript text, no header values, no participant names, and no speaker IDs, and include the required citation/license notes;
+2. using TalkBank/CABank transcripts for non-commercial academic masked-LM / small research-LM training, provided the project follows the stated non-commercial research restrictions and does not redistribute the underlying transcript data.
+
+Decision update:
+
+- Previous decision: Decision C — do not commit CALLHOME-derived aggregate summaries because permission was unclear.
+- New decision: Decision B — aggregate-only, non-transcript CALLHOME summaries may be committed with proper citation/license notes and the safety restrictions above.
+- Raw transcripts, ZIP archives, transcript excerpts, header values, participant names, speaker IDs, and transcript-bearing JSONL remain blocked from commit.
 ## Decision
 
 **C — Aggregate-summary permission is unclear; do not commit CALLHOME-derived

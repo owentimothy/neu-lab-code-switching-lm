@@ -8,6 +8,10 @@
 - Placeholders (**TODO**) are left where the sender must fill in
   institution/identity or confirm exact bibliographic strings — do not guess.
 
+Sent-Status:
+- Response received on **2026-07-09** from Brian MacWhinney indicating that the proposed use seems fine, provided the project sticks with the described guidelines.
+- See `docs/callhome_ground_rules.md` for the resulting Decision C → Decision B update.
+
 ## Purpose
 Move from **Decision C** (aggregate-summary permission unclear → do not commit
 CALLHOME-derived summaries) toward **Decision B** (commit aggregate-only,
