@@ -1,6 +1,14 @@
 # TalkBank / CABank Permission Email (Draft)
 
 ## Status
+## Sent status
+
+- Email sent on **2026-07-09** from Timothy Owen’s NYU email.
+- Sent to **macw@cmu.edu** as the TalkBank support/contact route.
+- Awaiting response.
+- **Decision C remains in force** until explicit written permission is received.
+- No CALLHOME-derived aggregate summaries, condition JSONL, tokenizer work, or training are unblocked by sending the email alone.
+
 - **Email draft only.** No emails are sent by this repo or this PR.
 - No parser run on real files; no real CALLHOME-derived outputs produced.
 - No committed aggregate manifests or summaries (Decision C still in force).
