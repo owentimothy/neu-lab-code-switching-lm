@@ -31,6 +31,7 @@ from cslm.data.callhome_projection_diagnostics import (
     CallhomeProjectionSummary,
     summarize_projected_rows,
 )
+from cslm.data.callhome_screening import default_decision
 from cslm.utils.paths import project_root
 
 LANGUAGE_DIRS: tuple[str, ...] = ("eng", "spa")
@@ -42,8 +43,12 @@ ScreeningFn = Callable[[str, str, int], str]
 
 
 def default_screening(language_label: str, conversation_id: str, turn_index: int) -> str:
-    """Default screening: admit nothing until real screening exists."""
-    return "needs_review"
+    """Default screening: admit nothing until real screening exists.
+
+    Delegates to the screening scaffold's conservative default so the outcome is
+    defined in one place (currently ``needs_review``).
+    """
+    return default_decision().outcome
 
 
 def collect_projected_rows(
