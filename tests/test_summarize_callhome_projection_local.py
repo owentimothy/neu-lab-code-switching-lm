@@ -153,9 +153,14 @@ def test_validation_summary_default_is_all_not_validated(tmp_path):
     # One validation decision per row; all not_validated, none validated.
     assert val.n_decisions == proj.n_rows == 3
     assert val.decisions_by_validated_status == {"validated": 0, "not_validated": 3}
-    assert val.decisions_by_validation_method == {"explicit_override": 0, "not_validated": 3}
+    assert val.decisions_by_validation_method == {
+        "explicit_override": 0,
+        "lexicon_exact_match": 0,
+        "not_validated": 3,
+    }
     assert val.decisions_by_reason_code == {
         "explicit_source_validation": 0,
+        "lexicon_expected_only": 0,
         "not_validated": 3,
     }
     # Clean stays zero and no condition candidates appear.

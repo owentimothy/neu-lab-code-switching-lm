@@ -34,6 +34,13 @@ ever enabled. It is a contract for the future validator, not an implementation.
   controlled, opt-in signal for **tests / future controlled use only**. There is
   **no real language identification** yet, and the real-data script never calls
   the explicit path.
+- A **synthetic-only deterministic lexicon-validation scaffold**
+  (`src/cslm/data/callhome_lexicon_validation.py`) now exists as a first candidate
+  method (allowed signal: deterministic lexicon-based validation). It validates
+  against **caller-provided** lexicons only — it loads no real lexical resources
+  and hardcodes no real vocabulary — and it is **not** wired into the real-data
+  script. It therefore does not change real CALLHOME behavior; `clean` stays zero.
+  Enabling it for real data still requires the review gates below.
 
 ## Why source validation is needed
 Expected source language comes from the CALLHOME **directory label** (`eng` /

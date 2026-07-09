@@ -17,6 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 from cslm.data.callhome_source_validation import (
+    _POSITIVE_METHOD_REQUIRED_REASON,
     VALIDATION_METHODS,
     VALIDATION_REASON_CODES,
     CallhomeSourceValidationDecision,
@@ -26,9 +27,14 @@ from cslm.data.callhome_source_validation import (
 # frozenset order is not stable across runs. Method/reason orders are asserted
 # to cover the authoritative frozensets so drift is caught at import time.
 VALIDATED_STATUS_ORDER: tuple[str, ...] = ("validated", "not_validated")
-VALIDATION_METHOD_ORDER: tuple[str, ...] = ("explicit_override", "not_validated")
+VALIDATION_METHOD_ORDER: tuple[str, ...] = (
+    "explicit_override",
+    "lexicon_exact_match",
+    "not_validated",
+)
 VALIDATION_REASON_CODE_ORDER: tuple[str, ...] = (
     "explicit_source_validation",
+    "lexicon_expected_only",
     "not_validated",
 )
 
@@ -52,28 +58,29 @@ def _check_decision_invariants(
         unknown = set(decision.reason_codes) - VALIDATION_REASON_CODES
         if unknown:
             raise ValueError(f"unknown validation reason codes: {sorted(unknown)}")
-        # Boolean, method, and reason codes must agree (guards mutated decisions).
+        # Boolean, method, and reason codes must agree *exactly* (guards mutated
+        # decisions). Mirrors the decision class: a singleton reason list rejects
+        # extra/mixed positive reasons, a stray ``not_validated``, and duplicates.
         if decision.is_validated:
-            if decision.validation_method != "explicit_override":
+            if decision.validation_method not in _POSITIVE_METHOD_REQUIRED_REASON:
                 raise ValueError(
-                    "is_validated=True requires validation_method 'explicit_override'"
+                    "is_validated=True requires a positive validation_method "
+                    f"(one of {sorted(_POSITIVE_METHOD_REQUIRED_REASON)})"
                 )
-            if "explicit_source_validation" not in decision.reason_codes:
+            required_reason = _POSITIVE_METHOD_REQUIRED_REASON[decision.validation_method]
+            if decision.reason_codes != [required_reason]:
                 raise ValueError(
-                    "is_validated=True requires reason code 'explicit_source_validation'"
+                    f"is_validated=True with method {decision.validation_method!r} requires "
+                    f"reason_codes == [{required_reason!r}]"
                 )
-            if "not_validated" in decision.reason_codes:
-                raise ValueError("is_validated=True must not include reason 'not_validated'")
         else:
             if decision.validation_method != "not_validated":
                 raise ValueError(
                     "is_validated=False requires validation_method 'not_validated'"
                 )
-            if "not_validated" not in decision.reason_codes:
-                raise ValueError("is_validated=False requires reason code 'not_validated'")
-            if "explicit_source_validation" in decision.reason_codes:
+            if decision.reason_codes != ["not_validated"]:
                 raise ValueError(
-                    "is_validated=False must not include reason 'explicit_source_validation'"
+                    "is_validated=False requires reason_codes == ['not_validated']"
                 )
 
 
