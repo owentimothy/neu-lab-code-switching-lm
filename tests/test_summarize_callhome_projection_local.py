@@ -126,17 +126,67 @@ def test_transcript_level_warning_counted_as_parser_warning(tmp_path):
         assert token not in text, token
 
 
-def test_collect_returns_rows_and_decisions(tmp_path):
+def test_collect_returns_rows_screening_and_validation_decisions(tmp_path):
     # A normal lexical file yields one row + one needs_review/default_unscreened
-    # decision through the script's collect function.
+    # screening decision + one not_validated validation decision.
     mod = _load_script()
     root = tmp_path / "callhome"
     _write(root, "eng", "synth_ok.cha", _cha(["syn_alpha ."]))
-    rows, decisions = mod.collect_rows_and_decisions(root)
+    rows, decisions, validation_decisions = mod.collect_rows_and_decisions(root)
     assert len(rows) == 1
     assert len(decisions) == 1
     assert decisions[0].outcome == "needs_review"
     assert decisions[0].reason_codes == ["default_unscreened"]
+    # One validation decision per row, and it is the default (not validated).
+    assert len(validation_decisions) == 1
+    assert validation_decisions[0].is_validated is False
+    assert validation_decisions[0].validation_method == "not_validated"
+
+
+def test_validation_summary_default_is_all_not_validated(tmp_path):
+    mod = _load_script()
+    root = tmp_path / "callhome"
+    _write(root, "eng", "synth_secretfile_eng_0.cha", _cha(["syn_alpha .", "syn_beta ."]))
+    _write(root, "spa", "synth_secretfile_spa_0.cha", _cha(["syn_gamma ."], lang="spa"))
+    summaries = mod.summarize_local(root)
+    val, proj = summaries.validation, summaries.projection
+    # One validation decision per row; all not_validated, none validated.
+    assert val.n_decisions == proj.n_rows == 3
+    assert val.decisions_by_validated_status == {"validated": 0, "not_validated": 3}
+    assert val.decisions_by_validation_method == {"explicit_override": 0, "not_validated": 3}
+    assert val.decisions_by_reason_code == {
+        "explicit_source_validation": 0,
+        "not_validated": 3,
+    }
+    # Clean stays zero and no condition candidates appear.
+    assert proj.rows_by_screening_outcome["clean"] == 0
+    assert proj.rows_by_condition_candidate == {
+        "EnglishMono": 0,
+        "SpanishMono": 0,
+        "MonoCont": 0,
+    }
+
+
+def test_validation_summary_section_printed_and_aggregate_only(tmp_path):
+    mod = _load_script()
+    root = tmp_path / "callhome"
+    _write(root, "eng", "synth_secretfile_eng_0.cha", _cha(["syn_alpha syn_beta .", "."]))
+    lines = mod.format_summary_lines(mod.summarize_local(root))
+    text = _all_strings_in_lines(lines)
+    assert "== validation summary ==" in text
+    assert "decisions by validated status:" in text
+    assert "decisions by validation method:" in text
+    for token in _FORBIDDEN_TOKENS:
+        assert token not in text, token
+    for field_name in (
+        "speaker_ref",
+        "source_file_ref",
+        "raw_text",
+        "tokens",
+        "notes",
+        "expected_language",
+    ):
+        assert field_name not in text, field_name
 
 
 def test_default_validation_keeps_clean_zero(tmp_path):
