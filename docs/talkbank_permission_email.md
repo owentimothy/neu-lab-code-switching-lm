@@ -47,12 +47,12 @@ C→B upgrade path this email is meant to trigger.
 
 > **Subject:** Permission question — committing aggregate (non-transcript)
 > statistics and non-commercial MLM research training for CALLHOME (CABank)
->
+
 > Dear TalkBank / CABank team,
 >
-> I am a researcher at **TODO (institution / lab)** working on a
+> I am a researcher at the Neuroscience of Multilingualism Lab at NYU working on a
 > **non-commercial academic** study of bilingual and code-switched syntax using
-> masked language models. We are using CABank corpora — **CALLHOME American
+> masked language models. We are hoping to use the CABank corpora — **CALLHOME American
 > English** and **CALLHOME Spanish** for monolingual conditions, and **Bangor
 > Miami** for code-switched data — under CC BY-NC-SA 3.0, with full citation of
 > the corpus-specific references and the TalkBank / CABank database citation.
@@ -89,8 +89,8 @@ C→B upgrade path this email is meant to trigger.
 > Thank you for maintaining these resources and for your time.
 >
 > Best regards,
-> **TODO (name)**
-> **TODO (role, institution, contact)**
+> Timothy Owen
+> Research Assistant, NEU Lab @ NYU | tlo5892@nyu.edu
 
 ## What we already checked (so we don't ask redundantly)
 Per `docs/callhome_ground_rules.md` (official TalkBank policy pages, checked
@@ -120,6 +120,6 @@ Per `docs/callhome_ground_rules.md` (official TalkBank policy pages, checked
   and update the Decision (C → B) if granted.
 - Fill in the still-open **TODO** citation strings (exact CALLHOME English /
   Spanish references, Spanish DOI `10.21415/T51K54`, TalkBank/CABank database
-  citation) confirmed against the corpus manuals.
+  citn) confirmed against the corpus manuals.
 - Only then add a scoped `.gitignore`/commit path for local vs. committable
-  CALLHOME-derived aggregates.
+  CALLHOM-derived aggregates.
