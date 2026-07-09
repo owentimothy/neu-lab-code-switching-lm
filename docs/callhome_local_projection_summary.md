@@ -10,19 +10,24 @@
 
 ## What this adds
 - `scripts/summarize_callhome_projection_local.py` — a **local-only** CLI that
-  runs the existing pipeline (`callhome_chat` parse → `callhome_project` project
-  → `callhome_projection_diagnostics` summarize) over the gitignored
+  runs the full pipeline (`callhome_chat` parse → `callhome_screening_heuristics`
+  screen → `callhome_project` project → `callhome_projection_diagnostics` +
+  `callhome_screening_diagnostics` summarize) over the gitignored
   `data/raw/callhome/{eng,spa}/` folders and prints **aggregate counts only**:
-  total rows, rows by source, rows by screening outcome, rows by condition
-  candidate, `n_needs_review`, and `n_blocked_from_all_conditions`.
+  a projection summary (total rows, rows by source, by screening outcome, by
+  condition candidate, `n_needs_review`, `n_blocked_from_all_conditions`) and a
+  screening summary (decisions by outcome, decisions by reason code).
 - `tests/test_summarize_callhome_projection_local.py` — **synthetic-only** tests
   over temporary fake CALLHOME directories; no real files are read.
 
-## Screening default
-Real monolingual screening (`docs/callhome_monolingual_screening.md`) is not
-implemented yet, so **every projected row defaults to `needs_review`** and is
-admitted to no condition. Tests may inject a synthetic screening function to
-exercise the clean path; the CLI itself always uses the conservative default.
+## Screening behavior
+Screening is **conservative structural-only** (parser warnings and
+empty/non-lexical rows); it is **not** real language ID
+(`docs/callhome_monolingual_screening.md`). Consequently the CLI never
+auto-marks a row `clean`: lexical rows stay `needs_review` / `default_unscreened`
+(admitted to no condition), punctuation-/residue-only rows are `excluded` /
+`empty_or_nonlexical`. The `clean` path requires an explicit override and is
+exercised only in unit tests, never by this CLI.
 
 ## Safety design
 - Output contains **no** utterance text, tokens, header values, participant
@@ -40,7 +45,8 @@ exercise the clean path; the CLI itself always uses the conservative default.
 python scripts/summarize_callhome_projection_local.py
 python scripts/summarize_callhome_projection_local.py --root path/to/callhome
 ```
-A missing root or missing language directory reports **zero counts** rather than
-erroring.
+Missing roots or language directories are handled without error; missing roots
+report **zero counts**, while available language directories are summarized
+normally.
 
 (No real projection results are reproduced in this note, by design.)

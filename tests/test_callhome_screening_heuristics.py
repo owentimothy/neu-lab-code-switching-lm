@@ -166,6 +166,36 @@ def test_build_decisions_by_turn_applies_overrides():
     assert decisions[1].outcome == "excluded"
 
 
+def test_transcript_level_warning_folds_into_every_turn():
+    # A warning recorded on the transcript (not on any utterance) must still make
+    # every turn's decision needs_review / parser_warning.
+    transcript = _transcript()
+    assert all(not u.parser_warnings for u in transcript.utterances)  # utterance-clean
+    transcript.parser_warnings.append("synthetic transcript-level warning")
+    decisions = build_screening_decisions_by_turn(transcript, language_label="eng")
+    # Lexical turns (0, 2) become needs_review / parser_warning.
+    for turn in (0, 2):
+        assert decisions[turn].outcome == "needs_review"
+        assert "parser_warning" in decisions[turn].reason_codes
+    # The punctuation-only turn stays excluded, but records parser_warning too.
+    assert decisions[1].outcome == "excluded"
+    assert "empty_or_nonlexical" in decisions[1].reason_codes
+    assert "parser_warning" in decisions[1].reason_codes
+
+
+def test_transcript_level_warning_overrides_clean():
+    transcript = _transcript()
+    transcript.parser_warnings.append("synthetic transcript-level warning")
+    decisions = build_screening_decisions_by_turn(
+        transcript,
+        language_label="eng",
+        overrides_by_turn={0: {"explicit_clean_override": True}},
+    )
+    # Clean override cannot win over a parser warning.
+    assert decisions[0].outcome == "needs_review"
+    assert "parser_warning" in decisions[0].reason_codes
+
+
 def test_build_outcomes_by_turn_returns_strings():
     outcomes = build_screening_outcomes_by_turn(
         _transcript(),

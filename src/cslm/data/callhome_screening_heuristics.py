@@ -91,6 +91,7 @@ def screen_utterance_with_heuristics(
     language_label: str,
     explicit_clean_override: bool = False,
     has_possible_foreign_material: bool = False,
+    has_parser_warning: bool = False,
 ) -> CallhomeScreeningDecision:
     """Infer structural signals, overlay controlled signals, and screen.
 
@@ -98,12 +99,17 @@ def screen_utterance_with_heuristics(
     by the caller (tests / future controlled use); they are overlaid on top of
     the inferred structural signals before delegating to :func:`screen_utterance`,
     which keeps the conservative precedence (exclude > review > clean > default).
+
+    ``has_parser_warning`` is an extra overlay (OR-ed with the utterance's own
+    recorded warnings) so callers can fold in a **transcript-level** warning that
+    is not attached to any single utterance. It is a boolean only — no warning
+    text is passed, stored, or printed.
     """
     signals = infer_screening_signals(utterance, language_label=language_label)
     return screen_utterance(
         utterance,
         language_label=language_label,
-        has_parser_warning=signals.has_parser_warning,
+        has_parser_warning=has_parser_warning or signals.has_parser_warning,
         has_possible_foreign_material=(
             has_possible_foreign_material or signals.has_possible_foreign_material
         ),
@@ -123,8 +129,15 @@ def build_screening_decisions_by_turn(
     ``overrides_by_turn`` optionally maps a turn index to the controlled overlay
     signals (``explicit_clean_override`` / ``has_possible_foreign_material``).
     Only those two keys are read from each overlay.
+
+    A **transcript-level** parser warning (``transcript.parser_warnings``
+    non-empty) is folded into every turn's decision as ``has_parser_warning``,
+    since such warnings are recorded on the transcript rather than on individual
+    utterances and would otherwise be undercounted. Only the boolean presence is
+    used — no warning text is read, stored, or printed.
     """
     overrides_by_turn = overrides_by_turn or {}
+    transcript_has_warning = bool(transcript.parser_warnings)
     decisions: dict[int, CallhomeScreeningDecision] = {}
     for utterance in transcript.utterances:
         overlay = overrides_by_turn.get(utterance.turn_index, {})
@@ -135,6 +148,7 @@ def build_screening_decisions_by_turn(
             has_possible_foreign_material=overlay.get(
                 "has_possible_foreign_material", False
             ),
+            has_parser_warning=transcript_has_warning,
         )
     return decisions
 
