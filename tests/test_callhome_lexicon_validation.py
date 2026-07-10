@@ -170,3 +170,150 @@ def test_validator_not_imported_or_called_by_local_script():
     source = _SCRIPT_PATH.read_text(encoding="utf-8")
     assert "callhome_lexicon_validation" not in source
     assert "validate_utterance_against_lexicons" not in source
+
+
+# --- Normalization / matching policy tests -----------------------------------
+# (docs/callhome_lexicon_normalization_policy.md). Synthetic lexicons/tokens only.
+
+
+def _validates(text, expected_language, lex):
+    return validate_utterance_against_lexicons(
+        _utt(text), expected_language=expected_language, lexicons_by_language=lex
+    ).is_validated
+
+
+def test_same_normalization_applied_to_tokens_and_lexicon_entries():
+    # Lexicon entry carries case + surrounding punctuation/space; the token is a
+    # plain lowercase word. Identical normalization on both sides makes them match.
+    lex = {"eng": {"  Hello!  "}, "spa": set()}
+    assert _validates("hello .", "eng", lex) is True
+
+
+def test_case_folding_uppercase_token_matches_lowercase_entry():
+    assert _validates("HELLO .", "eng", {"eng": {"hello"}, "spa": set()}) is True
+
+
+def test_case_folding_lowercase_token_matches_uppercase_entry():
+    assert _validates("hello .", "eng", {"eng": {"HELLO"}, "spa": set()}) is True
+
+
+def test_nfc_normalization_token_decomposed_matches_precomposed_entry():
+    # 'café' typed with a combining acute accent must match a precomposed entry.
+    assert _validates("café .", "spa", {"spa": {"café"}, "eng": set()}) is True
+
+
+def test_nfc_normalization_applied_to_lexicon_entries_too():
+    # ...and the reverse: precomposed token vs decomposed lexicon entry.
+    assert _validates("café .", "spa", {"spa": {"café"}, "eng": set()}) is True
+
+
+def test_leading_trailing_punctuation_stripped():
+    # Surrounding quotes/punctuation are trimmed; the core token still matches.
+    assert _validates('"hello!" .', "eng", {"eng": {"hello"}, "spa": set()}) is True
+
+
+def test_spanish_inverted_punctuation_normalizes():
+    # '¿qué?' -> 'qué' (leading ¿ and trailing ? both stripped).
+    assert _validates("¿qué? .", "spa", {"spa": {"qué"}, "eng": set()}) is True
+
+
+def test_spanish_accents_preserved_si_without_accent_does_not_validate():
+    # Expected lexicon has only accented 'sí'; unaccented 'si' must NOT validate.
+    assert _validates("si .", "spa", {"spa": {"sí"}, "eng": set()}) is False
+
+
+def test_spanish_accents_preserved_accented_form_validates():
+    assert _validates("sí .", "spa", {"spa": {"sí"}, "eng": set()}) is True
+
+
+def test_english_contraction_internal_apostrophe_preserved_validates():
+    # Current policy KEEPS internal apostrophes, so an exact contraction entry
+    # validates as a single token.
+    assert _validates("don't .", "eng", {"eng": {"don't"}, "spa": set()}) is True
+
+
+def test_english_contraction_not_split_conservative_block():
+    # 'don't' is one token; it does not validate against split 'do'/'not'.
+    assert _validates("don't .", "eng", {"eng": {"do", "not"}, "spa": set()}) is False
+
+
+def test_possessive_kept_whole_validates_with_exact_entry():
+    assert _validates("dog's .", "eng", {"eng": {"dog's"}, "spa": set()}) is True
+
+
+def test_possessive_kept_whole_conservative_block_without_exact_entry():
+    # 'dog's' is not split to 'dog'; conservative behavior blocks validation.
+    assert _validates("dog's .", "eng", {"eng": {"dog"}, "spa": set()}) is False
+
+
+def test_hyphen_kept_whole_validates_with_exact_entry():
+    assert _validates("co-op .", "eng", {"eng": {"co-op"}, "spa": set()}) is True
+
+
+def test_hyphen_kept_whole_conservative_block_without_exact_entry():
+    # 'co-op' is not split to 'co'/'op'; conservative behavior blocks validation.
+    assert _validates("co-op .", "eng", {"eng": {"co", "op"}, "spa": set()}) is False
+
+
+def test_residue_markers_are_not_lexical_evidence_only_residue_blocks():
+    # A row of only residue / non-lexical markers has no retained lexical tokens.
+    assert _validates("xxx 0 &laugh [note] (.) .", "eng", _LEX) is False
+
+
+def test_residue_ignored_but_valid_token_still_validates():
+    # Residue is skipped; the one real expected-language token still validates.
+    assert _validates("xxx syn_e1 0 &laugh .", "eng", _LEX) is True
+
+
+def test_unknown_token_blocks_validation():
+    assert _validates("syn_e1 syn_unknown .", "eng", _LEX) is False
+
+
+def test_ambiguous_cross_lexicon_token_blocks_validation():
+    assert _validates("syn_both .", "eng", _LEX) is False
+
+
+def test_non_expected_language_token_blocks_validation():
+    assert _validates("syn_e1 syn_s1 .", "eng", _LEX) is False
+
+
+def test_empty_or_no_retained_token_row_does_not_validate():
+    assert _validates("   ", "eng", _LEX) is False
+    assert _validates(". ? !", "eng", _LEX) is False
+
+
+def test_expected_language_only_tokens_validate():
+    assert _validates("syn_e1 syn_e2 .", "eng", _LEX) is True
+
+
+def test_lexicon_source_sets_not_modified_in_place():
+    eng = {"HELLO", "  World!  "}
+    spa = {"hola"}
+    lex = {"eng": set(eng), "spa": set(spa)}
+    validate_utterance_against_lexicons(
+        _utt("hello ."), expected_language="eng", lexicons_by_language=lex
+    )
+    # The caller-provided sets are untouched (normalization builds new sets).
+    assert lex["eng"] == eng
+    assert lex["spa"] == spa
+
+
+def test_positive_decision_uses_lexicon_method_and_reason():
+    d = validate_utterance_against_lexicons(
+        _utt("syn_e1 ."), expected_language="eng", lexicons_by_language=_LEX
+    )
+    assert d.validation_method == "lexicon_exact_match"
+    assert d.reason_codes == ["lexicon_expected_only"]
+
+
+def test_no_transcript_token_strings_in_returned_decision():
+    # A distinctive synthetic token must not appear anywhere in the decision.
+    d = validate_utterance_against_lexicons(
+        _utt("zzsecrettoken ."),
+        expected_language="eng",
+        lexicons_by_language={"eng": {"zzsecrettoken"}, "spa": set()},
+    )
+    strings = _all_strings([d.expected_language, d.validation_method, d.reason_codes])
+    assert all("zzsecrettoken" not in s for s in strings)
+    for attr in ("notes", "text", "tokens", "raw_text"):
+        assert not hasattr(d, attr)
