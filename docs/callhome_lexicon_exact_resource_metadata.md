@@ -37,8 +37,11 @@ An authorized read-only pass against official upstream sources **resolved** the
 following that were previously `TBD`:
 
 - **English exact files** — `en/en_US.dic`, `en/en_US.aff` (UPSTREAM-VERIFIED).
-- **English license/notice files** — `en/license.txt`, `en/WordNet_license.txt`,
-  plus the notices carried in `en/README_en_US.txt` (UPSTREAM-VERIFIED).
+- **English notice/license files** — the SCOWL copyright + permission notice and
+  the component/source notices are carried in `en/README_en_US.txt`; the separate
+  WordNet 2.1 / Princeton notice is in `en/WordNet_license.txt`; `en/license.txt`
+  is the **GNU GPL v2 text** (present in the package, but NOT the SCOWL/permission
+  notice — see CORRECTION below) (UPSTREAM-VERIFIED).
 - **English version + date** — README states "Version 2020.12.07", released
   Mon Dec 7 2020 (UPSTREAM-VERIFIED), with a pin caveat (below).
 - **English encoding** — `SET UTF-8` (UPSTREAM-VERIFIED).
@@ -75,8 +78,36 @@ exact correspondence therefore stays unresolved (below).
 `TBD / NOT YET VERIFIED` (no approved locale policy; not chosen here), the English
 content-vs-version **immutable pin** carries a caveat (below), the
 **RLA-ES v2.9 ↔ inspected LibreOffice Spanish package correspondence** is
-`TBD / NOT YET VERIFIED` (evidence indicates the package is RLA v2.6-era), and the
+`TBD / NOT YET VERIFIED` (evidence indicates the package is RLA v2.6-era), the
+**package role / applicability of the English `en/license.txt` GPLv2 text** to
+`en_US.dic`/`en_US.aff` is `TBD / NOT YET VERIFIED` (see CORRECTION below), and the
 **redistribution legality** is `not independently legally determined`.
+
+## CORRECTION — English en/license.txt content and applicability
+A prior revision of this record incorrectly characterized `en/license.txt` as the
+"SCOWL/combined permission notice." That characterization was **factually wrong**.
+An authorized, read-only reverification at the already-selected immutable snapshot
+`38d96a4d54ec3449cf7f28cddae1fce32e2b15a7` established:
+
+- `en/license.txt` is the **GNU General Public License, Version 2 (June 1991)**
+  text (Free Software Foundation copyright). It is **present** in the pinned
+  package, but it is **NOT** the SCOWL notice and **NOT** a "combined permission
+  notice."
+- The **SCOWL copyright + permission notice** and the enumerated **component/source
+  notices** (Ispell, WordNet, VarCon, 12Dicts, ENABLE, UKACD, Moby/MWords, etc.)
+  are carried in **`en/README_en_US.txt`**.
+- The separate **WordNet 2.1 / Princeton University** notice is a distinct
+  component notice in **`en/WordNet_license.txt`**.
+
+The error is corrected throughout this record. **No conclusion is drawn that the
+dictionary itself (`en_US.dic` / `en_US.aff`) or the complete English artifact is
+governed by GPLv2**: the mere presence of a GPLv2 text file does not, by itself,
+establish the license of the `.dic`/`.aff` files. The **file-specific applicability
+of `en/license.txt` to the selected dictionary artifact remains
+`TBD / NOT YET VERIFIED`**, and the resulting **English license-and-notice pathway
+remains insufficient for approval** (`NO / NOT APPROVED`). This correction changes
+**no** approval state and does **not** reopen the English resource-selection
+decision, which fixed resource identity + snapshot only, not licensing or use.
 
 ## Scope
 - Covers the **two currently documented candidate families only**: the **English**
@@ -121,8 +152,9 @@ the README version string reads `2020.12.07`).
 | LibreOffice inspection HEAD (snapshot) | `LibreOffice/dictionaries` master | branch HEAD | `38d96a4d54ec3449cf7f28cddae1fce32e2b15a7` (2026-07-10) | UPSTREAM-VERIFIED (mutable branch) |
 | English `en/` tree stability | `LibreOffice/dictionaries` | last-touch commit for `en/` | `e7f163feb2beaf526135132d8716e68e19d2716e` (2025-03-31) | UPSTREAM-VERIFIED |
 | English files `en_US.dic` / `en_US.aff` | `LibreOffice/dictionaries` `en/` | repo dir listing; last-touch `4fa94195…` (2021-05-12) | commit sha (last-touch, not a version tag) | UPSTREAM-VERIFIED |
-| English README `README_en_US.txt` | `LibreOffice/dictionaries` `en/` | repo file | (within `en/` tree `e7f163fe…`) | UPSTREAM-VERIFIED |
-| English license files `license.txt`, `WordNet_license.txt` | `LibreOffice/dictionaries` `en/` | repo files | (within `en/` tree `e7f163fe…`) | UPSTREAM-VERIFIED |
+| English README `README_en_US.txt` (carries the SCOWL copyright + permission notice and the component/source notices) | `LibreOffice/dictionaries` `en/` | repo file | (within `en/` tree `e7f163fe…`) | UPSTREAM-VERIFIED |
+| English `en/license.txt` = **GNU GPL v2 text** (NOT the SCOWL/permission notice; applicability to the `.dic`/`.aff` unresolved) | `LibreOffice/dictionaries` `en/` | repo file | (within `en/` tree `e7f163fe…`) | UPSTREAM-VERIFIED (content); applicability TBD / NOT YET VERIFIED |
+| English `en/WordNet_license.txt` = separate WordNet 2.1 / Princeton notice | `LibreOffice/dictionaries` `en/` | repo file | (within `en/` tree `e7f163fe…`) | UPSTREAM-VERIFIED |
 | English version `2020.12.07`, released Dec 7 2020 | `en/README_en_US.txt` | repo file (README) | version string only (see caveat) | UPSTREAM-VERIFIED |
 | English SCOWL size 60; en_US/en_CA/en_AU official | `en/README_en_US.txt` | repo file (README) | — | UPSTREAM-VERIFIED |
 | English encoding `SET UTF-8` | `en/README_en_US.txt` | repo file (README) | — | UPSTREAM-VERIFIED |
@@ -175,7 +207,9 @@ Carried in from `docs/callhome_lexicon_local_resource_approval_record.md`; the
 
 ## English Exact Resource Metadata
 Labels: `UPSTREAM-VERIFIED` / `REPOSITORY-RECORDED` / `TBD / NOT YET VERIFIED`.
-Every approval field is `NO / NOT APPROVED`.
+Every operational approval field remains `NO / NOT APPROVED`. The separate
+English resource-selection decision approves selection for continued governance
+only; it does not approve operational adoption or use.
 
 ```
 - Resource ID: english_en_us_hunspell
@@ -195,9 +229,12 @@ Every approval field is `NO / NOT APPROVED`.
 - Exact `.dic` file: en_US.dic [UPSTREAM-VERIFIED: en/ listing]
 - Exact `.aff` file: en_US.aff [UPSTREAM-VERIFIED: en/ listing]
 - Exact README/metadata file: README_en_US.txt [UPSTREAM-VERIFIED]
-- Exact license/notice files: en/license.txt, en/WordNet_license.txt, plus the
-  SCOWL copyright + permission notice carried in en/README_en_US.txt
-  [UPSTREAM-VERIFIED: en/ listing + README]
+- Exact notice/license files: the SCOWL copyright + permission notice and the
+  component/source notices are carried in en/README_en_US.txt; the separate
+  WordNet 2.1 / Princeton notice is in en/WordNet_license.txt; en/license.txt is
+  the GNU GPL v2 text (present in the package; NOT the SCOWL/permission notice; its
+  applicability to en_US.dic/en_US.aff is TBD / NOT YET VERIFIED — see CORRECTION)
+  [UPSTREAM-VERIFIED: en/ listing + README + read-only file inspection]
 - Provenance/components: SCOWL size 60 (standard); en_US/en_CA/en_AU are the
   official Hunspell dictionaries; components named upstream include Ispell,
   WordNet, VarCon, 12Dicts, ENABLE, UKACD, MWords [UPSTREAM-VERIFIED: README]
@@ -216,9 +253,11 @@ Every approval field is `NO / NOT APPROVED`.
 - `.dic` consumable by current loader: technically yes in raw-entry mode (base
   forms only; no affix expansion → more `not_validated`, the safe direction).
   NOT an approval to load
-- Redistribution status: TBD / NOT YET VERIFIED — upstream permission notice
-  appears to allow redistribution if notices are preserved, but this is
-  `not independently legally determined`
+- Redistribution status: TBD / NOT YET VERIFIED — the SCOWL permission notice (in
+  en/README_en_US.txt) appears to allow redistribution if notices are preserved,
+  but redistribution must NOT be inferred from that notice alone while the
+  applicability of the GPLv2 en/license.txt to the dictionary artifact is
+  unresolved; this is `not independently legally determined`
 - Local-only status: local-only remains the safest default [REPOSITORY-RECORDED]
 - Approval status: candidate adoption / placement / loader use / dry run / clean
   promotion / condition JSONL / training = NO / NOT APPROVED
@@ -319,9 +358,9 @@ listing/file this pass; otherwise `TBD / NOT YET VERIFIED`.
 | ---- | ------------------------ | ---------------------------- | --------- | ----- |
 | `.dic` | `en/en_US.dic` | yes (raw-entry mode) or a plain wordlist | UPSTREAM-VERIFIED | last-touch `4fa94195…` (2021-05-12); base forms only under current loader |
 | `.aff` | `en/en_US.aff` | no | UPSTREAM-VERIFIED | not read/expanded; declares `SET UTF-8` |
-| README | `en/README_en_US.txt` | no | UPSTREAM-VERIFIED | carries SCOWL copyright + permission notice |
-| license | `en/license.txt` | no | UPSTREAM-VERIFIED | SCOWL/combined permission notice |
-| notice | `en/WordNet_license.txt` | no | UPSTREAM-VERIFIED | WordNet component notice |
+| README | `en/README_en_US.txt` | no | UPSTREAM-VERIFIED | carries the SCOWL copyright + permission notice **and** the component/source notices (Ispell, WordNet, VarCon, 12Dicts, ENABLE, UKACD, Moby/MWords) |
+| license | `en/license.txt` | no | UPSTREAM-VERIFIED (content) | **GNU GPL v2 text** — NOT the SCOWL/permission notice; file-specific applicability to `en_US.dic`/`en_US.aff` = TBD / NOT YET VERIFIED (see CORRECTION) |
+| notice | `en/WordNet_license.txt` | no | UPSTREAM-VERIFIED | separate WordNet 2.1 / Princeton component notice |
 | release metadata | version `2020.12.07` in README; no per-dictionary tag | no | UPSTREAM-VERIFIED (with pin caveat) | last-touch ≠ version pin |
 
 ### Spanish — `LibreOffice/dictionaries` `es/` package (snapshot HEAD `38d96a4d…`; variant unselected)
@@ -335,16 +374,22 @@ listing/file this pass; otherwise `TBD / NOT YET VERIFIED`.
 | source release (separate) | `sbosio/rla-es` tag `v2.9` → `ea82c12…` (2025-01-02) | no | UPSTREAM-VERIFIED | SOURCE project pin; correspondence to this package = TBD |
 
 ## License Pathway Evidence
-- **License family identified** — `UPSTREAM-VERIFIED`, both. English: SCOWL
-  copyright + permission notice (Kevin Atkinson; combined public-domain / BSD-style
-  components), with `en/license.txt` and `en/WordNet_license.txt` present. Spanish:
-  triple disjunctive **GPLv3-or-later / LGPLv3-or-later / MPL 1.1-or-later** with a
-  free choice among them (thesaurus separately LGPLv2.1), per `es/LICENSE.md`.
+- **License and notice materials identified** — `UPSTREAM-VERIFIED`, both.
+  English: the SCOWL copyright + permission notice and multiple component/source
+  notices are carried in `en/README_en_US.txt`; the separate WordNet notice is in
+  `en/WordNet_license.txt`; and `en/license.txt` contains the **GNU GPL v2 text**.
+  The package role and file-specific applicability of that GPLv2 text remain
+  `TBD / NOT YET VERIFIED` (see CORRECTION). Spanish: triple disjunctive
+  **GPLv3-or-later / LGPLv3-or-later / MPL 1.1-or-later** with a free choice among
+  them (thesaurus separately LGPLv2.1), per `es/LICENSE.md`.
 - **Exact file-specific applicability verified** — **no**
   (`not independently legally determined`).
 - **Pathway choice required** — Spanish requires selecting one of the three
-  alternatives; English requires confirming the exact combined component-notice
-  obligations from `en/license.txt` + README. Status: `TBD / NOT YET VERIFIED`.
+  alternatives; English requires (a) enumerating the exact SCOWL + component-notice
+  obligations carried in `en/README_en_US.txt` and the WordNet notice in
+  `en/WordNet_license.txt`, and (b) resolving what the GPLv2 `en/license.txt`
+  governs and whether/how it applies to `en_US.dic`/`en_US.aff`. Status:
+  `TBD / NOT YET VERIFIED`.
 - **Pathway choice approved** — `NO / NOT APPROVED`.
 - **Redistribution implications** — depend on the confirmed/selected pathway and
   on preserving required notices; not determined here (`TBD / NOT YET VERIFIED`).
@@ -354,9 +399,12 @@ listing/file this pass; otherwise `TBD / NOT YET VERIFIED`.
 No legal conclusion is drawn beyond what the official upstream sources state.
 
 ## Notice and Attribution Evidence
-- **Exact upstream notice files** — English: `en/license.txt`,
-  `en/WordNet_license.txt`, and the SCOWL copyright + permission notice within
-  `en/README_en_US.txt` [UPSTREAM-VERIFIED]. Spanish: `es/LICENSE.md`,
+- **Exact upstream notice files** — English: the SCOWL copyright + permission
+  notice and the component/source notices are within `en/README_en_US.txt`, and the
+  separate WordNet 2.1 / Princeton notice is in `en/WordNet_license.txt`
+  [UPSTREAM-VERIFIED]. (`en/license.txt` contains GPLv2 text rather than the SCOWL
+  permission notice described above; what artifact or package component it governs
+  remains `TBD / NOT YET VERIFIED` — see CORRECTION.) Spanish: `es/LICENSE.md`,
   `es/GPLv3.txt`, `es/LGPLv2.1.txt`, `es/LGPLv3.txt`, and
   `es/README_hunspell_es.txt` [UPSTREAM-VERIFIED].
 - **Attribution names/projects** — English: SCOWL / Kevin Atkinson, with named
@@ -370,9 +418,11 @@ No legal conclusion is drawn beyond what the official upstream sources state.
   not exercised here.
 - **Repository notice text may be committed** — `TBD / NOT YET VERIFIED`; not in
   this branch. No upstream notice files are added and no long notice text is pasted.
-- **Unresolved obligations** — the exact English combined-license obligations from
-  `en/license.txt`; the Spanish selected-pathway notice requirements; the location
-  of the future verbatim appendix.
+- **Unresolved obligations** — what the GPLv2 `en/license.txt` governs and how, if
+  at all, it applies to `en_US.dic`/`en_US.aff` or their distribution; the exact
+  English SCOWL + component-notice obligations to enumerate from
+  `en/README_en_US.txt` and `en/WordNet_license.txt`; the Spanish selected-pathway
+  notice requirements; the location of the future verbatim appendix.
 
 ## Redistribution and Local-Only Status
 Each question separated; unresolved items stay `TBD / NOT YET VERIFIED`:
@@ -446,8 +496,8 @@ remains `TBD / NOT YET VERIFIED` and `NO / NOT APPROVED`.
 | Spanish regional variant | no approved locale-selection rule | approved corpus-design/research policy (no CALLHOME-derived evidence) | locale-selection approval | decide + approve a locale policy |
 | RLA-ES v2.9 ↔ inspected LibreOffice `es/` package correspondence | package README last-touch indicates RLA v2.6, not v2.9 | official evidence tying the LibreOffice `es/` snapshot to a specific RLA-ES release | placement approval | verify the package's RLA version at a pinned commit |
 | Spanish chosen-variant exact file + its encoding | depends on the unselected variant; only es_ES encoding checked | that variant's `.dic`/`.aff` + `SET` line at a pin | placement approval | verify after locale approval |
-| English content-vs-version pin | no per-dictionary tag; `en_US.dic` last changed 2021-05-12, after the stated `2020.12.07` | a chosen immutable commit sha + a note that the version string ≠ tag | placement approval | pin a specific commit sha |
-| final license pathway | Spanish disjunctive choice unmade; English exact combined obligations not enumerated | pathway selection + `en/license.txt` obligation read | placement approval | record selected pathway + obligations |
+| final license pathway | Spanish disjunctive choice unmade; English SCOWL + component-notice obligations not yet enumerated | Spanish pathway selection; enumerate the README/WordNet notices | placement approval | record selected pathway + obligations |
+| English `en/license.txt` (GPLv2) applicability | the file is verified GPLv2 text, but its package role is unverified; a GPLv2 file does not by itself make the `.dic`/`.aff` GPLv2 | authoritative evidence on what `en/license.txt` governs at the pinned snapshot and how, if at all, it applies to `en_US.dic`/`en_US.aff` or their distribution | license-and-notice + placement approval | verify the package role before any license-and-notice pathway approval; do not infer |
 | redistribution determination | `not independently legally determined` | legal/notice review | placement approval | conservative local-only until determined |
 | verbatim notice capture + appendix location | deferred to a future appendix | selected variant/pathway + verbatim notices | placement approval | create appendix when files chosen |
 
@@ -496,6 +546,7 @@ Work must **stop** if:
 - [ ] Spanish locale status is represented accurately (unresolved; not selected)
 - [ ] Spanish encoding claim is scoped to es_ES only
 - [ ] license claims are conservative (`UPSTREAM-VERIFIED` statements, not legal determinations)
+- [ ] `en/license.txt` is described as GNU GPL v2 text (NOT the SCOWL/permission notice), with its applicability to `en_US.dic`/`en_US.aff` left `TBD / NOT YET VERIFIED`
 - [ ] notice claims are conservative (files identified; verbatim not captured)
 - [ ] loader notes are descriptive only (no loader use approved)
 - [ ] all operational approvals remain `NO / NOT APPROVED`
@@ -505,10 +556,12 @@ Work must **stop** if:
 The next step depends on the result of review:
 
 - **If exact metadata remains unresolved** (the Spanish locale, the RLA-ES↔package
-  correspondence, the English content pin, the license-pathway selection),
+  correspondence and the license-pathway selection),
   **revise this record in a future docs PR** as those are decided/verified.
 - **If exact files and license/notice pathways become sufficiently resolved**
-  (English is now largely verified; Spanish awaits a locale policy and a package
+  (English files/version/encoding are verified, but the `en/license.txt` GPLv2
+  applicability question below remains open, so the English license-and-notice
+  pathway is NOT yet sufficient; Spanish awaits a locale policy and a package
   correspondence check), **create a separate placement-approval decision PR** using
   `docs/callhome_lexicon_placement_approval_template.md`.
 - **Do not place resources automatically** after this branch.
@@ -518,7 +571,11 @@ The next step depends on the result of review:
   LibreOffice snapshot; Spanish source release, package variant-set, and license
   verified upstream) — with the RLA-ES source vs. LibreOffice package distinction
   made explicit.**
-- **No resource is approved.**
+- **`en/license.txt` is corrected to GNU GPL v2 text (previously mischaracterized
+  as the SCOWL/combined permission notice); its applicability to `en_US.dic`/
+  `en_US.aff` is `TBD / NOT YET VERIFIED`, so the English license-and-notice pathway
+  remains insufficient for approval (`NO / NOT APPROVED`).**
+- **No resource is approved for operational adoption or use.**
 - **No resource is placed.**
 - **No resource is loaded.**
 - **No real validation occurs.**
