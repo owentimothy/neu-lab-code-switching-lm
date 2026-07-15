@@ -3,14 +3,36 @@
 ## Status
 - **Email draft only.** No emails are sent by this repo or this PR.
 - No parser run on real files; no real CALLHOME-derived outputs produced.
-- No committed aggregate manifests or summaries (Decision C still in force).
 - No tokenization, monolingual screening, condition datasets, or training.
 - Placeholders (**TODO**) are left where the sender must fill in
   institution/identity or confirm exact bibliographic strings — do not guess.
 
+The status lines above describe this document's **original drafting PR**, when
+Decision C was still in force. They are not the current permission state.
+
 Sent-Status:
 - Response received on **2026-07-09** from Brian MacWhinney indicating that the proposed use seems fine, provided the project sticks with the described guidelines.
 - See `docs/callhome_ground_rules.md` for the resulting Decision C → Decision B update.
+
+Current permission state: **Decision B** — aggregate-only, non-transcript
+CALLHOME summaries may be committed with the required citation/license notes and
+the documented safety restrictions. Decision B covers **aggregate reporting
+only**.
+
+The question below asked about aggregate, non-transcript summaries, and the
+response answered that question. **Per-row records and per-row provenance were
+not covered by this exchange** — they were not asked about and were not ruled on
+either way. Because they are not covered, this project's conservative default
+applies and they remain **blocked from commit**, local and gitignored. That
+restriction is project policy, not a TalkBank denial.
+
+The expressly reviewed aggregate examples are the ones described in Q1 below
+(file counts, utterance counts, aggregate structural-marker counts such as
+header-key and dependent-tier-prefix counts, and language-composition
+percentages). Other aggregate diagnostic categories are **not** approved merely
+by being called aggregate; see `docs/callhome_ground_rules.md` for the
+per-output safety review required before any of them is committed, and for the
+authoritative current decision and its exact scope.
 
 ## Purpose
 Move from **Decision C** (aggregate-summary permission unclear → do not commit
