@@ -41,18 +41,16 @@ from __future__ import annotations
 from collections.abc import Sequence, Set
 from dataclasses import dataclass, field
 
+from cslm.data import lexical_coverage as _lexical_coverage
 from cslm.data.callhome_chat import CallhomeUtterance
 from cslm.data.callhome_lexicon_normalization import lexical_tokens, normalize_lexicon
 from cslm.data.english_scowl_resource import ApprovedEnglishScowl
 
-# The three fixed coverage outcomes. An ordered tuple (not a set) so downstream
-# aggregate diagnostics can rely on a stable serialized key order.
-COVERAGE_OUTCOME_ORDER: tuple[str, ...] = (
-    "all_covered",
-    "has_uncovered",
-    "no_lexical_tokens",
-)
-COVERAGE_OUTCOMES: frozenset[str] = frozenset(COVERAGE_OUTCOME_ORDER)
+# Preserve the established English module API while sharing the invariant and
+# stable outcome vocabulary with the Spanish diagnostic.
+COVERAGE_OUTCOME_ORDER = _lexical_coverage.COVERAGE_OUTCOME_ORDER
+COVERAGE_OUTCOMES = _lexical_coverage.COVERAGE_OUTCOMES
+_check_coverage_fields = _lexical_coverage.check_coverage_fields
 
 
 class EnglishCoverageError(RuntimeError):
@@ -65,44 +63,6 @@ class EnglishCoverageInputError(EnglishCoverageError):
 
 class EnglishCoverageLexiconError(EnglishCoverageError):
     """The lexicon is empty/invalid, or an approved bundle was not supplied."""
-
-
-def _check_coverage_fields(
-    outcome: object, n_tokens: object, n_covered: object, n_uncovered: object
-) -> None:
-    """Raise ``ValueError`` unless the four fields form a self-consistent result.
-
-    Shared by :meth:`EnglishCoverageResult.__post_init__` and the aggregate
-    diagnostics' defensive re-check so both enforce the *identical* invariant.
-    Counts must be **exact, non-negative ints** — ``type(x) is int`` rejects
-    both booleans (a subclass of ``int``) and floats. The outcome label must
-    agree exactly with the counts.
-    """
-    for name, value in (
-        ("n_tokens", n_tokens),
-        ("n_covered", n_covered),
-        ("n_uncovered", n_uncovered),
-    ):
-        if type(value) is not int:
-            raise ValueError(f"{name} must be an int")
-        if value < 0:
-            raise ValueError(f"{name} must be non-negative")
-    if n_covered + n_uncovered != n_tokens:
-        raise ValueError("n_covered + n_uncovered must equal n_tokens")
-    if outcome not in COVERAGE_OUTCOMES:
-        raise ValueError(f"unknown coverage outcome: {outcome!r}")
-    if outcome == "no_lexical_tokens":
-        if not (n_tokens == 0 and n_covered == 0 and n_uncovered == 0):
-            raise ValueError("no_lexical_tokens requires all counts to be zero")
-    elif outcome == "all_covered":
-        if not (n_tokens > 0 and n_uncovered == 0 and n_covered == n_tokens):
-            raise ValueError(
-                "all_covered requires n_tokens > 0, n_uncovered == 0, and "
-                "n_covered == n_tokens"
-            )
-    else:  # has_uncovered
-        if not (n_tokens > 0 and n_uncovered > 0):
-            raise ValueError("has_uncovered requires n_tokens > 0 and n_uncovered > 0")
 
 
 @dataclass(frozen=True)
@@ -174,22 +134,15 @@ def _count_coverage(
     if not isinstance(normalized_tokens, Sequence):
         raise EnglishCoverageInputError("normalized_tokens must be a sequence of strings")
 
-    n_covered = 0
+    membership: list[bool] = []
     for token in normalized_tokens:
         if not isinstance(token, str):
             raise EnglishCoverageInputError("every token must be a string")
-        if token in prepared_lexicon:
-            n_covered += 1
+        membership.append(token in prepared_lexicon)
 
-    n_tokens = len(normalized_tokens)
-    n_uncovered = n_tokens - n_covered
-    if n_tokens == 0:
-        outcome = "no_lexical_tokens"
-    elif n_uncovered == 0:
-        outcome = "all_covered"
-    else:
-        outcome = "has_uncovered"
-
+    outcome, n_tokens, n_covered, n_uncovered = (
+        _lexical_coverage.coverage_fields_from_membership(membership)
+    )
     return EnglishCoverageResult(
         outcome=outcome,
         n_tokens=n_tokens,
