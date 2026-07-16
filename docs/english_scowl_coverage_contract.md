@@ -10,8 +10,8 @@ Source-language validation:                             UNCHANGED / CLOSED
 CALLHOME clean promotion / clean-row assignment:        CLOSED
 Condition routing / dataset construction:               CLOSED
 Spanish lexicon / locale selection:                     CLOSED
-Real-data coverage run:                                 CLOSED (needs privacy gate)
-Committing real coverage aggregates:                    CLOSED (needs Decision B review)
+Real-data coverage run:                                 COMPLETE (one canonical English run)
+Seven-count aggregate execution record:                 APPROVED (Decision B reviewed)
 Tokenizer training / model training / probes:           CLOSED
 ```
 
@@ -150,24 +150,28 @@ conversation, speaker, row, or per-token breakdown. A finely sliced count can
 single out one row; keeping the schema coarse is a reconstructive-risk control,
 not an omission.
 
-## 7. Decision B privacy gate (before any real aggregate)
+## 7. Decision B privacy gate and approved execution
 
-These aggregate categories are **new** — not among the examples reviewed for
-commit in `docs/callhome_ground_rules.md`. Per the reconciled Decision B, before
-any summary computed over **real** CALLHOME data may leave the machine or be
-committed, a **separate per-output privacy review** must confirm the exact schema
-is aggregate-only, non-transcript, non-reconstructive (addressing low-cardinality
-cells), and identifier-free. Until that review clears, real coverage numbers stay
-**local and uncommitted**. This branch commits only synthetic-test output and
-this contract.
+These aggregate categories were **new** — not among the examples originally
+reviewed for commit in `docs/callhome_ground_rules.md`. The required separate
+Decision B review was completed before the first real run. It approved exactly
+the seven fixed scalar counts, over the complete canonical English population,
+subject to the `k = 10` whole-bundle guard and the no-subsetting/no-differencing
+rules in `docs/english_scowl_coverage_dry_run_plan.md`.
+
+Exactly one authorized canonical English run was then completed. Its approved,
+content-free result and citation/license record are preserved in
+`docs/english_scowl_coverage_execution_2026-07-16.md`. This approval does **not**
+cover per-row output, additional fields, changed populations, or repeated
+external releases; each would require a new review.
 
 ## 8. What remains closed
 
-This branch does **not**: modify the local projection script; load the real
-SCOWL bundle; run real CALLHOME/Bangor data; produce a validation decision;
-promote a row to `validated` or `clean`; route a condition; select a Spanish
-lexicon or locale; change tokenizer or training data. All CALLHOME rows stay
-`not_validated` and `clean` stays 0. `CsCont` remains Bangor-only.
+The authorized coverage run did **not**: modify the local projection script;
+run Bangor; produce a validation decision; promote a row to `validated` or
+`clean`; route a condition; select a Spanish lexicon or locale; or change
+tokenizer or training data. All CALLHOME rows stay `not_validated` and `clean`
+stays 0. `CsCont` remains Bangor-only.
 
 ## 9. Testing
 

@@ -3,21 +3,22 @@
 ## Status
 
 ```text
-Runner + synthetic tests (this branch):                 IMPLEMENTED / SYNTHETIC-ONLY
+Runner + synthetic tests:                               IMPLEMENTED / OPEN
 k = 10 whole-bundle privacy guard:                      ADOPTED (new project rule)
 
-Decision B approval of the seven-count schema:          CLOSED (needs per-output review)
-Committing real coverage aggregates:                    CLOSED (needs Decision B review)
-Separately authorized real local execution:             CLOSED (needs explicit approval)
+Decision B approval of the seven-count schema:          APPROVED (canonical run only)
+Aggregate execution record:                             APPROVED / RECORDED
+Separately authorized real local execution:             COMPLETE (one canonical run)
 Source-language validation / clean promotion:           CLOSED / UNCHANGED
 Condition routing / dataset construction:               CLOSED
 Tokenizer training / model training / probes:           CLOSED
 ```
 
 This is the contract for `scripts/dry_run_english_scowl_coverage.py`. It plans and
-implements a **local-only, aggregate-only** run and its **synthetic** tests; it
-does **not** authorize a real run, and no real coverage number may leave the
-machine or be committed until the Decision B gate below clears.
+implements a **local-only, aggregate-only** run and its **synthetic** tests. The
+required Decision B review later approved the exact seven-count schema for one
+canonical English run; that execution is recorded in
+`docs/english_scowl_coverage_execution_2026-07-16.md`.
 
 ## Coverage is a diagnostic, not validation
 
@@ -163,18 +164,18 @@ aggregate is ever emitted**.
   redaction.
 - **Any future population change requires a new design and a new Decision B
   review.** Repeated **externally released** runs over changed inputs remain
-  prohibited without a new review. Because version-1 output stays local until the
-  Decision B gate clears, no differencing surface is published in the interim.
+  prohibited without a new review. The approved execution record is the only
+  externally released real run; no additional differencing surface is approved.
 
-## What stays closed
+## Approved execution and what stays closed
 
-- The exact seven-count **schema is CLOSED for real output** until a **Decision B
-  per-output privacy review** confirms it is aggregate-only, non-transcript,
-  non-reconstructive (low-cardinality addressed), and identifier-free. Until then,
-  any summary over **real** CALLHOME data stays **local and uncommitted**; this
-  branch commits only the runner, its synthetic tests, and this plan.
-- **Real local execution remains separately gated** — it must be explicitly
-  authorized after the Decision B review, run locally, stdout only.
+- The exact seven-count schema passed its Decision B review for **one complete
+  canonical English run**. Every positive cell cleared `k = 10`; the approved
+  aggregate is recorded in
+  `docs/english_scowl_coverage_execution_2026-07-16.md`.
+- This is **not** standing authorization for a changed population, subset,
+  additional output field, or repeated external release. Those remain separately
+  gated and require a new Decision B review.
 - Source-language validation, `clean` promotion, condition eligibility, condition
   routing, dataset construction, tokenizer training, model training, and probes
   all remain **closed**. CALLHOME never feeds `CsCont`; Bangor remains untouched
