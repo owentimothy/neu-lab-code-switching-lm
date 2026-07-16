@@ -1,5 +1,16 @@
 # CALLHOME Spanish Lexicon Locale Decision
 
+> **Partial supersession — 2026-07-16:**
+> `docs/callhome_spanish_rla_es_general_coverage_selection.md` reopens this
+> decision for one narrow purpose and approves the publisher-built RLA-ES v2.9
+> general `es.oxt` artifact as the resource identity for a future Spanish
+> **coverage diagnostic only**. The general artifact combines the project's
+> supported regional vocabularies; it is not a neutral common core. This record
+> remains controlling for source-language validation, `validated`/`clean`
+> status, condition eligibility, corpus routing, resource placement, loader use,
+> real dry-run execution, and training. None of those gates is opened by the
+> later coverage-selection decision.
+
 ## Status
 - **Docs-only decision record, not implementation.** No code changes.
 - **No Spanish locale is selected.**
