@@ -7,7 +7,7 @@ Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase A execution:               CORRECTED EXECUTION COMPLETE (2026-07-20) — AGGREGATE OBSERVED
-Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
+Response parser / marker enum:                        CONTRACT APPROVED; IMPLEMENTATION CLOSED
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
 
 RLA-ES acquisition / inspection:                      CLOSED
@@ -193,8 +193,8 @@ Phase A does **not**:
 
 Instead it reduces each raw output stream to protocol-neutral **whole-stream**
 observations and records only observed execution facts. Candidate PASS,
-membership-sequence matching, and unknown-marker rejection belong to **Phase B**,
-after a parser contract is presented as a reviewed source diff and approved.
+membership-sequence matching, and unknown-marker rejection belong to **Phase B**
+under the approved parser contract below.
 
 ## Two-phase design (with a hard human seam)
 
@@ -202,9 +202,9 @@ after a parser contract is presented as a reviewed source diff and approved.
   observe raw streams **internally only**; emit only the fixed aggregate schema
   below. No raw byte, line, token, marker, suggestion, path, or diagnostic is
   printed or committed.
-- **Approval seam (stop).** A human reviews the aggregates and, if viable, approves
-  an explicit parser contract as a reviewed source diff containing only public
-  fixed protocol constants and fixed semantic labels.
+- **Approval seam (completed).** A human reviewed the corrected aggregates and
+  approved the explicit parser contract below as a source diff containing only
+  public fixed protocol constants and fixed semantic labels.
 - **Phase B — verify.** Only after approval: parser-specific fixtures verify one
   Boolean per token, order, duplicates, synchronisation, repeated records,
   continuation affixes, determinism, limits, and fail-closed behaviour.
@@ -216,11 +216,145 @@ Two separately authorized Phase A executions occurred on 2026-07-20; the first w
 transport-invalid and the corrected second execution produced the aggregate result
 recorded above. Any further run remains separately authorized.
 
+## Approved Phase B parser contract (implementation closed)
+
+The human approval seam was completed after review of the corrected Phase A
+aggregate and the pinned public Hunspell 1.7.3 protocol. This section fixes the
+Phase B parser contract using only public constants and semantic labels. It does
+not implement the parser, execute Phase B, award candidate PASS, select a mode, or
+open any real-resource or downstream gate.
+
+Public protocol sources:
+
+- Hunspell v1.7.3 source:
+  <https://github.com/hunspell/hunspell/blob/v1.7.3/src/tools/hunspell.cxx>
+- Hunspell v1.7.3 version definition:
+  <https://github.com/hunspell/hunspell/blob/v1.7.3/configure.ac>
+- public Hunspell command manual:
+  <https://manpages.debian.org/testing/hunspell/hunspell.1.en.html>
+
+### Common input, output, and privacy contract
+
+Input order and duplicates are preserved by ordinal position. Existing limits
+remain unchanged: 256 UTF-8 bytes per token, 256 tokens per batch, 10,000 tokens
+per request, 30 seconds per candidate process, 2 MiB stdout, 64 KiB stderr, and
+300 seconds for pull and build controls. A token must be nonempty valid text with
+no whitespace or control character. No token may enter argv, an environment
+variable, a path, a log, an exception, or a public diagnostic.
+
+Every candidate requires a zero process exit, empty stderr, complete stdin
+delivery, completion within all limits, exact output cardinality, and confirmed
+cleanup. Parsing is incremental and bounded. Raw response lines, original-word
+echoes, roots, offsets, suggestions, morphology, and unexpected markers remain
+internal only and are discarded immediately after validation. A public result may
+contain only fixed semantic labels and aggregate non-reconstructive counts.
+
+The minimum per-input internal result is its ordinal plus exactly one membership
+label: `ACCEPTED` or `REJECTED`. No lexical string is returned with that result.
+
+### `PIPE_STREAM` contract
+
+`PIPE_STREAM` uses one normal, non-terse `hunspell -a` process per bounded batch.
+Each validated token is sent internally as `^` followed by the token and one LF;
+the public `^` guard prevents token text from being interpreted as an Ispell
+command.
+
+Before any token response, the parser requires this exact public heading followed
+by exactly one LF:
+
+```text
+@(#) International Ispell Version 3.2.06 (but really Hunspell 1.7.3)
+```
+
+The heading is derived from the pinned public source and version definition. Its
+encoded shape is 69 bytes and one LF. The corrected Phase A aggregate independently
+matches that heading shape, but the public source—not execution output—defines the
+constant.
+
+After the heading, the parser requires exactly one response block per input token,
+in order. A block contains exactly one recognized response record followed by
+exactly one blank separator line. The public response-marker mapping is:
+
+```text
+*  -> ACCEPTED (direct dictionary acceptance)
++  -> ACCEPTED (affix-derived acceptance)
+-  -> ACCEPTED (compound acceptance)
+&  -> REJECTED (with suggestions)
+#  -> REJECTED (without suggestions)
+```
+
+Accepted records must match their documented fixed shape. Rejected records must
+match the documented delimiters and unsigned numeric fields. Any original-word
+echo is compared internally with the current input token. For `&`, the declared
+suggestion count must agree with the parsed suggestion field. Suggestions, roots,
+and offsets are never returned or logged.
+
+A heading mismatch, unknown marker, malformed numeric field, mismatched echo,
+missing or extra record, missing or extra separator, premature EOF, invalid UTF-8,
+unterminated line, response-cardinality mismatch, output overflow, timeout,
+nonzero exit, nonempty stderr, incomplete input, or unconfirmed cleanup stops the
+candidate with one fixed non-sensitive failure.
+
+### `SINGLE_TOKEN_LIST` contract
+
+`SINGLE_TOKEN_LIST` uses one separate `hunspell -l` process per validated token,
+preserving the implemented process boundary. Each process receives exactly one
+token followed by one LF.
+
+With a zero exit, empty stderr, complete input, and confirmed cleanup:
+
+- empty stdout maps to `ACCEPTED`;
+- exactly one nonempty LF-terminated output line that internally matches the input
+  token maps to `REJECTED`.
+
+The one-process-per-token boundary is what makes silence unambiguous. A blank-only
+line, more than one line, a missing final LF, a nonmatching or transformed echo, an
+identification line, invalid UTF-8, output overflow, timeout, nonzero exit,
+nonempty stderr, incomplete input, or unconfirmed cleanup stops the candidate with
+one fixed non-sensitive failure. The matching echo is discarded immediately.
+
+### Offline Phase B verification requirements
+
+Implementation must begin with offline tests using invented fixtures only. The
+matrix must cover every approved marker and membership mapping; the exact heading;
+required separators; order and non-adjacent duplicates; valid and malformed
+numeric fields; matching and mismatching internal echoes; missing, extra, partial,
+and reordered records; premature EOF; invalid encoding; output overflow; timeout;
+abnormal exit; cleanup failure; `-l` silence; one exact line; multiple lines; and
+nonmatching output.
+
+Tests must also prove that no token, echo, root, suggestion, morphology, raw line,
+or unexpected marker can reach a returned error, stdout, stderr, log, or aggregate
+report. Ordinary tests remain offline and may not access Docker, the network,
+RLA-ES, CALLHOME, Bangor, ignored resources, corpora, or private logs.
+
+### Phase B aggregate and candidate decision contract
+
+The fixed Phase B report may contain, per candidate, only attempted/completed
+booleans, invented-case and expected-membership match counts, exact-cardinality and
+repetition-stability booleans, unknown-response count, cleanup-confirmed boolean,
+and candidate-PASS boolean. It must retain `selected_mode_label = NONE` and
+`no_real_resource_or_corpus_access = true`; it contains no per-token output.
+
+A candidate receives PASS only if every predeclared invented known-truth case is
+classified correctly in order, duplicates are preserved, cardinality is exact,
+repetitions are identical, all limits and cleanup checks succeed, and no unknown
+or privacy-bearing output escapes.
+
+- zero candidates PASS: stop;
+- exactly one candidate PASS: report it for separate human review and selection;
+- both candidates PASS: stop for human review without applying an automatic
+  preference.
+
+No result changes `selected_mode_label` until a separate explicit selection is
+reviewed, implemented, verified, committed, and approved. Phase B implementation
+and any live invented-fixture execution each require their own authorization.
+
 ## Selectable modes
 
 ```text
-PIPE_STREAM        candidate (invocation only fixed; framing unobserved)
-SINGLE_TOKEN_LIST  candidate (invocation only fixed; framing unobserved)
+PIPE_STREAM        candidate (contract approved; Phase B verification not run)
+SINGLE_TOKEN_LIST  candidate (contract approved; Phase B verification not run)
 NONE               Phase A always reports NONE; a human selects afterwards
 ```
 
@@ -439,10 +573,11 @@ classification, or banner/separator/suggestion interpretation. It does not recre
 the abandoned affix-generation parser — real pinned Hunspell interprets the invented
 repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
 failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
-failure each raise fixed, non-sensitive errors. The parser-contract source diff and
-Phase B remain closed and require separate explicit approval.
+failure each raise fixed, non-sensitive errors. The parser contract is approved in
+this source diff; its implementation and Phase B execution remain closed and
+require separate explicit approval.
 
-## Future PASS / STOP criteria (recorded, not yet evaluated)
+## Approved Phase B PASS / STOP criteria (not yet evaluated)
 
 A candidate can pass only in Phase B, after the approved parser contract, by
 confirming an ordered, duplicate-preserving Boolean sequence, synchronisation,
