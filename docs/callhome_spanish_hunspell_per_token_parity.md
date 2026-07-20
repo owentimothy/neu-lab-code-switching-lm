@@ -6,7 +6,7 @@
 Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
-Live pinned-Hunspell Phase A execution:               NOT EXECUTED / SEPARATELY AUTHORIZED
+Live pinned-Hunspell Phase A execution:               EXECUTED ONCE (2026-07-20) — AGGREGATE OBSERVED, REVIEWED
 Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
 
@@ -24,8 +24,72 @@ synthetic, offline *observation infrastructure* and the Phase A live-execution
 CLI opt-in and separate acquisition/execution authorization, and by default the CLI
 still refuses before any Docker, network, filesystem-resource, or subprocess
 activity. It does not implement or activate a response parser and makes **no** `-a`
-or `-l` framing assumption. No Phase A execution has been performed and no results
-are recorded here; live execution requires separate authorization.
+or `-l` framing assumption. One separately authorized Phase A execution was
+performed on 2026-07-20; it exited cleanly and only the fixed aggregate result was
+recorded (see the Phase A execution result section below). The per-token protocol
+remains **UNRESOLVED**: neither candidate has PASS status, and no parser, marker
+enum, membership verdict, or mode selection has been approved. Every further live
+execution remains separately authorized.
+
+## Phase A execution result (2026-07-20, aggregate only)
+
+One separately authorized Phase A execution was run once on 2026-07-20. Recorded
+below are only the fixed protocol-neutral aggregates — no raw stdout, response
+lines, lexical entries, corpus content, Docker logs, temporary paths, provenance,
+private hashes, or personal paths.
+
+```text
+Process exit:                             0 (clean); exactly one aggregate JSON object; no stderr
+hunspell_release:                         v1.7.3
+hunspell_commit:                          c5f98152a274e25b5107101104bef632b83a0cc9  (public pinned upstream)
+container_platform:                       linux/arm64
+environment_identity_match:               true
+offline_build:                            true
+modes_compared:                           2
+selected_mode_label:                      NONE
+pipe_stream_observation_completed:        true
+single_token_list_observation_completed:  true
+candidate_observation_count:              2
+no_real_resource_or_corpus_access:        true
+```
+
+Protocol-neutral candidate aggregates:
+
+```text
+PIPE_STREAM
+  observation_completed             = true
+  raw_stream_identical_across_runs  = true
+  structural_summary_stable         = true
+  total_bytes                       = 69
+  total_lf_count                    = 1
+  blank_line_count                  = 0
+  nonempty_line_count               = 1
+  max_stdout_bytes                  = 69
+  max_stderr_bytes                  = 0
+  max_batch_latency_ms              = 130
+
+SINGLE_TOKEN_LIST
+  observation_completed             = true
+  raw_stream_identical_across_runs  = true
+  structural_summary_stable         = true
+  total_bytes                       = 0
+  total_lf_count                    = 0
+  blank_line_count                  = 0
+  nonempty_line_count               = 0
+  max_stdout_bytes                  = 0
+  max_stderr_bytes                  = 0
+  max_batch_latency_ms              = 139
+```
+
+These values are protocol-neutral aggregates only. They establish no framing,
+membership, correctness, candidate PASS, or mode preference. Neither `PIPE_STREAM`
+nor `SINGLE_TOKEN_LIST` has PASS status. No parser contract, marker enum, membership
+verdict, or mode selection has been approved; the selected mode remains `NONE` and
+the per-token protocol remains **UNRESOLVED**. Phase B, real Spanish coverage,
+validation, clean promotion, routing, dataset construction, tokenizer work, model
+training, and probes remain **CLOSED**. A separately reviewed parser-contract
+proposal is required before Phase B, and every additional live execution requires
+separate authorization.
 
 ## Scope
 
@@ -70,8 +134,10 @@ after a parser contract is presented as a reviewed source diff and approved.
 
 Live Phase A execution is enabled in this branch (`_LIVE_PHASE_A_ENABLED` is
 `True`) but opt-in only: the CLI refuses by default and reaches it only with
-`--allow-phase-a-run`, acquisition and execution remain separately authorized, and
-no Phase A run is performed here.
+`--allow-phase-a-run`, and acquisition and execution remain separately authorized.
+One separately authorized Phase A run was performed on 2026-07-20 (only the
+aggregate result was recorded; see the Phase A execution result section), and any
+further run remains separately authorized.
 
 ## Selectable modes
 
@@ -220,7 +286,9 @@ always stubbed and its output is discarded to `DEVNULL`, never captured or expos
 Raw stdout and stderr are sensitive by discipline: reduced internally, never
 printed, logged, returned in the summary, or embedded in an error. Phase A and the
 real per-token response protocol remain unresolved; live Phase A wiring is enabled
-but opt-in only, and no Phase A run is performed in this branch.
+but opt-in only. One separately authorized Phase A run was performed on 2026-07-20
+(only the aggregate result was recorded; see the Phase A execution result section),
+and any further run remains separately authorized.
 
 ## Invented fixtures
 
