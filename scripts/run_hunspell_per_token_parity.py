@@ -7,8 +7,8 @@ assumption: it does not equate output lines with input tokens or derive any
 "candidate passed" verdict from one-line-per-token behaviour.  It reduces raw
 output to protocol-neutral *whole-stream* aggregates and records only observed
 execution facts.  The separately approved Phase B contract is implemented here as
-pure offline parsing and aggregate-assessment functions; it is not connected to
-the live runner or CLI.
+pure parsing and aggregate-assessment functions; its live wiring is enabled but
+remains opt-in and unexecuted.
 
 Contents:
 
@@ -24,8 +24,9 @@ Contents:
 * protocol-neutral whole-stream observation;
 * invented fixture builders (dictionary/affix inputs only), used later by the
   authorized Phase A execution step, not by ordinary tests.
-* strict offline Phase B parsing and aggregate assessment over invented results,
-  with no automatic candidate selection and no live execution path.
+* strict Phase B parsing and aggregate assessment over invented results, with no
+  automatic candidate selection; live execution remains separately authorized and
+  has not run.
 
 It never accepts a corpus/resource/output path argument.  It never touches RLA-ES,
 CALLHOME, Bangor, ignored resources, private logs, the network, or Docker in this
@@ -1178,7 +1179,7 @@ def _candidate_token_groups(label: str, tokens: Sequence[str]) -> tuple[tuple[st
 
 
 # ---------------------------------------------------------------------------
-# Phase B pure offline parser and aggregate assessment (not live-wired).
+# Phase B parser and aggregate assessment (live wiring enabled; opt-in only).
 # ---------------------------------------------------------------------------
 def _phase_b_fail() -> None:
     """Raise the one fixed Phase B parse failure without response material."""

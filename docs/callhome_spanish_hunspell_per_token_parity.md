@@ -588,8 +588,8 @@ authorized. Phase A does not recreate
 the abandoned affix-generation parser — real pinned Hunspell interprets the invented
 repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
 failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
-failure each raise fixed, non-sensitive errors. Live Phase B execution remains
-closed and requires separate explicit approval.
+failure each raise fixed, non-sensitive errors. Live Phase B execution has not run
+and remains separately authorized.
 
 ## Approved Phase B PASS / STOP criteria (not yet evaluated)
 
