@@ -3,14 +3,15 @@
 ## Status
 
 ```text
-Per-token Hunspell candidate viability:               UNRESOLVED
+Synthetic Phase B protocol viability:                 RESOLVED (2026-07-20; both candidates PASS on invented fixtures)
+Controlled real Spanish coverage:                     NOT RUN / UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase A execution:               CORRECTED EXECUTION COMPLETE (2026-07-20) — AGGREGATE OBSERVED
 Response parser / marker enum:                        IMPLEMENTED OFFLINE / TESTED
 Phase B live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
-Live pinned-Hunspell Phase B execution:               NOT RUN
-Candidate PASS / membership matching / mode choice:   NOT LIVE-EVALUATED (Phase B / human review)
+Live pinned-Hunspell Phase B execution:               EXECUTED ONCE (2026-07-20) — AGGREGATE OBSERVED
+Candidate PASS / membership matching / mode choice:   LIVE-EVALUATED 2026-07-20 (both candidates PASS on invented fixtures); PIPE_STREAM selected by separate human review
 
 RLA-ES acquisition / inspection:                      CLOSED
 CALLHOME / Bangor access:                             CLOSED
@@ -19,7 +20,8 @@ Validation / clean promotion / routing:               CLOSED
 Corpus / tokenizer / model / probe work:              CLOSED
 ```
 
-**Real candidate viability remains UNRESOLVED.** This branch adds the
+**Synthetic Phase B protocol viability is resolved; controlled real Spanish
+coverage remains UNRESOLVED.** This branch adds the
 synthetic, offline *observation infrastructure* and the Phase A live-execution
 *wiring*. That wiring is now **enabled** (`_LIVE_PHASE_A_ENABLED = True`) but
 **opt-in only**: execution still requires both the explicit `--allow-phase-a-run`
@@ -36,9 +38,15 @@ audit found that the first invocation lacked Docker `--interactive`, so that fir
 execution is retained as historical evidence but is **transport-invalid for
 protocol evidence**. After the tracked stdin-forwarding correction was reviewed,
 verified, committed, and pushed, one corrected execution completed cleanly under
-the same pins and limits (see both result sections below). The per-token protocol
-remains **UNRESOLVED**: neither candidate has live Phase B PASS status and no mode
-has been selected. Every further live execution remains separately authorized.
+the same pins and limits (see both Phase A result sections below). On 2026-07-20 the
+live pinned-Hunspell Phase B gate then executed exactly once: both candidates passed
+the invented-fixture evaluation, so **synthetic Phase B protocol viability is
+resolved** (see the Phase B execution result and reviewed-selection sections below).
+Because both candidates passed, the gate stopped for human review and `PIPE_STREAM`
+was **subsequently selected by separate human review** — not automatically; the
+execution's own `selected_mode_label` remained `NONE`. **Controlled real Spanish
+coverage has not run and remains UNRESOLVED.** Every further live execution remains
+separately authorized.
 
 ## Initial Phase A execution result (2026-07-20, transport-invalid aggregate)
 
@@ -172,6 +180,77 @@ not a parser verdict. `selected_mode_label` remains `NONE`; the parser-contract
 source diff and Phase B remain separate reviewed gates. Real Spanish coverage,
 validation, clean promotion, routing, datasets, tokenizer work, model training,
 and probes remain **CLOSED**.
+
+## Phase B execution result (2026-07-20, aggregate only)
+
+The live pinned-Hunspell Phase B gate executed exactly once on 2026-07-20 under the
+existing pins and defensive limits. Recorded below are only the fixed
+protocol-neutral aggregates — no raw stdout, response lines, suggestions, morphology,
+markers, tokens, per-process streams, lexical entries, corpus content, Docker logs,
+temporary paths, provenance, private hashes, or personal paths.
+
+```text
+Process exit:                             0 (clean); exactly one aggregate JSON object; no stderr
+hunspell_release:                         v1.7.3
+hunspell_commit:                          c5f98152a274e25b5107101104bef632b83a0cc9  (public pinned upstream)
+container_platform:                       linux/arm64
+environment_identity_match:               true
+offline_build:                            true
+modes_compared:                           2
+selected_mode_label:                      NONE
+passing_candidate_count:                  2
+candidate_assessment_count:               2
+no_real_resource_or_corpus_access:        true
+```
+
+Fixed per-candidate assessment aggregates:
+
+```text
+PIPE_STREAM
+  candidate_attempted               = true
+  candidate_completed               = true
+  invented_case_count               = 10
+  expected_membership_match_count   = 10
+  exact_cardinality                 = true
+  repetitions_identical             = true
+  unknown_response_count            = 0
+  cleanup_confirmed                 = true
+  candidate_passed                  = true
+
+SINGLE_TOKEN_LIST
+  candidate_attempted               = true
+  candidate_completed               = true
+  invented_case_count               = 10
+  expected_membership_match_count   = 10
+  exact_cardinality                 = true
+  repetitions_identical             = true
+  unknown_response_count            = 0
+  cleanup_confirmed                 = true
+  candidate_passed                  = true
+```
+
+Both candidates were attempted and completed, matched all 10 invented cases with
+exact cardinality and identical repetitions, produced zero unknown responses, and
+confirmed cleanup; both passed. The execution's own `selected_mode_label` was
+`NONE` — the harness never selects a mode automatically. These aggregates establish
+**synthetic** Phase B protocol viability only; they involve no real resource or
+corpus and make no claim about real Spanish coverage.
+
+## Reviewed selection (2026-07-20)
+
+Because both candidates passed the invented-fixture evaluation
+(`passing_candidate_count = 2`), the multiple-pass criterion applied and the gate
+**stopped for human review** rather than choosing a mode. After reviewing the fixed
+aggregate result above, the user **subsequently and explicitly selected
+`PIPE_STREAM`**.
+
+This selection is a **separate human decision, not an automatic result**. It does
+**not** alter the historical execution output, whose `selected_mode_label` remains
+`NONE`. It is recorded here purely as a **governance input to the future
+checker-contract gate**: this branch introduces no selection constant, adds no
+runtime selection logic, and imports no CLI script as a library. The selected mode
+becomes code only inside the separately-authorized offline checker-contract gate
+described under Next gates.
 
 ## Scope
 
@@ -357,16 +436,17 @@ or privacy-bearing output escapes.
 - both candidates PASS: stop for human review without applying an automatic
   preference.
 
-No result changes `selected_mode_label` until a separate explicit selection is
-reviewed, implemented, verified, committed, and approved. Any live invented-fixture
-Phase B execution requires its own authorization.
+Phase A and Phase B execution summaries always retain `selected_mode_label = NONE`.
+A subsequent human selection is recorded separately through review and approval, and
+that human selection never rewrites the historical execution summaries. Every
+further live invented-fixture Phase B execution remains separately authorized.
 
 ## Selectable modes
 
 ```text
-PIPE_STREAM        candidate (offline parser implemented; live Phase B not run)
-SINGLE_TOKEN_LIST  candidate (offline parser implemented; live Phase B not run)
-NONE               Phase A always reports NONE; a human selects afterwards
+PIPE_STREAM        passed live Phase B on invented fixtures; subsequently selected by human review
+SINGLE_TOKEN_LIST  passed live Phase B on invented fixtures; not selected
+NONE               Phase A and Phase B execution summaries emit NONE; human selection recorded separately
 ```
 
 `BATCH_FILTER` is a documented negative baseline (it destroys order and
@@ -588,10 +668,10 @@ authorized. Phase A does not recreate
 the abandoned affix-generation parser — real pinned Hunspell interprets the invented
 repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
 failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
-failure each raise fixed, non-sensitive errors. Live Phase B execution has not run
-and remains separately authorized.
+failure each raise fixed, non-sensitive errors. Live Phase B executed once on
+2026-07-20; every further execution remains separately authorized.
 
-## Approved Phase B PASS / STOP criteria (not yet evaluated)
+## Approved Phase B PASS / STOP criteria
 
 A candidate can pass only in Phase B, after the approved parser contract, by
 confirming an ordered, duplicate-preserving Boolean sequence, synchronisation,
@@ -601,13 +681,22 @@ conditions. At least one passing candidate is required; multiple passing candida
 stop for a reviewed selection; none stops the gate. No mode is selected
 automatically.
 
-## Next gate
+## Next gates
 
-Perform a read-only Phase B execution preflight. It must confirm the enabled flag,
-default refusal, exact aggregate schema, derived identity/build/cleanup evidence,
-offline test coverage, clean repository and PR state, public acquisition pins, and
-fixed execution limits. It must not use Docker or the network, execute Phase B,
-select a candidate, or access any real resource or corpus.
+The Phase B execution and the human `PIPE_STREAM` selection above are recorded here
+as governance facts only; they introduce no selection constant and import no CLI
+script. Two separate, separately-authorized gates follow, in order:
+
+1. **Offline checker contract and synthetic implementation.** Define and review a
+   concrete `SpanishHunspellChecker` (`check_tokens`) that uses the reviewed
+   `PIPE_STREAM` invocation mode, implemented and tested on invented tokens with a
+   fake in-memory transport. No real resource, corpus, or CLI-script import; this is
+   the point at which the reviewed selection becomes code.
+2. **Controlled real Spanish aggregate execution (later, separately authorized).**
+   Only after gate 1 is approved: run aggregate-only, non-reconstructive Spanish
+   coverage over an approved private bundle. Real coverage, validation, clean
+   promotion, routing, datasets, tokenizer, model, and probe work remain **CLOSED**
+   and each require their own explicit authorization.
 
 ## Standing boundaries
 
