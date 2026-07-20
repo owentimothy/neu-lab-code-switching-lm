@@ -53,6 +53,76 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Protocol
 
+from cslm.data.hunspell_pipe_stream import (
+    _PHASE_B_FAILURE_MESSAGE as _PHASE_B_FAILURE_MESSAGE,
+)
+from cslm.data.hunspell_pipe_stream import (
+    BATCH_TIMEOUT_SECONDS as BATCH_TIMEOUT_SECONDS,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MAX_STDERR_BYTES as MAX_STDERR_BYTES,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MAX_STDOUT_BYTES as MAX_STDOUT_BYTES,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MAX_TOKEN_BYTES as MAX_TOKEN_BYTES,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MAX_TOKENS_PER_BATCH as MAX_TOKENS_PER_BATCH,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MAX_TOKENS_PER_REQUEST as MAX_TOKENS_PER_REQUEST,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MEMBERSHIP_ACCEPTED as MEMBERSHIP_ACCEPTED,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MEMBERSHIP_LABELS as MEMBERSHIP_LABELS,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MEMBERSHIP_REJECTED as MEMBERSHIP_REJECTED,
+)
+from cslm.data.hunspell_pipe_stream import (
+    PHASE_B_PIPE_HEADING as PHASE_B_PIPE_HEADING,
+)
+from cslm.data.hunspell_pipe_stream import (
+    TERMINATION_GRACE_SECONDS as TERMINATION_GRACE_SECONDS,
+)
+from cslm.data.hunspell_pipe_stream import (
+    MembershipResult as MembershipResult,
+)
+from cslm.data.hunspell_pipe_stream import (
+    ParityHarnessError as ParityHarnessError,
+)
+from cslm.data.hunspell_pipe_stream import (
+    ParityInputError as ParityInputError,
+)
+from cslm.data.hunspell_pipe_stream import (
+    ParityTransportError as ParityTransportError,
+)
+from cslm.data.hunspell_pipe_stream import (
+    PhaseBParseError as PhaseBParseError,
+)
+from cslm.data.hunspell_pipe_stream import (
+    _phase_b_fail as _phase_b_fail,
+)
+from cslm.data.hunspell_pipe_stream import (
+    batch_tokens as batch_tokens,
+)
+from cslm.data.hunspell_pipe_stream import (
+    build_pipe_stream_stdin as build_pipe_stream_stdin,
+)
+from cslm.data.hunspell_pipe_stream import (
+    parse_pipe_stream_response as parse_pipe_stream_response,
+)
+from cslm.data.hunspell_pipe_stream import (
+    parse_single_token_list_response as parse_single_token_list_response,
+)
+from cslm.data.hunspell_pipe_stream import (
+    validate_tokens as validate_tokens,
+)
+
 EXIT_SUCCESS = 0
 EXIT_OPT_IN_REQUIRED = 2
 EXIT_OPERATIONAL_ABORT = 3
@@ -87,27 +157,11 @@ CONTAINER_PLATFORM_DIGEST = (
 )
 CONTAINER_REFERENCE = f"{CONTAINER_REPOSITORY}@{CONTAINER_PLATFORM_DIGEST}"
 
-# --- Exact approved defensive limits (do not raise automatically after failure).
-MAX_TOKEN_BYTES = 256  # defensive policy choice
-MAX_TOKENS_PER_BATCH = 256  # proposed ceiling, suitability tested synthetically
-MAX_TOKENS_PER_REQUEST = 10_000  # defensive policy choice
-BATCH_TIMEOUT_SECONDS = 30  # proposed ceiling, suitability tested synthetically
-MAX_STDOUT_BYTES = 2 * 1024 * 1024  # defensive hard ceiling (terminate midstream)
-MAX_STDERR_BYTES = 64 * 1024  # defensive hard ceiling (terminate midstream)
-TERMINATION_GRACE_SECONDS = 1.0  # exactly one second grace before SIGKILL
-
 # Candidate mode labels.  BATCH_FILTER is a documented negative baseline and is
 # never a selectable result; the selectable enum is PIPE_STREAM / SINGLE_TOKEN_LIST
 # / NONE.
 CANDIDATE_LABELS: tuple[str, ...] = ("PIPE_STREAM", "SINGLE_TOKEN_LIST")
 SELECTED_MODE_ENUM: tuple[str, ...] = ("PIPE_STREAM", "SINGLE_TOKEN_LIST", "NONE")
-MEMBERSHIP_ACCEPTED = "ACCEPTED"
-MEMBERSHIP_REJECTED = "REJECTED"
-MEMBERSHIP_LABELS: tuple[str, ...] = (MEMBERSHIP_ACCEPTED, MEMBERSHIP_REJECTED)
-PHASE_B_PIPE_HEADING = (
-    b"@(#) International Ispell Version 3.2.06 (but really Hunspell 1.7.3)\n"
-)
-
 # Fixed internal supervisor terminal states.  ``forced_termination`` (SIGKILL
 # escalation) is reported separately so all five outcomes are distinguishable.
 STATE_NORMAL_EXIT = "normal_exit"
@@ -124,58 +178,6 @@ TERMINAL_STATES: tuple[str, ...] = (
 # Docker removal is bounded and never runs in ordinary tests.
 _DOCKER_REMOVE_TIMEOUT = 20
 _DOCKER_RUN = subprocess.run
-
-
-class ParityHarnessError(RuntimeError):
-    """Base class for every fixed, non-sensitive parity-harness failure."""
-
-
-class ParityInputError(ParityHarnessError):
-    """The caller did not supply a valid invented-token or parameter structure."""
-
-
-class ParityTransportError(ParityHarnessError):
-    """A process could not be launched, supervised, or cleaned up safely."""
-
-
-class PhaseBParseError(ParityHarnessError):
-    """A response failed the approved Phase B contract without exposing content."""
-
-
-_PHASE_B_FAILURE_MESSAGE = (
-    "Phase B candidate response did not match the approved protocol contract"
-)
-
-
-# ---------------------------------------------------------------------------
-# Token validation and batching (defensive limits).
-# ---------------------------------------------------------------------------
-def validate_tokens(tokens: object) -> tuple[str, ...]:
-    """Validate an invented-token request without echoing any token."""
-    if isinstance(tokens, (str, bytes, bytearray)) or not isinstance(tokens, Sequence):
-        raise ParityInputError("tokens must be a sequence of strings")
-    if len(tokens) > MAX_TOKENS_PER_REQUEST:
-        raise ParityInputError("too many tokens in one request")
-    prepared: list[str] = []
-    for token in tokens:
-        if not isinstance(token, str):
-            raise ParityInputError("every token must be a string")
-        if not token:
-            raise ParityInputError("tokens must not be empty")
-        if any(ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in token):
-            raise ParityInputError("tokens must not contain whitespace or control")
-        if len(token.encode("utf-8")) > MAX_TOKEN_BYTES:
-            raise ParityInputError("token exceeds the maximum byte length")
-        prepared.append(token)
-    return tuple(prepared)
-
-
-def batch_tokens(tokens: Sequence[str]) -> tuple[tuple[str, ...], ...]:
-    """Split validated tokens into bounded batches, preserving order."""
-    return tuple(
-        tuple(tokens[start : start + MAX_TOKENS_PER_BATCH])
-        for start in range(0, len(tokens), MAX_TOKENS_PER_BATCH)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -1045,14 +1047,6 @@ class _CandidateRepetition:
 
 
 @dataclass(frozen=True)
-class MembershipResult:
-    """One internal non-lexical result, preserving only ordinal and membership."""
-
-    ordinal: int
-    membership: str
-
-
-@dataclass(frozen=True)
 class PhaseBCandidateAssessment:
     """Fixed non-reconstructive Phase B assessment for one candidate."""
 
@@ -1181,128 +1175,11 @@ def _candidate_token_groups(label: str, tokens: Sequence[str]) -> tuple[tuple[st
 # ---------------------------------------------------------------------------
 # Phase B parser and aggregate assessment (live wiring enabled; opt-in only).
 # ---------------------------------------------------------------------------
-def _phase_b_fail() -> None:
-    """Raise the one fixed Phase B parse failure without response material."""
-    raise PhaseBParseError(_PHASE_B_FAILURE_MESSAGE)
-
-
-def _decode_protocol_text(raw: bytes) -> str:
-    """Decode internal protocol material, collapsing all failures to one error."""
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError:
-        _phase_b_fail()
-
-
-def _is_protocol_field(value: str, *, allow_internal_space: bool = False) -> bool:
-    """Check an internal field without returning or reporting its content."""
-    if not value or value != value.strip():
-        return False
-    if any(not character.isprintable() for character in value):
-        return False
-    return allow_internal_space or not any(character.isspace() for character in value)
-
-
-def _unsigned_protocol_integer(value: str) -> int:
-    """Parse a bounded ASCII integer or fail without reporting its text."""
-    if not (value.isascii() and value.isdigit() and len(value) <= 10):
-        _phase_b_fail()
-    return int(value)
-
-
-def _parse_pipe_record(record: bytes, token: str, ordinal: int) -> MembershipResult:
-    """Parse one exact normal-mode ``-a`` record and immediately discard fields."""
-    text = _decode_protocol_text(record)
-    if text == "*":
-        return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
-
-    if text.startswith(("+ ", "- ")):
-        root = text[2:]
-        if _is_protocol_field(root):
-            return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
-        _phase_b_fail()
-
-    if text.startswith("# "):
-        fields = text[2:].split(" ")
-        if (
-            len(fields) == 2
-            and fields[0] == token
-        ):
-            _unsigned_protocol_integer(fields[1])
-            return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
-        _phase_b_fail()
-
-    if text.startswith("& "):
-        left, delimiter, suggestion_text = text[2:].partition(": ")
-        fields = left.split(" ")
-        if delimiter and len(fields) == 3:
-            echo, count_text, offset_text = fields
-            suggestions = suggestion_text.split(", ")
-            count = _unsigned_protocol_integer(count_text)
-            _unsigned_protocol_integer(offset_text)
-            suggestions_valid = all(
-                _is_protocol_field(suggestion, allow_internal_space=True)
-                for suggestion in suggestions
-            )
-            if (
-                echo == token
-                and count > 0
-                and suggestions_valid
-                and len(suggestions) == count
-            ):
-                return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
-        _phase_b_fail()
-
-    _phase_b_fail()
-
-
-def parse_pipe_stream_response(
-    raw: bytes, tokens: Sequence[str], *, ordinal_offset: int = 0
-) -> tuple[MembershipResult, ...]:
-    """Parse one complete bounded ``-a`` stream under the approved exact framing."""
-    prepared = validate_tokens(tokens)
-    if not isinstance(raw, bytes) or ordinal_offset < 0:
-        _phase_b_fail()
-    if not raw.startswith(PHASE_B_PIPE_HEADING):
-        _phase_b_fail()
-
-    cursor = len(PHASE_B_PIPE_HEADING)
-    results: list[MembershipResult] = []
-    for index, token in enumerate(prepared):
-        line_end = raw.find(b"\n", cursor)
-        if line_end < 0:
-            _phase_b_fail()
-        record = raw[cursor:line_end]
-        cursor = line_end + 1
-        if raw[cursor : cursor + 1] != b"\n":
-            _phase_b_fail()
-        cursor += 1
-        results.append(_parse_pipe_record(record, token, ordinal_offset + index))
-    if cursor != len(raw):
-        _phase_b_fail()
-    return tuple(results)
-
-
-def parse_single_token_list_response(
-    raw: bytes, token: str, *, ordinal: int
-) -> MembershipResult:
-    """Parse one complete single-token ``-l`` process response."""
-    prepared = validate_tokens((token,))
-    if not isinstance(raw, bytes) or ordinal < 0:
-        _phase_b_fail()
-    if raw == b"":
-        return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
-    _decode_protocol_text(raw)
-    if raw == prepared[0].encode("utf-8") + b"\n":
-        return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
-    _phase_b_fail()
-
-
 def _phase_b_stdin(label: str, tokens: Sequence[str]) -> bytes:
     """Build approved Phase B stdin without connecting it to the live runner."""
     prepared = validate_tokens(tokens)
     if label == "PIPE_STREAM":
-        return b"".join(b"^" + token.encode("utf-8") + b"\n" for token in prepared)
+        return build_pipe_stream_stdin(prepared)
     if label == "SINGLE_TOKEN_LIST" and len(prepared) == 1:
         return prepared[0].encode("utf-8") + b"\n"
     raise ParityInputError("Phase B stdin requires one approved candidate grouping")
