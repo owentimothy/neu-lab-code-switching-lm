@@ -64,12 +64,17 @@ _ABORT_MESSAGE = (
     "Phase A parity run aborted. No protocol was selected, no resource or corpus "
     "was accessed, and no private value was printed."
 )
+_PHASE_B_ABORT_MESSAGE = (
+    "Phase B parity run aborted. No protocol was selected, no resource or corpus "
+    "was accessed, and no private value was printed."
+)
 
 # Live pinned-Hunspell Phase A execution is a SEPARATELY AUTHORIZED step.  The
 # wiring is enabled here, but the CLI still refuses by default and reaches it only
 # with --allow-phase-a-run; acquisition and execution remain separately authorized
 # and no Phase A run is performed here.
 _LIVE_PHASE_A_ENABLED = True
+_LIVE_PHASE_B_ENABLED = False
 
 # --- Public pinned identities (carried forward from tracked feasibility evidence).
 HUNSPELL_RELEASE = "v1.7.3"
@@ -1019,6 +1024,7 @@ class _CandidateRun:
     stdout_bytes: int
     stderr_bytes: int
     latency_ms: int
+    cleanup_confirmed: bool
 
 
 @dataclass(frozen=True)
@@ -1034,6 +1040,7 @@ class _CandidateRepetition:
     max_stdout_bytes: int
     max_stderr_bytes: int
     max_latency_ms: int
+    cleanup_confirmed: bool
 
 
 @dataclass(frozen=True)
@@ -1094,11 +1101,28 @@ class PhaseAEnvironment(Protocol):
     def teardown(self) -> None: ...
 
 
+class PhaseBEnvironment(Protocol):
+    """Injected Phase B dependency boundary (real later, fake in offline tests)."""
+
+    def verify_identities(self) -> None: ...
+    def build(self) -> None: ...
+    def run_candidate(
+        self, label: str, fixture: InventedFixture, run_index: int
+    ) -> _CandidateRepetition: ...
+    def evidence(self) -> _PhaseAEvidence: ...
+    def teardown(self) -> None: ...
+
+
 def _phase_a_batch_stdin(tokens: Sequence[str]) -> bytes:
     """Encode one process's tokens as a bounded, newline-delimited stdin stream."""
     if not tokens:
         return b""
     return ("\n".join(tokens) + "\n").encode("utf-8")
+
+
+def _phase_a_candidate_stdin(_label: str, tokens: Sequence[str]) -> bytes:
+    """Adapt the unchanged Phase A stdin encoding to the shared process runner."""
+    return _phase_a_batch_stdin(tokens)
 
 
 def _phase_a_container_argv(
@@ -1138,6 +1162,9 @@ def _reduce_candidate(result: BoundedRun) -> _CandidateRun:
         stdout_bytes=result.stdout_bytes,
         stderr_bytes=result.stderr_bytes,
         latency_ms=result.latency_ms,
+        cleanup_confirmed=(
+            not result.cleanup_required or result.cleanup_confirmed
+        ),
     )
 
 
@@ -1293,6 +1320,7 @@ def _validate_phase_b_repetition(repetition: _CandidateRepetition) -> None:
         or repetition.max_stderr_bytes != 0
         or repetition.max_latency_ms < 0
         or repetition.max_latency_ms > BATCH_TIMEOUT_SECONDS * 1000
+        or not repetition.cleanup_confirmed
     ):
         _phase_b_fail()
 
@@ -1351,9 +1379,11 @@ def assess_phase_b_candidate(
     repetitions_identical = (
         first.raw_streams == second.raw_streams and observed == second_observed
     )
+    cleanup_confirmed = first.cleanup_confirmed and second.cleanup_confirmed
     candidate_passed = (
         exact_cardinality
         and repetitions_identical
+        and cleanup_confirmed
         and match_count == len(expected)
     )
     return PhaseBCandidateAssessment(
@@ -1364,12 +1394,17 @@ def assess_phase_b_candidate(
         exact_cardinality=exact_cardinality,
         repetitions_identical=repetitions_identical,
         unknown_response_count=0,
-        cleanup_confirmed=True,
+        cleanup_confirmed=cleanup_confirmed,
         candidate_passed=candidate_passed,
     )
 
 
 PHASE_B_SUMMARY_KEYS: tuple[str, ...] = (
+    "hunspell_release",
+    "hunspell_commit",
+    "container_platform",
+    "environment_identity_match",
+    "offline_build",
     "modes_compared",
     "selected_mode_label",
     "passing_candidate_count",
@@ -1386,11 +1421,19 @@ PHASE_B_CANDIDATE_ASSESSMENT_KEYS: tuple[str, ...] = tuple(
 
 def build_phase_b_summary(
     assessments: dict[str, PhaseBCandidateAssessment],
+    *,
+    environment_identity_match: bool,
+    offline_build: bool,
 ) -> dict[str, object]:
     """Build a fixed aggregate report that never chooses between candidates."""
     if tuple(assessments) != CANDIDATE_LABELS:
         raise ParityInputError("assessments must cover exactly the candidate labels")
     summary: dict[str, object] = {
+        "hunspell_release": HUNSPELL_RELEASE,
+        "hunspell_commit": HUNSPELL_COMMIT,
+        "container_platform": CONTAINER_PLATFORM,
+        "environment_identity_match": environment_identity_match,
+        "offline_build": offline_build,
         "modes_compared": len(CANDIDATE_LABELS),
         "selected_mode_label": "NONE",
         "passing_candidate_count": sum(
@@ -1415,6 +1458,8 @@ def _run_candidate_processes(
     run_process: Callable[[list[str], bytes, Callable[[bool], None] | None], BoundedRun],
     docker_remover: Callable[[str], None] | None,
     cidfile_factory: Callable[[str, int], Path],
+    *,
+    stdin_builder: Callable[[str, Sequence[str]], bytes] = _phase_a_candidate_stdin,
 ) -> _CandidateRepetition:
     """Launch one supervised process per token group, preserving input order.
 
@@ -1428,16 +1473,24 @@ def _run_candidate_processes(
     max_stdout = 0
     max_stderr = 0
     max_latency = 0
+    cleanup_confirmed = True
     for index, group in enumerate(groups):
         cidfile = cidfile_factory(label, index)
         argv = _phase_a_container_argv(label, fixture_dir, install_dir, cidfile)
         cleanup = container_cleanup(cidfile, docker_remove=docker_remover)
-        record = _reduce_candidate(run_process(argv, _phase_a_batch_stdin(group), cleanup))
+        record = _reduce_candidate(run_process(argv, stdin_builder(label, group), cleanup))
         raw_streams.append(record.raw_stdout)
         max_stdout = max(max_stdout, record.stdout_bytes)
         max_stderr = max(max_stderr, record.stderr_bytes)
         max_latency = max(max_latency, record.latency_ms)
-    return _CandidateRepetition(tuple(raw_streams), max_stdout, max_stderr, max_latency)
+        cleanup_confirmed = cleanup_confirmed and record.cleanup_confirmed
+    return _CandidateRepetition(
+        tuple(raw_streams),
+        max_stdout,
+        max_stderr,
+        max_latency,
+        cleanup_confirmed,
+    )
 
 
 def _per_process_summaries(
@@ -1511,6 +1564,39 @@ def _run_phase_a_with_teardown(environment: PhaseAEnvironment) -> dict[str, obje
     """Run Phase A and attempt teardown exactly once, on success or failure."""
     try:
         return _run_phase_a(environment)
+    finally:
+        environment.teardown()
+
+
+def _run_phase_b(
+    environment: PhaseBEnvironment,
+    *,
+    fixture: InventedFixture | None = None,
+) -> dict[str, object]:
+    """Orchestrate Phase B over invented inputs and emit aggregates only."""
+    active = fixture if fixture is not None else build_invented_fixture()
+    environment.verify_identities()
+    environment.build()
+    assessments: dict[str, PhaseBCandidateAssessment] = {}
+    for label in CANDIDATE_LABELS:
+        first = environment.run_candidate(label, active, 0)
+        second = environment.run_candidate(label, active, 1)
+        assessments[label] = assess_phase_b_candidate(label, first, second, active)
+        del first, second
+    evidence = environment.evidence()
+    if not (evidence.environment_identity_match and evidence.offline_build):
+        raise ParityHarnessError("Phase B environment evidence was not confirmed")
+    return build_phase_b_summary(
+        assessments,
+        environment_identity_match=evidence.environment_identity_match,
+        offline_build=evidence.offline_build,
+    )
+
+
+def _run_phase_b_with_teardown(environment: PhaseBEnvironment) -> dict[str, object]:
+    """Run Phase B and attempt teardown exactly once, on success or failure."""
+    try:
+        return _run_phase_b(environment)
     finally:
         environment.teardown()
 
@@ -1610,6 +1696,9 @@ class _LivePhaseAEnvironment:
     side effects.
     """
 
+    _phase_label = "phase A"
+    _workspace_prefix = "neu-lab-parity-phase-a-"
+
     def __init__(
         self,
         *,
@@ -1650,10 +1739,12 @@ class _LivePhaseAEnvironment:
     def verify_identities(self) -> None:
         try:
             self._workspace = tempfile.TemporaryDirectory(
-                prefix="neu-lab-parity-phase-a-"
+                prefix=self._workspace_prefix
             )
         except OSError:
-            raise ParityHarnessError("phase A workspace could not be created") from None
+            raise ParityHarnessError(
+                f"{self._phase_label} workspace could not be created"
+            ) from None
         root = Path(self._workspace.name)
         archive = root / HUNSPELL_ARCHIVE_NAME
         self._acquire(archive)  # sha-256 verified against the pinned identity
@@ -1668,13 +1759,15 @@ class _LivePhaseAEnvironment:
             or self._workspace is None
             or self._source_dir is None
         ):
-            raise ParityHarnessError("phase A build requested before verification")
+            raise ParityHarnessError(
+                f"{self._phase_label} build requested before verification"
+            )
         install_dir = Path(self._workspace.name) / "install"
         try:
             install_dir.mkdir()
         except OSError:
             raise ParityHarnessError(
-                "phase A install directory could not be created"
+                f"{self._phase_label} install directory could not be created"
             ) from None
         cidfile = Path(self._workspace.name) / "build.cid"
         cleanup = container_cleanup(cidfile, docker_remove=self._docker_remover)
@@ -1689,11 +1782,17 @@ class _LivePhaseAEnvironment:
         self._install_dir = install_dir
         self._build_verified = True
 
-    def run_candidate(
-        self, label: str, fixture: InventedFixture, run_index: int
+    def _run_candidate_with_stdin(
+        self,
+        label: str,
+        fixture: InventedFixture,
+        run_index: int,
+        stdin_builder: Callable[[str, Sequence[str]], bytes],
     ) -> _CandidateRepetition:
         if not self._build_verified or self._install_dir is None or self._workspace is None:
-            raise ParityHarnessError("phase A run requested before build")
+            raise ParityHarnessError(
+                f"{self._phase_label} run requested before build"
+            )
         root = Path(self._workspace.name)
         fixture_dir = root / f"fixture_{label}_{run_index}"
         try:
@@ -1702,7 +1801,7 @@ class _LivePhaseAEnvironment:
             (fixture_dir / f"{_FIXTURE_BASE}.aff").write_bytes(fixture.affix_bytes)
         except OSError:
             raise ParityHarnessError(
-                "phase A invented fixture could not be materialised"
+                f"{self._phase_label} invented fixture could not be materialised"
             ) from None
         tokens = validate_tokens(fixture.query_tokens)
 
@@ -1727,6 +1826,17 @@ class _LivePhaseAEnvironment:
             run_process,
             self._docker_remover,
             cidfile_factory,
+            stdin_builder=stdin_builder,
+        )
+
+    def run_candidate(
+        self, label: str, fixture: InventedFixture, run_index: int
+    ) -> _CandidateRepetition:
+        return self._run_candidate_with_stdin(
+            label,
+            fixture,
+            run_index,
+            _phase_a_candidate_stdin,
         )
 
     def evidence(self) -> _PhaseAEvidence:
@@ -1744,8 +1854,25 @@ class _LivePhaseAEnvironment:
             workspace.cleanup()
         except OSError:
             raise ParityHarnessError(
-                "phase A workspace cleanup could not be confirmed"
+                f"{self._phase_label} workspace cleanup could not be confirmed"
             ) from None
+
+
+class _LivePhaseBEnvironment(_LivePhaseAEnvironment):
+    """Dormant Phase B live environment; construction itself has no side effects."""
+
+    _phase_label = "phase B"
+    _workspace_prefix = "neu-lab-parity-phase-b-"
+
+    def run_candidate(
+        self, label: str, fixture: InventedFixture, run_index: int
+    ) -> _CandidateRepetition:
+        return self._run_candidate_with_stdin(
+            label,
+            fixture,
+            run_index,
+            _phase_b_stdin,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1770,11 +1897,20 @@ def _execute_phase_a(environment: PhaseAEnvironment | None = None) -> dict[str, 
     return _run_phase_a_with_teardown(env)
 
 
+def _execute_phase_b(environment: PhaseBEnvironment | None = None) -> dict[str, object]:
+    """Reach the dormant Phase B live wiring only after a later activation gate."""
+    if not _LIVE_PHASE_B_ENABLED:
+        raise ParityHarnessError("live Phase B execution is not enabled in this gate")
+    env = environment if environment is not None else _LivePhaseBEnvironment()
+    return _run_phase_b_with_teardown(env)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Direct-Hunspell per-token protocol parity: Phase A observation."
+        description="Direct-Hunspell per-token protocol parity gates."
     )
-    parser.add_argument(
+    live_gate = parser.add_mutually_exclusive_group()
+    live_gate.add_argument(
         "--allow-phase-a-run",
         action="store_true",
         help=(
@@ -1782,11 +1918,27 @@ def _build_parser() -> argparse.ArgumentParser:
             "(required; execution stays separately authorized)"
         ),
     )
+    live_gate.add_argument(
+        "--allow-phase-b-run",
+        action="store_true",
+        help=(
+            "request the disabled live Phase B wiring "
+            "(activation and execution stay separately authorized)"
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    if args.allow_phase_b_run:
+        try:
+            summary = _execute_phase_b()
+        except Exception:
+            print(_PHASE_B_ABORT_MESSAGE, file=sys.stderr)
+            return EXIT_OPERATIONAL_ABORT
+        print(json.dumps(summary, ensure_ascii=True, separators=(",", ":")))
+        return EXIT_SUCCESS
     if not args.allow_phase_a_run:
         print(_OPT_IN_MESSAGE, file=sys.stderr)
         return EXIT_OPT_IN_REQUIRED
