@@ -5,7 +5,7 @@
 ```text
 Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
-Phase A live-execution wiring:                        IMPLEMENTED BUT DISABLED
+Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase A execution:               NOT EXECUTED / SEPARATELY AUTHORIZED
 Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
@@ -19,10 +19,13 @@ Corpus / tokenizer / model / probe work:              CLOSED
 
 **The real per-token Hunspell protocol is UNRESOLVED.** This branch adds the
 synthetic, offline *observation infrastructure* and the Phase A live-execution
-*wiring*, but that wiring remains **disabled** (`_LIVE_PHASE_A_ENABLED = False`) and
-is **not executed**. It does not implement or activate a response parser and makes
-**no** `-a` or `-l` framing assumption. No Phase A execution has been performed and
-no results are recorded here; live execution requires separate authorization.
+*wiring*. That wiring is now **enabled** (`_LIVE_PHASE_A_ENABLED = True`) but
+**opt-in only**: execution still requires both the explicit `--allow-phase-a-run`
+CLI opt-in and separate acquisition/execution authorization, and by default the CLI
+still refuses before any Docker, network, filesystem-resource, or subprocess
+activity. It does not implement or activate a response parser and makes **no** `-a`
+or `-l` framing assumption. No Phase A execution has been performed and no results
+are recorded here; live execution requires separate authorization.
 
 ## Scope
 
@@ -65,8 +68,10 @@ after a parser contract is presented as a reviewed source diff and approved.
   Boolean per token, order, duplicates, synchronisation, repeated records,
   continuation affixes, determinism, limits, and fail-closed behaviour.
 
-Live Phase A execution is gated off in this branch (`_LIVE_PHASE_A_ENABLED` is
-`False`); enabling it is a separately authorized step.
+Live Phase A execution is enabled in this branch (`_LIVE_PHASE_A_ENABLED` is
+`True`) but opt-in only: the CLI refuses by default and reaches it only with
+`--allow-phase-a-run`, acquisition and execution remain separately authorized, and
+no Phase A run is performed here.
 
 ## Selectable modes
 
@@ -214,8 +219,8 @@ always stubbed and its output is discarded to `DEVNULL`, never captured or expos
 
 Raw stdout and stderr are sensitive by discipline: reduced internally, never
 printed, logged, returned in the summary, or embedded in an error. Phase A and the
-real per-token response protocol remain unresolved, and live Phase A execution
-remains disabled in this branch.
+real per-token response protocol remain unresolved; live Phase A wiring is enabled
+but opt-in only, and no Phase A run is performed in this branch.
 
 ## Invented fixtures
 
@@ -230,15 +235,15 @@ form. Repeated records and continuation affixes are valid Hunspell interpreted b
 the real engine in Phase A; no restricted affix-directive parser is used, and this
 gate does not run them.
 
-## Phase A live-execution wiring (implemented, disabled)
+## Phase A live-execution wiring (implemented, enabled; opt-in only)
 
-The live-execution wiring is implemented behind the disabled gate. It is
-dependency-injected so offline tests drive the orchestration with a fake
-environment; ordinary execution refuses in the gate **before** any Docker, network,
-filesystem-resource, or subprocess activity, and `_LIVE_PHASE_A_ENABLED` stays
-`False`.
+The live-execution wiring is implemented and enabled (`_LIVE_PHASE_A_ENABLED` is
+`True`) but opt-in only. It is dependency-injected so offline tests drive the
+orchestration with a fake environment; without `--allow-phase-a-run` the CLI
+refuses **before** any Docker, network, filesystem-resource, or subprocess
+activity, and acquisition and execution remain separately authorized.
 
-When a future run is separately authorized to enable the gate, the live
+When a future run is separately authorized to run Phase A, the live
 environment performs only the approved Phase A responsibilities: acquire the
 already-approved public pinned Hunspell source and verify it by SHA-256; safely
 extract it and confirm the source layout and required build inputs are regular

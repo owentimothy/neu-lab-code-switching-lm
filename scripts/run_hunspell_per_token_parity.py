@@ -12,8 +12,10 @@ to Phase B, after a parser contract is separately reviewed.
 
 Contents:
 
-* refusal-by-default CLI; live pinned-Hunspell execution is disabled in this gate
-  (``_LIVE_PHASE_A_ENABLED`` is ``False``);
+* refusal-by-default CLI; the live pinned-Hunspell wiring is enabled
+  (``_LIVE_PHASE_A_ENABLED`` is ``True``) but reached only through the
+  ``--allow-phase-a-run`` opt-in, with acquisition and execution separately
+  authorized and no Phase A run performed here;
 * a bounded process supervisor with an exception-safe lifecycle: a complete-payload
   stdin writer worker, concurrent stdout/stderr drain workers that read through EOF
   on a normal exit, one common operational deadline, process-group termination,
@@ -61,9 +63,11 @@ _ABORT_MESSAGE = (
     "was accessed, and no private value was printed."
 )
 
-# Live pinned-Hunspell Phase A execution is a SEPARATELY AUTHORIZED step and is
-# intentionally not enabled in this initial implementation gate.
-_LIVE_PHASE_A_ENABLED = False
+# Live pinned-Hunspell Phase A execution is a SEPARATELY AUTHORIZED step.  The
+# wiring is enabled here, but the CLI still refuses by default and reaches it only
+# with --allow-phase-a-run; acquisition and execution remain separately authorized
+# and no Phase A run is performed here.
+_LIVE_PHASE_A_ENABLED = True
 
 # --- Public pinned identities (carried forward from tracked feasibility evidence).
 HUNSPELL_RELEASE = "v1.7.3"
@@ -952,12 +956,13 @@ def build_invented_fixture() -> InventedFixture:
 
 
 # ---------------------------------------------------------------------------
-# Phase A live-execution wiring (implemented, disabled).
+# Phase A live-execution wiring (implemented, enabled; opt-in only).
 #
 # The orchestration is dependency-injected so offline tests drive it with a fake
 # environment.  The live environment performs the only Docker/network/filesystem/
-# subprocess work and is reached only when the gate is enabled; ordinary execution
-# refuses in ``_execute_phase_a`` before any of it runs.  ``PIPE_STREAM`` runs one
+# subprocess work and is reached only through the ``main`` opt-in
+# (``--allow-phase-a-run``); the CLI refuses by default before any of it runs, and
+# acquisition and execution remain separately authorized.  ``PIPE_STREAM`` runs one
 # supervised process per bounded token batch; ``SINGLE_TOKEN_LIST`` runs one
 # separate supervised process per input token.  Phase A stops after the aggregate
 # observations: it never selects a mode, parses responses, classifies markers, or
@@ -1434,13 +1439,17 @@ class _LivePhaseAEnvironment:
 # CLI.
 # ---------------------------------------------------------------------------
 def _execute_phase_a(environment: PhaseAEnvironment | None = None) -> dict[str, object]:
-    """Gate live Phase A execution behind the disabled flag.
+    """Run live Phase A under the enabled activation flag (opt-in only).
 
-    Refuses before any Docker, network, filesystem-resource, or subprocess activity
-    while the gate is disabled.  When a future authorized run enables it, the
-    injected (or default live) environment verifies identities, builds offline, runs
-    two repetitions per candidate, and reduces to the aggregate schema only, with
-    teardown attempted exactly once.  The CLI accepts no caller-supplied evidence.
+    The activation flag is enabled, so when reached this constructs the injected
+    (or default live) environment, which verifies identities, builds offline, runs
+    two repetitions per candidate, and reduces to the aggregate schema only
+    (``selected_mode_label`` = ``NONE``), with teardown attempted exactly once.  It
+    is reached only through the ``main`` opt-in (``--allow-phase-a-run``); the CLI
+    still refuses by default, and acquisition and execution remain separately
+    authorized.  If the flag were disabled it would refuse before any Docker,
+    network, filesystem-resource, or subprocess activity.  The CLI accepts no
+    caller-supplied evidence.
     """
     if not _LIVE_PHASE_A_ENABLED:
         raise ParityHarnessError("live Phase A execution is not enabled in this gate")
@@ -1455,7 +1464,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-phase-a-run",
         action="store_true",
-        help="request the Phase A observation (live execution is gated off)",
+        help=(
+            "opt in to reach the enabled live Phase A wiring "
+            "(required; execution stays separately authorized)"
+        ),
     )
     return parser
 

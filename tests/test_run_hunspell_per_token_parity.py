@@ -140,12 +140,23 @@ def test_default_refuses_before_execution(capsys):
     assert captured.err == runner._OPT_IN_MESSAGE + "\n"
 
 
-def test_opt_in_does_not_execute_live_phase_a(capsys):
-    assert runner.main(["--allow-phase-a-run"]) == runner.EXIT_OPERATIONAL_ABORT
+def test_opt_in_enabled_gate_uses_injected_fake_environment(monkeypatch, capsys):
+    assert runner._LIVE_PHASE_A_ENABLED is True
+    env = _FakeEnvironment()
+    monkeypatch.setattr(runner, "_LivePhaseAEnvironment", lambda *a, **k: env)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("real Phase A seam must not run in tests")
+
+    monkeypatch.setattr(runner, "_acquire_public_pinned_source", _fail_if_called)
+    monkeypatch.setattr(runner, "run_bounded", _fail_if_called)
+    assert runner.main(["--allow-phase-a-run"]) == runner.EXIT_SUCCESS
+    # The opted-in CLI path drove only the injected fake through its lifecycle,
+    # never the real acquisition or bounded-transport seam.
+    assert (env.verified, env.built, env.teardowns) == (True, True, 1)
     captured = capsys.readouterr()
-    assert captured.out == ""
-    assert captured.err == runner._ABORT_MESSAGE + "\n"
-    assert runner._LIVE_PHASE_A_ENABLED is False
+    assert captured.err == ""
+    assert captured.out != ""  # a summary was produced; schema is covered elsewhere
 
 
 @pytest.mark.parametrize("argument", ["--root", "--dictionary", "--output", "extra"])
@@ -1359,18 +1370,24 @@ def test_extract_source_requires_configure(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Phase A -- disabled-gate refusal and boundary symbols.
+# Phase A -- enabled-gate opt-in behaviour and boundary symbols.
 # ---------------------------------------------------------------------------
-def test_disabled_gate_refuses_before_any_acquisition(monkeypatch):
-    calls: list[str] = []
-    monkeypatch.setattr(
-        runner, "_acquire_public_pinned_source", lambda _p: calls.append("acquire")
-    )
-    monkeypatch.setattr(runner, "_run_phase_a", lambda *a, **k: calls.append("run"))
-    assert runner._LIVE_PHASE_A_ENABLED is False
-    with pytest.raises(runner.ParityHarnessError):
-        runner._execute_phase_a()
-    assert calls == []
+def test_opt_in_enabled_gate_aborts_closed_without_reaching_real_seams(monkeypatch, capsys):
+    env = _FakeEnvironment(raise_at="build")
+    monkeypatch.setattr(runner, "_LivePhaseAEnvironment", lambda *a, **k: env)
+
+    def _fail_if_called(*args, **kwargs):
+        raise AssertionError("real Phase A seam must not run in tests")
+
+    monkeypatch.setattr(runner, "_acquire_public_pinned_source", _fail_if_called)
+    monkeypatch.setattr(runner, "run_bounded", _fail_if_called)
+    # The injected fake fails at the build stage; main() converts that into a fixed,
+    # non-sensitive abort without reaching any real acquisition/transport seam.
+    assert runner.main(["--allow-phase-a-run"]) == runner.EXIT_OPERATIONAL_ABORT
+    captured = capsys.readouterr()
+    assert captured.err == runner._ABORT_MESSAGE + "\n"
+    assert captured.out == ""
+    assert (env.verified, env.built, env.teardowns) == (True, False, 1)
 
 
 def test_default_cli_refusal_performs_no_live_work(monkeypatch, capsys):
