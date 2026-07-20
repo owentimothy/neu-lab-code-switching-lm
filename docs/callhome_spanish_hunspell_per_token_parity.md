@@ -8,7 +8,7 @@ Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase A execution:               CORRECTED EXECUTION COMPLETE (2026-07-20) — AGGREGATE OBSERVED
 Response parser / marker enum:                        IMPLEMENTED OFFLINE / TESTED
-Phase B live-execution wiring:                        IMPLEMENTED / DISABLED
+Phase B live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase B execution:               NOT RUN
 Candidate PASS / membership matching / mode choice:   NOT LIVE-EVALUATED (Phase B / human review)
 
@@ -26,10 +26,10 @@ synthetic, offline *observation infrastructure* and the Phase A live-execution
 CLI opt-in and separate acquisition/execution authorization, and by default the CLI
 still refuses before any Docker, network, filesystem-resource, or subprocess
 activity. Phase A itself makes **no** `-a` or `-l` framing assumption. This branch
-now also implements the separately approved Phase B parser and dormant live wiring.
-The separate `--allow-phase-b-run` route is refusal-only while
-`_LIVE_PHASE_B_ENABLED = False`, so it stops before constructing the live
-environment or reaching Docker, acquisition, or subprocess activity. Two
+now also implements the separately approved Phase B parser and enabled live wiring.
+The separate `--allow-phase-b-run` route is opt-in only while
+`_LIVE_PHASE_B_ENABLED = True`; the default CLI still refuses before constructing
+the live environment or reaching Docker, acquisition, or subprocess activity. Two
 separately authorized Phase A executions occurred on 2026-07-20, and only their
 fixed aggregate results were recorded. A read-only
 audit found that the first invocation lacked Docker `--interactive`, so that first
@@ -221,17 +221,17 @@ Two separately authorized Phase A executions occurred on 2026-07-20; the first w
 transport-invalid and the corrected second execution produced the aggregate result
 recorded above. Any further run remains separately authorized.
 
-## Approved Phase B parser contract, offline implementation, and disabled wiring
+## Approved Phase B parser contract, offline implementation, and enabled wiring
 
 The human approval seam was completed after review of the corrected Phase A
 aggregate and the pinned public Hunspell 1.7.3 protocol. This section fixes the
 Phase B parser contract using only public constants and semantic labels. The
 contract is implemented in pure offline functions and tested only with invented
-fixtures. Disabled Phase B wiring connects those functions to a separate injected
+fixtures. Phase B wiring connects those functions to a separate injected
 orchestration path that reuses the bounded runner and cleanup controls. It is
-unreachable beyond fixed refusal while `_LIVE_PHASE_B_ENABLED = False`; it does not
-execute live Phase B, acquire anything, access a real resource, select a mode, or
-open any downstream gate.
+reached only through the explicit `--allow-phase-b-run` opt-in while
+`_LIVE_PHASE_B_ENABLED = True`. Activation does not itself execute live Phase B,
+acquire anything, access a real resource, select a mode, or open any downstream gate.
 
 Public protocol sources:
 
@@ -581,9 +581,10 @@ attempted exactly once and a cleanup failure surfaces one fixed error.
 Phase A **stops after the aggregate observations**. It returns no candidate PASS
 verdict and performs no per-token parsing, membership-sequence inference, marker
 classification, or banner/separator/suggestion interpretation. The pure Phase B
-parser, assessment, and dormant orchestration functions are a separate boundary
+parser, assessment, and opt-in orchestration functions are a separate boundary
 and are never called by Phase A. The Phase B CLI route refuses before live
-environment construction while its activation flag remains false. Phase A does not recreate
+environment construction by default; actual execution remains separately
+authorized. Phase A does not recreate
 the abandoned affix-generation parser — real pinned Hunspell interprets the invented
 repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
 failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
@@ -602,11 +603,11 @@ automatically.
 
 ## Next gate
 
-Perform a read-only Phase B activation preflight. It must confirm the disabled
-flag, default refusal, exact aggregate schema, derived identity/build/cleanup
-evidence, offline test coverage, clean repository state, and smallest activation-only
-diff. It must not edit files, use Docker or the network, execute Phase B, select a
-candidate, or access any real resource or corpus.
+Perform a read-only Phase B execution preflight. It must confirm the enabled flag,
+default refusal, exact aggregate schema, derived identity/build/cleanup evidence,
+offline test coverage, clean repository and PR state, public acquisition pins, and
+fixed execution limits. It must not use Docker or the network, execute Phase B,
+select a candidate, or access any real resource or corpus.
 
 ## Standing boundaries
 

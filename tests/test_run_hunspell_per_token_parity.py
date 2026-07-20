@@ -146,19 +146,12 @@ def test_default_refuses_before_execution(capsys):
     assert captured.err == runner._OPT_IN_MESSAGE + "\n"
 
 
-def test_phase_b_live_gate_is_disabled_and_refuses_before_environment(
-    monkeypatch, capsys
-):
-    assert runner._LIVE_PHASE_B_ENABLED is False
-
-    def fail_if_constructed(*args, **kwargs):
-        raise AssertionError("disabled Phase B must refuse before live construction")
-
-    monkeypatch.setattr(runner, "_LivePhaseBEnvironment", fail_if_constructed)
-    assert runner.main(["--allow-phase-b-run"]) == runner.EXIT_OPERATIONAL_ABORT
+def test_phase_b_live_gate_is_enabled_but_default_still_refuses(capsys):
+    assert runner._LIVE_PHASE_B_ENABLED is True
+    assert runner.main([]) == runner.EXIT_OPT_IN_REQUIRED
     captured = capsys.readouterr()
     assert captured.out == ""
-    assert captured.err == runner._PHASE_B_ABORT_MESSAGE + "\n"
+    assert captured.err == runner._OPT_IN_MESSAGE + "\n"
 
 
 def test_phase_a_and_phase_b_opt_ins_are_mutually_exclusive():
@@ -1471,6 +1464,9 @@ def test_default_cli_refusal_performs_no_live_work(monkeypatch, capsys):
         runner, "_acquire_public_pinned_source", lambda _p: calls.append("acquire")
     )
     monkeypatch.setattr(runner, "_execute_phase_a", lambda *a, **k: calls.append("exec"))
+    monkeypatch.setattr(
+        runner, "_execute_phase_b", lambda *a, **k: calls.append("phase_b")
+    )
     assert runner.main([]) == runner.EXIT_OPT_IN_REQUIRED
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -1603,7 +1599,7 @@ def test_enabled_phase_b_cli_uses_only_injected_invented_environment(
     monkeypatch, capsys
 ):
     env = _FakePhaseBEnvironment()
-    monkeypatch.setattr(runner, "_LIVE_PHASE_B_ENABLED", True)
+    assert runner._LIVE_PHASE_B_ENABLED is True
     monkeypatch.setattr(runner, "_LivePhaseBEnvironment", lambda *a, **k: env)
 
     def fail_if_called(*args, **kwargs):
