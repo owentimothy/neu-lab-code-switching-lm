@@ -392,6 +392,7 @@ def test_hardened_container_argv_is_pinned_and_locked_down(tmp_path):
     assert argv[argv.index("--cap-drop") + 1] == "ALL"
     assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
     assert "--read-only" in argv
+    assert argv.count("--interactive") == 1
     assert argv[argv.index("--cidfile") + 1] == str(tmp_path / "cid")
     assert runner.CONTAINER_REFERENCE in argv
     assert argv[-4:] == ["hunspell", "-d", "/bundle/es", "-a"]

@@ -6,7 +6,7 @@
 Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
-Live pinned-Hunspell Phase A execution:               EXECUTED ONCE (2026-07-20) — AGGREGATE OBSERVED, REVIEWED
+Live pinned-Hunspell Phase A execution:               EXECUTED ONCE (2026-07-20) — TRANSPORT-INVALID; RERUN REQUIRED
 Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
 
@@ -26,10 +26,14 @@ still refuses before any Docker, network, filesystem-resource, or subprocess
 activity. It does not implement or activate a response parser and makes **no** `-a`
 or `-l` framing assumption. One separately authorized Phase A execution was
 performed on 2026-07-20; it exited cleanly and only the fixed aggregate result was
-recorded (see the Phase A execution result section below). The per-token protocol
-remains **UNRESOLVED**: neither candidate has PASS status, and no parser, marker
-enum, membership verdict, or mode selection has been approved. Every further live
-execution remains separately authorized.
+recorded (see the Phase A execution result section below). A later read-only audit
+found that the Docker invocation lacked `--interactive`, so host-side delivery to
+the Docker client did not establish forwarding into the container. That execution
+is retained as historical execution evidence but is **transport-invalid for
+protocol evidence**. The per-token protocol remains **UNRESOLVED**: neither
+candidate has PASS status, and no parser, marker enum, membership verdict, or mode
+selection has been approved. A corrected Phase A rerun and every further live
+execution remain separately authorized.
 
 ## Phase A execution result (2026-07-20, aggregate only)
 
@@ -37,6 +41,17 @@ One separately authorized Phase A execution was run once on 2026-07-20. Recorded
 below are only the fixed protocol-neutral aggregates — no raw stdout, response
 lines, lexical entries, corpus content, Docker logs, temporary paths, provenance,
 private hashes, or personal paths.
+
+The execution completed at the host process boundary, but it did not constitute a
+valid token-level observation. The tracked `docker run` argument vector omitted
+`--interactive`, which Docker requires to keep container standard input open.
+Host-side `stdin_delivered` therefore established delivery to the Docker client,
+not forwarding to Hunspell inside the container. The `PIPE_STREAM` 69-byte,
+one-LF result is the fixed public startup heading, while complete
+`SINGLE_TOKEN_LIST` silence cannot establish membership behavior. The unchanged
+aggregate is retained below as historical execution evidence only; it cannot
+support framing, membership, candidate PASS, selection, or Phase B. A separately
+authorized corrected Phase A rerun is required.
 
 ```text
 Process exit:                             0 (clean); exactly one aggregate JSON object; no stderr
@@ -81,15 +96,15 @@ SINGLE_TOKEN_LIST
   max_batch_latency_ms              = 139
 ```
 
-These values are protocol-neutral aggregates only. They establish no framing,
+These unchanged values are historical, protocol-neutral aggregates only. Because
+container standard input was not attached, they establish no token-level framing,
 membership, correctness, candidate PASS, or mode preference. Neither `PIPE_STREAM`
 nor `SINGLE_TOKEN_LIST` has PASS status. No parser contract, marker enum, membership
 verdict, or mode selection has been approved; the selected mode remains `NONE` and
 the per-token protocol remains **UNRESOLVED**. Phase B, real Spanish coverage,
 validation, clean promotion, routing, dataset construction, tokenizer work, model
-training, and probes remain **CLOSED**. A separately reviewed parser-contract
-proposal is required before Phase B, and every additional live execution requires
-separate authorization.
+training, and probes remain **CLOSED**. A separately authorized corrected Phase A
+rerun is required before a parser-contract source diff can proceed.
 
 ## Scope
 
@@ -326,7 +341,9 @@ Each candidate runs **twice** as a logical repetition, and each repetition prese
 the invented input order: `PIPE_STREAM` runs **one supervised process per bounded
 token batch**, while `SINGLE_TOKEN_LIST` runs **one separate supervised
 `hunspell -l` process per input token**, sending exactly one token plus its newline
-to each process — never in argv, an environment variable, a path, or an error.
+to each process — never in argv, an environment variable, a path, or an error. Each
+candidate container now uses exactly one Docker `--interactive` option so the
+already-bounded host input is forwarded to the container; no TTY is allocated.
 Every foreground container and the `docker pull` are supervised through the bounded
 transport (`Popen(..., start_new_session=True)`, fixed timeout, bounded output,
 process-group SIGTERM → one-second grace → SIGKILL, checked `docker rm -f`, and

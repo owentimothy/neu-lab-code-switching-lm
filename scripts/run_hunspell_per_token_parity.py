@@ -602,6 +602,7 @@ def hardened_container_argv(
         "docker",
         "run",
         "--rm",
+        "--interactive",
         "--cidfile",
         str(cidfile_path),
         "--network",
