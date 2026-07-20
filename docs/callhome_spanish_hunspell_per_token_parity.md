@@ -685,18 +685,30 @@ automatically.
 
 The Phase B execution and the human `PIPE_STREAM` selection above are recorded here
 as governance facts only; they introduce no selection constant and import no CLI
-script. Two separate, separately-authorized gates follow, in order:
+script. There are three separate, separately-authorized gates: the first is now
+implemented offline; the second and third remain closed:
 
-1. **Offline checker contract and synthetic implementation.** Define and review a
-   concrete `SpanishHunspellChecker` (`check_tokens`) that uses the reviewed
-   `PIPE_STREAM` invocation mode, implemented and tested on invented tokens with a
-   fake in-memory transport. No real resource, corpus, or CLI-script import; this is
-   the point at which the reviewed selection becomes code.
-2. **Controlled real Spanish aggregate execution (later, separately authorized).**
-   Only after gate 1 is approved: run aggregate-only, non-reconstructive Spanish
-   coverage over an approved private bundle. Real coverage, validation, clean
-   promotion, routing, datasets, tokenizer, model, and probe work remain **CLOSED**
-   and each require their own explicit authorization.
+1. **Offline checker core (implemented in this workstream, fake transport only).**
+   The reviewed `PIPE_STREAM` invocation mode is now represented in code:
+   `src/cslm/data/hunspell_pipe_stream.py` is the single source of truth for the
+   strict PIPE_STREAM parser, defensive limits, batching, and stdin builder — the
+   parity runner re-imports these under their existing names, so no CLI script is
+   imported and the parser is not duplicated — and
+   `src/cslm/data/spanish_hunspell_pipe_checker.py` implements the `check_tokens`
+   boundary over an injected `PipeStreamTransport`, tested only with invented tokens
+   and a fake in-memory transport.
+2. **Real bounded transport wiring (CLOSED, separately authorized).** The concrete
+   bounded subprocess/Docker `PipeStreamTransport` — pinned container, supervised
+   execution, fail-closed cleanup — is **not** implemented here and remains
+   **CLOSED**. It must live in a stable `src/cslm/data` module and must never be, or
+   be imported from, the CLI parity runner. It requires its own explicit
+   authorization.
+3. **Controlled real Spanish aggregate execution (CLOSED, separately authorized
+   only after transport approval).** Only after gates 1 and 2 are approved: run
+   aggregate-only, non-reconstructive Spanish coverage over an approved private
+   bundle. Real coverage, validation, clean promotion, routing, datasets, tokenizer,
+   model, and probe work remain **CLOSED** and each require their own explicit
+   authorization.
 
 ## Standing boundaries
 

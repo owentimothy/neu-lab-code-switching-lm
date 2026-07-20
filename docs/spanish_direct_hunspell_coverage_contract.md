@@ -7,6 +7,8 @@ RLA-ES flat surface-form generation:                 STOP / CARRIED FORWARD
 Direct local Hunspell fallback direction:            APPROVED FOR SYNTHETIC ADAPTER
 Language-neutral coverage arithmetic:                SHARED WITH ENGLISH
 Synthetic injected-checker implementation:           IMPLEMENTED IN THIS BRANCH
+Offline PIPE_STREAM checker core:                    IMPLEMENTED WITH FAKE TRANSPORT
+Reviewed PIPE_STREAM invocation mode:                REPRESENTED IN CODE
 Concrete RLA-ES loader or bundle:                     CLOSED
 Concrete subprocess/container transport:             CLOSED
 Real CALLHOME or Bangor access:                       CLOSED
@@ -201,7 +203,16 @@ CALLHOME, Bangor, an ignored resource, or a private log.
 
 ## Future Concrete Local Checker Gate
 
-A separate design and execution branch must still resolve:
+The offline checker core is now implemented with a **fake transport**:
+`src/cslm/data/hunspell_pipe_stream.py` owns the shared strict PIPE_STREAM parser,
+the defensive limits, batching, and `build_pipe_stream_stdin`; and
+`src/cslm/data/spanish_hunspell_pipe_checker.py` implements the `check_tokens`
+boundary over an injected `PipeStreamTransport`.  The reviewed `PIPE_STREAM`
+invocation mode is therefore now represented in code.  **Real bounded
+subprocess/Docker transport wiring remains CLOSED**, and the **real aggregate
+Spanish coverage run remains CLOSED**; coverage remains descriptive only and cannot
+validate, clean, promote, or route rows.  A separate design and execution branch
+must still resolve:
 
 1. a revised private bundle layout that preserves the original `es.oxt`,
    `es.dic`, `es.aff`, all required notices, and deterministic provenance without
