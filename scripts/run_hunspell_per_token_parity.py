@@ -1,14 +1,14 @@
 #!/usr/bin/env python
-"""Phase A infrastructure for the Direct-Hunspell per-token protocol parity gate.
+"""Phase A infrastructure and offline Phase B parser for Hunspell parity.
 
-This module provides the *observation infrastructure* only.  The real per-token
-Hunspell response protocol is UNRESOLVED.  Phase A therefore makes **no** framing
-assumption: it does not equate output lines with input tokens, does not derive any
-"candidate passed" verdict from one-line-per-token behaviour, and assumes no
-banners, separators, response blocks, or suggestion shapes.  It reduces raw output
-to protocol-neutral *whole-stream* aggregates and records only observed execution
-facts.  Candidate PASS, membership-sequence matching, and marker rejection belong
-to Phase B, after a parser contract is separately reviewed.
+This module provides Phase A *observation infrastructure* plus pure offline Phase B
+parsing.  Real candidate viability is UNRESOLVED.  Phase A makes **no** framing
+assumption: it does not equate output lines with input tokens or derive any
+"candidate passed" verdict from one-line-per-token behaviour.  It reduces raw
+output to protocol-neutral *whole-stream* aggregates and records only observed
+execution facts.  The separately approved Phase B contract is implemented here as
+pure offline parsing and aggregate-assessment functions; it is not connected to
+the live runner or CLI.
 
 Contents:
 
@@ -24,6 +24,8 @@ Contents:
 * protocol-neutral whole-stream observation;
 * invented fixture builders (dictionary/affix inputs only), used later by the
   authorized Phase A execution step, not by ordinary tests.
+* strict offline Phase B parsing and aggregate assessment over invented results,
+  with no automatic candidate selection and no live execution path.
 
 It never accepts a corpus/resource/output path argument.  It never touches RLA-ES,
 CALLHOME, Bangor, ignored resources, private logs, the network, or Docker in this
@@ -93,6 +95,12 @@ TERMINATION_GRACE_SECONDS = 1.0  # exactly one second grace before SIGKILL
 # / NONE.
 CANDIDATE_LABELS: tuple[str, ...] = ("PIPE_STREAM", "SINGLE_TOKEN_LIST")
 SELECTED_MODE_ENUM: tuple[str, ...] = ("PIPE_STREAM", "SINGLE_TOKEN_LIST", "NONE")
+MEMBERSHIP_ACCEPTED = "ACCEPTED"
+MEMBERSHIP_REJECTED = "REJECTED"
+MEMBERSHIP_LABELS: tuple[str, ...] = (MEMBERSHIP_ACCEPTED, MEMBERSHIP_REJECTED)
+PHASE_B_PIPE_HEADING = (
+    b"@(#) International Ispell Version 3.2.06 (but really Hunspell 1.7.3)\n"
+)
 
 # Fixed internal supervisor terminal states.  ``forced_termination`` (SIGKILL
 # escalation) is reported separately so all five outcomes are distinguishable.
@@ -122,6 +130,15 @@ class ParityInputError(ParityHarnessError):
 
 class ParityTransportError(ParityHarnessError):
     """A process could not be launched, supervised, or cleaned up safely."""
+
+
+class PhaseBParseError(ParityHarnessError):
+    """A response failed the approved Phase B contract without exposing content."""
+
+
+_PHASE_B_FAILURE_MESSAGE = (
+    "Phase B candidate response did not match the approved protocol contract"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -1020,6 +1037,44 @@ class _CandidateRepetition:
 
 
 @dataclass(frozen=True)
+class MembershipResult:
+    """One internal non-lexical result, preserving only ordinal and membership."""
+
+    ordinal: int
+    membership: str
+
+
+@dataclass(frozen=True)
+class PhaseBCandidateAssessment:
+    """Fixed non-reconstructive Phase B assessment for one candidate."""
+
+    candidate_attempted: bool
+    candidate_completed: bool
+    invented_case_count: int
+    expected_membership_match_count: int
+    exact_cardinality: bool
+    repetitions_identical: bool
+    unknown_response_count: int
+    cleanup_confirmed: bool
+    candidate_passed: bool
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "candidate_attempted": self.candidate_attempted,
+            "candidate_completed": self.candidate_completed,
+            "invented_case_count": self.invented_case_count,
+            "expected_membership_match_count": (
+                self.expected_membership_match_count
+            ),
+            "exact_cardinality": self.exact_cardinality,
+            "repetitions_identical": self.repetitions_identical,
+            "unknown_response_count": self.unknown_response_count,
+            "cleanup_confirmed": self.cleanup_confirmed,
+            "candidate_passed": self.candidate_passed,
+        }
+
+
+@dataclass(frozen=True)
 class _PhaseAEvidence:
     """Verified environment evidence carried into the aggregate summary."""
 
@@ -1093,6 +1148,263 @@ def _candidate_token_groups(label: str, tokens: Sequence[str]) -> tuple[tuple[st
     if label == "SINGLE_TOKEN_LIST":
         return tuple((token,) for token in tokens)
     raise ParityInputError("unknown candidate label")
+
+
+# ---------------------------------------------------------------------------
+# Phase B pure offline parser and aggregate assessment (not live-wired).
+# ---------------------------------------------------------------------------
+def _phase_b_fail() -> None:
+    """Raise the one fixed Phase B parse failure without response material."""
+    raise PhaseBParseError(_PHASE_B_FAILURE_MESSAGE)
+
+
+def _decode_protocol_text(raw: bytes) -> str:
+    """Decode internal protocol material, collapsing all failures to one error."""
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        _phase_b_fail()
+
+
+def _is_protocol_field(value: str, *, allow_internal_space: bool = False) -> bool:
+    """Check an internal field without returning or reporting its content."""
+    if not value or value != value.strip():
+        return False
+    if any(not character.isprintable() for character in value):
+        return False
+    return allow_internal_space or not any(character.isspace() for character in value)
+
+
+def _unsigned_protocol_integer(value: str) -> int:
+    """Parse a bounded ASCII integer or fail without reporting its text."""
+    if not (value.isascii() and value.isdigit() and len(value) <= 10):
+        _phase_b_fail()
+    return int(value)
+
+
+def _parse_pipe_record(record: bytes, token: str, ordinal: int) -> MembershipResult:
+    """Parse one exact normal-mode ``-a`` record and immediately discard fields."""
+    text = _decode_protocol_text(record)
+    if text == "*":
+        return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
+
+    if text.startswith(("+ ", "- ")):
+        root = text[2:]
+        if _is_protocol_field(root):
+            return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
+        _phase_b_fail()
+
+    if text.startswith("# "):
+        fields = text[2:].split(" ")
+        if (
+            len(fields) == 2
+            and fields[0] == token
+        ):
+            _unsigned_protocol_integer(fields[1])
+            return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
+        _phase_b_fail()
+
+    if text.startswith("& "):
+        left, delimiter, suggestion_text = text[2:].partition(": ")
+        fields = left.split(" ")
+        if delimiter and len(fields) == 3:
+            echo, count_text, offset_text = fields
+            suggestions = suggestion_text.split(", ")
+            count = _unsigned_protocol_integer(count_text)
+            _unsigned_protocol_integer(offset_text)
+            suggestions_valid = all(
+                _is_protocol_field(suggestion, allow_internal_space=True)
+                for suggestion in suggestions
+            )
+            if (
+                echo == token
+                and count > 0
+                and suggestions_valid
+                and len(suggestions) == count
+            ):
+                return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
+        _phase_b_fail()
+
+    _phase_b_fail()
+
+
+def parse_pipe_stream_response(
+    raw: bytes, tokens: Sequence[str], *, ordinal_offset: int = 0
+) -> tuple[MembershipResult, ...]:
+    """Parse one complete bounded ``-a`` stream under the approved exact framing."""
+    prepared = validate_tokens(tokens)
+    if not isinstance(raw, bytes) or ordinal_offset < 0:
+        _phase_b_fail()
+    if not raw.startswith(PHASE_B_PIPE_HEADING):
+        _phase_b_fail()
+
+    cursor = len(PHASE_B_PIPE_HEADING)
+    results: list[MembershipResult] = []
+    for index, token in enumerate(prepared):
+        line_end = raw.find(b"\n", cursor)
+        if line_end < 0:
+            _phase_b_fail()
+        record = raw[cursor:line_end]
+        cursor = line_end + 1
+        if raw[cursor : cursor + 1] != b"\n":
+            _phase_b_fail()
+        cursor += 1
+        results.append(_parse_pipe_record(record, token, ordinal_offset + index))
+    if cursor != len(raw):
+        _phase_b_fail()
+    return tuple(results)
+
+
+def parse_single_token_list_response(
+    raw: bytes, token: str, *, ordinal: int
+) -> MembershipResult:
+    """Parse one complete single-token ``-l`` process response."""
+    prepared = validate_tokens((token,))
+    if not isinstance(raw, bytes) or ordinal < 0:
+        _phase_b_fail()
+    if raw == b"":
+        return MembershipResult(ordinal, MEMBERSHIP_ACCEPTED)
+    _decode_protocol_text(raw)
+    if raw == prepared[0].encode("utf-8") + b"\n":
+        return MembershipResult(ordinal, MEMBERSHIP_REJECTED)
+    _phase_b_fail()
+
+
+def _phase_b_stdin(label: str, tokens: Sequence[str]) -> bytes:
+    """Build approved Phase B stdin without connecting it to the live runner."""
+    prepared = validate_tokens(tokens)
+    if label == "PIPE_STREAM":
+        return b"".join(b"^" + token.encode("utf-8") + b"\n" for token in prepared)
+    if label == "SINGLE_TOKEN_LIST" and len(prepared) == 1:
+        return prepared[0].encode("utf-8") + b"\n"
+    raise ParityInputError("Phase B stdin requires one approved candidate grouping")
+
+
+def _validate_phase_b_repetition(repetition: _CandidateRepetition) -> None:
+    """Require the retained process aggregates to remain within approved limits."""
+    observed_max_stdout = max(
+        (len(stream) for stream in repetition.raw_streams), default=0
+    )
+    if (
+        repetition.max_stdout_bytes < 0
+        or repetition.max_stdout_bytes != observed_max_stdout
+        or repetition.max_stdout_bytes > MAX_STDOUT_BYTES
+        or repetition.max_stderr_bytes < 0
+        or repetition.max_stderr_bytes != 0
+        or repetition.max_latency_ms < 0
+        or repetition.max_latency_ms > BATCH_TIMEOUT_SECONDS * 1000
+    ):
+        _phase_b_fail()
+
+
+def parse_candidate_responses(
+    label: str, repetition: _CandidateRepetition, tokens: Sequence[str]
+) -> tuple[MembershipResult, ...]:
+    """Parse one candidate repetition while preserving process boundaries."""
+    prepared = validate_tokens(tokens)
+    _validate_phase_b_repetition(repetition)
+    groups = _candidate_token_groups(label, prepared)
+    if len(repetition.raw_streams) != len(groups):
+        _phase_b_fail()
+
+    results: list[MembershipResult] = []
+    ordinal = 0
+    for stream, group in zip(repetition.raw_streams, groups, strict=True):
+        if label == "PIPE_STREAM":
+            parsed = parse_pipe_stream_response(stream, group, ordinal_offset=ordinal)
+            results.extend(parsed)
+        elif label == "SINGLE_TOKEN_LIST":
+            results.append(
+                parse_single_token_list_response(stream, group[0], ordinal=ordinal)
+            )
+        else:  # guarded by _candidate_token_groups; retained as fail-closed defense.
+            _phase_b_fail()
+        ordinal += len(group)
+    return tuple(results)
+
+
+def assess_phase_b_candidate(
+    label: str,
+    first: _CandidateRepetition,
+    second: _CandidateRepetition,
+    fixture: InventedFixture,
+) -> PhaseBCandidateAssessment:
+    """Assess two invented repetitions without exposing per-token results."""
+    if not (
+        len(fixture.query_tokens)
+        == len(fixture.query_behaviors)
+        == len(fixture.known_truth)
+    ):
+        raise ParityInputError("invented fixture cardinality is inconsistent")
+    first_results = parse_candidate_responses(label, first, fixture.query_tokens)
+    second_results = parse_candidate_responses(label, second, fixture.query_tokens)
+    expected = tuple(
+        MEMBERSHIP_ACCEPTED if truth else MEMBERSHIP_REJECTED
+        for truth in fixture.known_truth
+    )
+    observed = tuple(result.membership for result in first_results)
+    second_observed = tuple(result.membership for result in second_results)
+    match_count = sum(
+        actual == wanted for actual, wanted in zip(observed, expected, strict=True)
+    )
+    exact_cardinality = len(observed) == len(expected) == len(second_observed)
+    repetitions_identical = (
+        first.raw_streams == second.raw_streams and observed == second_observed
+    )
+    candidate_passed = (
+        exact_cardinality
+        and repetitions_identical
+        and match_count == len(expected)
+    )
+    return PhaseBCandidateAssessment(
+        candidate_attempted=True,
+        candidate_completed=True,
+        invented_case_count=len(expected),
+        expected_membership_match_count=match_count,
+        exact_cardinality=exact_cardinality,
+        repetitions_identical=repetitions_identical,
+        unknown_response_count=0,
+        cleanup_confirmed=True,
+        candidate_passed=candidate_passed,
+    )
+
+
+PHASE_B_SUMMARY_KEYS: tuple[str, ...] = (
+    "modes_compared",
+    "selected_mode_label",
+    "passing_candidate_count",
+    "candidate_assessment_count",
+    "candidate_assessments",
+    "no_real_resource_or_corpus_access",
+)
+PHASE_B_CANDIDATE_ASSESSMENT_KEYS: tuple[str, ...] = tuple(
+    PhaseBCandidateAssessment(True, True, 0, 0, True, True, 0, True, True)
+    .to_dict()
+    .keys()
+)
+
+
+def build_phase_b_summary(
+    assessments: dict[str, PhaseBCandidateAssessment],
+) -> dict[str, object]:
+    """Build a fixed aggregate report that never chooses between candidates."""
+    if tuple(assessments) != CANDIDATE_LABELS:
+        raise ParityInputError("assessments must cover exactly the candidate labels")
+    summary: dict[str, object] = {
+        "modes_compared": len(CANDIDATE_LABELS),
+        "selected_mode_label": "NONE",
+        "passing_candidate_count": sum(
+            assessment.candidate_passed for assessment in assessments.values()
+        ),
+        "candidate_assessment_count": len(assessments),
+        "candidate_assessments": {
+            label: assessments[label].to_dict() for label in CANDIDATE_LABELS
+        },
+        "no_real_resource_or_corpus_access": True,
+    }
+    if tuple(summary) != PHASE_B_SUMMARY_KEYS:
+        raise ParityInputError("Phase B summary schema drifted from fixed key order")
+    return summary
 
 
 def _run_candidate_processes(

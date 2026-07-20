@@ -1,14 +1,14 @@
-# Direct-Hunspell Per-Token Protocol Parity — Phase A Infrastructure
+# Direct-Hunspell Per-Token Protocol Parity — Phase A and Offline Phase B
 
 ## Status
 
 ```text
-Per-token Hunspell response protocol:                 UNRESOLVED
+Per-token Hunspell candidate viability:               UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
 Live pinned-Hunspell Phase A execution:               CORRECTED EXECUTION COMPLETE (2026-07-20) — AGGREGATE OBSERVED
-Response parser / marker enum:                        CONTRACT APPROVED; IMPLEMENTATION CLOSED
-Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
+Response parser / marker enum:                        IMPLEMENTED OFFLINE / TESTED; LIVE PHASE B CLOSED
+Candidate PASS / membership matching / mode choice:   NOT LIVE-EVALUATED (Phase B / human review)
 
 RLA-ES acquisition / inspection:                      CLOSED
 CALLHOME / Bangor access:                             CLOSED
@@ -17,23 +17,24 @@ Validation / clean promotion / routing:               CLOSED
 Corpus / tokenizer / model / probe work:              CLOSED
 ```
 
-**The real per-token Hunspell protocol is UNRESOLVED.** This branch adds the
+**Real candidate viability remains UNRESOLVED.** This branch adds the
 synthetic, offline *observation infrastructure* and the Phase A live-execution
 *wiring*. That wiring is now **enabled** (`_LIVE_PHASE_A_ENABLED = True`) but
 **opt-in only**: execution still requires both the explicit `--allow-phase-a-run`
 CLI opt-in and separate acquisition/execution authorization, and by default the CLI
 still refuses before any Docker, network, filesystem-resource, or subprocess
-activity. It does not implement or activate a response parser and makes **no** `-a`
-or `-l` framing assumption. Two separately authorized Phase A executions occurred
-on 2026-07-20, and only their fixed aggregate results were recorded. A read-only
+activity. Phase A itself makes **no** `-a` or `-l` framing assumption. This branch
+now also implements the separately approved Phase B parser as pure offline
+functions over invented inputs; those functions are not connected to the CLI,
+Docker, acquisition, or any live execution path. Two separately authorized Phase A
+executions occurred on 2026-07-20, and only their fixed aggregate results were recorded. A read-only
 audit found that the first invocation lacked Docker `--interactive`, so that first
 execution is retained as historical evidence but is **transport-invalid for
 protocol evidence**. After the tracked stdin-forwarding correction was reviewed,
 verified, committed, and pushed, one corrected execution completed cleanly under
 the same pins and limits (see both result sections below). The per-token protocol
-remains **UNRESOLVED**: neither candidate has PASS status, and no parser, marker
-enum, membership verdict, or mode selection has been approved. Every further live
-execution remains separately authorized.
+remains **UNRESOLVED**: neither candidate has live Phase B PASS status and no mode
+has been selected. Every further live execution remains separately authorized.
 
 ## Initial Phase A execution result (2026-07-20, transport-invalid aggregate)
 
@@ -98,9 +99,9 @@ SINGLE_TOKEN_LIST
 These unchanged values are historical, protocol-neutral aggregates only. Because
 container standard input was not attached, they establish no token-level framing,
 membership, correctness, candidate PASS, or mode preference. Neither `PIPE_STREAM`
-nor `SINGLE_TOKEN_LIST` has PASS status. No parser contract, marker enum, membership
-verdict, or mode selection has been approved; the selected mode remains `NONE` and
-the per-token protocol remains **UNRESOLVED**. Phase B, real Spanish coverage,
+nor `SINGLE_TOKEN_LIST` has PASS status. At that historical gate, no parser contract,
+marker enum, membership verdict, or mode selection had been approved; the selected
+mode remains `NONE` and candidate viability remains **UNRESOLVED**. Phase B, real Spanish coverage,
 validation, clean promotion, routing, dataset construction, tokenizer work, model
 training, and probes remain **CLOSED**.
 
@@ -216,13 +217,15 @@ Two separately authorized Phase A executions occurred on 2026-07-20; the first w
 transport-invalid and the corrected second execution produced the aggregate result
 recorded above. Any further run remains separately authorized.
 
-## Approved Phase B parser contract (implementation closed)
+## Approved Phase B parser contract and offline implementation
 
 The human approval seam was completed after review of the corrected Phase A
 aggregate and the pinned public Hunspell 1.7.3 protocol. This section fixes the
-Phase B parser contract using only public constants and semantic labels. It does
-not implement the parser, execute Phase B, award candidate PASS, select a mode, or
-open any real-resource or downstream gate.
+Phase B parser contract using only public constants and semantic labels. The
+contract is implemented in pure offline functions and tested only with invented
+fixtures. The implementation is not connected to the Phase A runner or CLI; it
+does not execute live Phase B, acquire anything, access a real resource, select a
+mode, or open any downstream gate.
 
 Public protocol sources:
 
@@ -347,14 +350,14 @@ or privacy-bearing output escapes.
   preference.
 
 No result changes `selected_mode_label` until a separate explicit selection is
-reviewed, implemented, verified, committed, and approved. Phase B implementation
-and any live invented-fixture execution each require their own authorization.
+reviewed, implemented, verified, committed, and approved. Any live invented-fixture
+Phase B execution requires its own authorization.
 
 ## Selectable modes
 
 ```text
-PIPE_STREAM        candidate (contract approved; Phase B verification not run)
-SINGLE_TOKEN_LIST  candidate (contract approved; Phase B verification not run)
+PIPE_STREAM        candidate (offline parser implemented; live Phase B not run)
+SINGLE_TOKEN_LIST  candidate (offline parser implemented; live Phase B not run)
 NONE               Phase A always reports NONE; a human selects afterwards
 ```
 
@@ -569,13 +572,14 @@ attempted exactly once and a cleanup failure surfaces one fixed error.
 
 Phase A **stops after the aggregate observations**. It returns no candidate PASS
 verdict and performs no per-token parsing, membership-sequence inference, marker
-classification, or banner/separator/suggestion interpretation. It does not recreate
+classification, or banner/separator/suggestion interpretation. The pure Phase B
+parser and assessment functions are a separate offline-only boundary and are not
+called by Phase A or the CLI. Phase A does not recreate
 the abandoned affix-generation parser — real pinned Hunspell interprets the invented
 repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
 failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
-failure each raise fixed, non-sensitive errors. The parser contract is approved in
-this source diff; its implementation and Phase B execution remain closed and
-require separate explicit approval.
+failure each raise fixed, non-sensitive errors. Live Phase B execution remains
+closed and requires separate explicit approval.
 
 ## Approved Phase B PASS / STOP criteria (not yet evaluated)
 

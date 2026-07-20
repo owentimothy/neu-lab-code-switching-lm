@@ -10,7 +10,8 @@ Two tiers run in ordinary CI:
 
 No test starts Docker, uses the network, runs pinned Hunspell, or accesses RLA-ES,
 CALLHOME, Bangor, ignored resources, or private logs.  The stub is an invented
-local process; no ``-a``/``-l`` framing is assumed anywhere.  Docker is always
+local process. Phase A tests assume no framing; Phase B tests enforce only the
+approved public ``-a``/``-l`` contract over invented bytes. Docker is always
 stubbed; no Docker command actually runs.
 """
 
@@ -1404,17 +1405,236 @@ def test_default_cli_refusal_performs_no_live_work(monkeypatch, capsys):
     assert calls == []
 
 
-def test_no_parser_marker_or_autoselection_symbols():
-    for absent in (
-        "parse_response",
-        "classify_marker",
-        "response_marker_enum",
-        "membership_sequence_match",
-        "select_mode",
-        "select_candidate",
-    ):
+def test_phase_b_parser_exists_without_live_or_autoselection_symbols():
+    assert callable(runner.parse_pipe_stream_response)
+    assert callable(runner.parse_single_token_list_response)
+    assert callable(runner.assess_phase_b_candidate)
+    for absent in ("run_phase_b", "select_mode", "select_candidate"):
         assert not hasattr(runner, absent)
     assert runner.SELECTED_MODE_ENUM == ("PIPE_STREAM", "SINGLE_TOKEN_LIST", "NONE")
+
+
+# ---------------------------------------------------------------------------
+# Phase B -- pure offline parsing and aggregate assessment (invented data only).
+# ---------------------------------------------------------------------------
+def _pipe_response(*records: bytes) -> bytes:
+    return runner.PHASE_B_PIPE_HEADING + b"".join(
+        record + b"\n\n" for record in records
+    )
+
+
+def _phase_b_fixture_repetition(label, fixture, *, rejected=True, **overrides):
+    if label == "PIPE_STREAM":
+        records = [b"*"] * len(fixture.query_tokens)
+        if rejected:
+            records[-1] = b"# synqzzz 0"
+        streams = (_pipe_response(*records),)
+    else:
+        streams = tuple(
+            b"" if truth else token.encode("utf-8") + b"\n"
+            for token, truth in zip(
+                fixture.query_tokens, fixture.known_truth, strict=True
+            )
+        )
+        if not rejected:
+            streams = tuple(b"" for _token in fixture.query_tokens)
+    return _repetition(
+        streams,
+        max_stdout_bytes=overrides.get(
+            "max_stdout_bytes", max((len(stream) for stream in streams), default=0)
+        ),
+        max_stderr_bytes=overrides.get("max_stderr_bytes", 0),
+        max_latency_ms=overrides.get("max_latency_ms", 1),
+    )
+
+
+@pytest.mark.parametrize(
+    ("record", "membership"),
+    [
+        (b"*", "ACCEPTED"),
+        (b"+ inventedroot", "ACCEPTED"),
+        (b"- inventedroot", "ACCEPTED"),
+        (b"& invented 2 0: optionone, option two", "REJECTED"),
+        (b"# invented 0", "REJECTED"),
+    ],
+)
+def test_pipe_parser_maps_every_approved_marker(record, membership):
+    result = runner.parse_pipe_stream_response(
+        _pipe_response(record), ("invented",)
+    )
+    assert result == (runner.MembershipResult(0, membership),)
+
+
+def test_pipe_parser_preserves_fixture_order_cardinality_and_duplicate_ordinals():
+    fixture = runner.build_invented_fixture()
+    records = [b"*"] * (len(fixture.query_tokens) - 1) + [b"# synqzzz 0"]
+    results = runner.parse_pipe_stream_response(
+        _pipe_response(*records), fixture.query_tokens
+    )
+    assert tuple(result.ordinal for result in results) == tuple(
+        range(len(fixture.query_tokens))
+    )
+    assert results[0].membership == results[8].membership == "ACCEPTED"
+    assert results[-1].membership == "REJECTED"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        b"",
+        b"wrong heading\n*\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"*\n",
+        runner.PHASE_B_PIPE_HEADING + b"*\n\nextra",
+        runner.PHASE_B_PIPE_HEADING + b"?\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"+ \n\n",
+        runner.PHASE_B_PIPE_HEADING + b"- root extra\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"# invented x\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"# transformed 0\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"& invented 2 0: onlyone\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"& invented 0 0: option\n\n",
+        runner.PHASE_B_PIPE_HEADING + b"\xff\n\n",
+    ],
+)
+def test_pipe_parser_fails_closed_on_malformed_or_unexpected_stream(raw):
+    with pytest.raises(runner.PhaseBParseError) as excinfo:
+        runner.parse_pipe_stream_response(raw, ("invented",))
+    assert str(excinfo.value) == runner._PHASE_B_FAILURE_MESSAGE
+
+
+def test_pipe_parser_rejects_reordered_echoes_and_extra_records():
+    with pytest.raises(runner.PhaseBParseError):
+        runner.parse_pipe_stream_response(
+            _pipe_response(b"# second 0", b"# first 0"), ("first", "second")
+        )
+    with pytest.raises(runner.PhaseBParseError):
+        runner.parse_pipe_stream_response(
+            _pipe_response(b"*", b"*"), ("invented",)
+        )
+
+
+def test_single_token_list_parser_maps_silence_and_exact_echo():
+    assert runner.parse_single_token_list_response(
+        b"", "invented", ordinal=4
+    ) == runner.MembershipResult(4, "ACCEPTED")
+    assert runner.parse_single_token_list_response(
+        b"invented\n", "invented", ordinal=4
+    ) == runner.MembershipResult(4, "REJECTED")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [b"\n", b"invented", b"invented\n\n", b"other\n", b"\xff\n"],
+)
+def test_single_token_list_parser_fails_closed_on_every_other_shape(raw):
+    with pytest.raises(runner.PhaseBParseError) as excinfo:
+        runner.parse_single_token_list_response(raw, "invented", ordinal=0)
+    assert str(excinfo.value) == runner._PHASE_B_FAILURE_MESSAGE
+
+
+def test_phase_b_stdin_is_exact_and_remains_separate_from_live_phase_a_stdin():
+    assert runner._phase_b_stdin("PIPE_STREAM", ("one", "two")) == b"^one\n^two\n"
+    assert runner._phase_b_stdin("SINGLE_TOKEN_LIST", ("one",)) == b"one\n"
+    assert runner._phase_a_batch_stdin(("one", "two")) == b"one\ntwo\n"
+    with pytest.raises(runner.ParityInputError):
+        runner._phase_b_stdin("SINGLE_TOKEN_LIST", ("one", "two"))
+
+
+def test_phase_b_fixed_error_never_contains_internal_protocol_material():
+    private_fragments = ("invented", "rootvalue", "suggestionvalue", "?")
+    raw = _pipe_response(b"& invented 1 0: suggestionvalue", b"? rootvalue")
+    with pytest.raises(runner.PhaseBParseError) as excinfo:
+        runner.parse_pipe_stream_response(raw, ("invented", "rootvalue"))
+    message = str(excinfo.value)
+    assert message == runner._PHASE_B_FAILURE_MESSAGE
+    assert all(fragment not in message for fragment in private_fragments)
+
+
+@pytest.mark.parametrize("label", runner.CANDIDATE_LABELS)
+def test_phase_b_candidate_assessment_passes_known_invented_truth(label):
+    fixture = runner.build_invented_fixture()
+    repetition = _phase_b_fixture_repetition(label, fixture)
+    assessment = runner.assess_phase_b_candidate(
+        label, repetition, repetition, fixture
+    )
+    assert tuple(assessment.to_dict()) == runner.PHASE_B_CANDIDATE_ASSESSMENT_KEYS
+    assert assessment.invented_case_count == 10
+    assert assessment.expected_membership_match_count == 10
+    assert assessment.exact_cardinality is True
+    assert assessment.repetitions_identical is True
+    assert assessment.unknown_response_count == 0
+    assert assessment.cleanup_confirmed is True
+    assert assessment.candidate_passed is True
+
+
+def test_phase_b_candidate_assessment_does_not_pass_wrong_truth_or_instability():
+    fixture = runner.build_invented_fixture()
+    correct = _phase_b_fixture_repetition("PIPE_STREAM", fixture)
+    wrong = _phase_b_fixture_repetition("PIPE_STREAM", fixture, rejected=False)
+    assessment = runner.assess_phase_b_candidate(
+        "PIPE_STREAM", wrong, wrong, fixture
+    )
+    assert assessment.expected_membership_match_count == 9
+    assert assessment.candidate_passed is False
+    unstable = runner.assess_phase_b_candidate(
+        "PIPE_STREAM", correct, wrong, fixture
+    )
+    assert unstable.repetitions_identical is False
+    assert unstable.candidate_passed is False
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"max_stdout_bytes": runner.MAX_STDOUT_BYTES + 1},
+        {"max_stdout_bytes": 0},
+        {"max_stderr_bytes": 1},
+        {"max_stderr_bytes": -1},
+        {"max_latency_ms": runner.BATCH_TIMEOUT_SECONDS * 1000 + 1},
+        {"max_latency_ms": -1},
+    ],
+)
+def test_phase_b_assessment_fails_closed_when_retained_limits_fail(overrides):
+    fixture = runner.build_invented_fixture()
+    repetition = _phase_b_fixture_repetition(
+        "PIPE_STREAM", fixture, **overrides
+    )
+    with pytest.raises(runner.PhaseBParseError) as excinfo:
+        runner.assess_phase_b_candidate(
+            "PIPE_STREAM", repetition, repetition, fixture
+        )
+    assert str(excinfo.value) == runner._PHASE_B_FAILURE_MESSAGE
+
+
+def _phase_b_assessment(passed):
+    return runner.PhaseBCandidateAssessment(
+        candidate_attempted=True,
+        candidate_completed=True,
+        invented_case_count=10,
+        expected_membership_match_count=10 if passed else 9,
+        exact_cardinality=True,
+        repetitions_identical=True,
+        unknown_response_count=0,
+        cleanup_confirmed=True,
+        candidate_passed=passed,
+    )
+
+
+@pytest.mark.parametrize("passing_labels", [(), ("PIPE_STREAM",), runner.CANDIDATE_LABELS])
+def test_phase_b_summary_never_automatically_selects(passing_labels):
+    assessments = {
+        label: _phase_b_assessment(label in passing_labels)
+        for label in runner.CANDIDATE_LABELS
+    }
+    summary = runner.build_phase_b_summary(assessments)
+    assert tuple(summary) == runner.PHASE_B_SUMMARY_KEYS
+    assert summary["passing_candidate_count"] == len(passing_labels)
+    assert summary["selected_mode_label"] == "NONE"
+    assert summary["no_real_resource_or_corpus_access"] is True
+    serialized = json.dumps(summary)
+    assert all(
+        fragment not in serialized
+        for fragment in ("synbase", "synqzzz", "rootvalue", "suggestionvalue")
+    )
 
 
 # ---------------------------------------------------------------------------
