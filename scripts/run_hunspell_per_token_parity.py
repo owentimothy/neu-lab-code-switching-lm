@@ -74,7 +74,7 @@ _PHASE_B_ABORT_MESSAGE = (
 # with --allow-phase-a-run; acquisition and execution remain separately authorized
 # and no Phase A run is performed here.
 _LIVE_PHASE_A_ENABLED = True
-_LIVE_PHASE_B_ENABLED = False
+_LIVE_PHASE_B_ENABLED = True
 
 # --- Public pinned identities (carried forward from tracked feasibility evidence).
 HUNSPELL_RELEASE = "v1.7.3"
@@ -1898,7 +1898,7 @@ def _execute_phase_a(environment: PhaseAEnvironment | None = None) -> dict[str, 
 
 
 def _execute_phase_b(environment: PhaseBEnvironment | None = None) -> dict[str, object]:
-    """Reach the dormant Phase B live wiring only after a later activation gate."""
+    """Reach enabled Phase B wiring only through its explicit CLI opt-in."""
     if not _LIVE_PHASE_B_ENABLED:
         raise ParityHarnessError("live Phase B execution is not enabled in this gate")
     env = environment if environment is not None else _LivePhaseBEnvironment()
@@ -1922,8 +1922,8 @@ def _build_parser() -> argparse.ArgumentParser:
         "--allow-phase-b-run",
         action="store_true",
         help=(
-            "request the disabled live Phase B wiring "
-            "(activation and execution stay separately authorized)"
+            "opt in to reach the enabled live Phase B wiring "
+            "(execution stays separately authorized)"
         ),
     )
     return parser
