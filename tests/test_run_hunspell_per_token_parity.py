@@ -131,7 +131,12 @@ def test_cli_exposes_only_opt_in_and_help():
     options: set[str] = set()
     for action in parser._actions:
         options.update(action.option_strings)
-    assert options == {"-h", "--help", "--allow-phase-a-run"}
+    assert options == {
+        "-h",
+        "--help",
+        "--allow-phase-a-run",
+        "--allow-phase-b-run",
+    }
 
 
 def test_default_refuses_before_execution(capsys):
@@ -139,6 +144,27 @@ def test_default_refuses_before_execution(capsys):
     captured = capsys.readouterr()
     assert captured.out == ""
     assert captured.err == runner._OPT_IN_MESSAGE + "\n"
+
+
+def test_phase_b_live_gate_is_disabled_and_refuses_before_environment(
+    monkeypatch, capsys
+):
+    assert runner._LIVE_PHASE_B_ENABLED is False
+
+    def fail_if_constructed(*args, **kwargs):
+        raise AssertionError("disabled Phase B must refuse before live construction")
+
+    monkeypatch.setattr(runner, "_LivePhaseBEnvironment", fail_if_constructed)
+    assert runner.main(["--allow-phase-b-run"]) == runner.EXIT_OPERATIONAL_ABORT
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == runner._PHASE_B_ABORT_MESSAGE + "\n"
+
+
+def test_phase_a_and_phase_b_opt_ins_are_mutually_exclusive():
+    with pytest.raises(SystemExit) as excinfo:
+        runner.main(["--allow-phase-a-run", "--allow-phase-b-run"])
+    assert excinfo.value.code == 2
 
 
 def test_opt_in_enabled_gate_uses_injected_fake_environment(monkeypatch, capsys):
@@ -942,6 +968,7 @@ def _repetition(streams, **over):
         max_stdout_bytes=over.get("max_stdout_bytes", 4),
         max_stderr_bytes=over.get("max_stderr_bytes", 0),
         max_latency_ms=over.get("max_latency_ms", 1),
+        cleanup_confirmed=over.get("cleanup_confirmed", True),
     )
 
 
@@ -1123,6 +1150,52 @@ def test_pipe_stream_uses_one_bounded_batch_invocation(tmp_path):
     assert len(calls) == 1  # the invented query fits one bounded batch
     assert len(repetition.raw_streams) == 1
     assert calls[0]["stdin"] == ("\n".join(tokens) + "\n").encode("utf-8")
+
+
+@pytest.mark.parametrize("label", runner.CANDIDATE_LABELS)
+def test_shared_process_runner_uses_exact_phase_b_stdin(label, tmp_path):
+    fixture = runner.build_invented_fixture()
+    tokens = runner.validate_tokens(fixture.query_tokens)
+    run_process, calls = _recording_runner()
+    runner._run_candidate_processes(
+        label,
+        tokens,
+        tmp_path / "fx",
+        tmp_path / "install",
+        run_process,
+        None,
+        _cidfile_factory(tmp_path),
+        stdin_builder=runner._phase_b_stdin,
+    )
+    if label == "PIPE_STREAM":
+        assert len(calls) == 1
+        assert calls[0]["stdin"] == b"".join(
+            b"^" + token.encode("utf-8") + b"\n" for token in tokens
+        )
+    else:
+        assert len(calls) == len(tokens)
+        assert [call["stdin"] for call in calls] == [
+            token.encode("utf-8") + b"\n" for token in tokens
+        ]
+
+
+def test_live_phase_b_environment_routes_only_to_phase_b_stdin(tmp_path):
+    captured: list[bytes] = []
+
+    def fake_runner(argv, **kwargs):
+        captured.append(kwargs["stdin_bytes"])
+        return _phase_a_bounded_run(stdout=b"", stdout_bytes=0)
+
+    env = runner._LivePhaseBEnvironment(runner=fake_runner)
+    env._workspace = types.SimpleNamespace(name=str(tmp_path))
+    env._source_verified = True
+    env._container_verified = True
+    env._build_verified = True
+    env._install_dir = tmp_path / "install"
+    env.run_candidate("PIPE_STREAM", runner.build_invented_fixture(), 0)
+    assert len(captured) == 1
+    assert captured[0].startswith(b"^")
+    assert captured[0].count(b"\n^") == 9
 
 
 def test_phase_a_batch_stdin_encoding():
@@ -1445,7 +1518,106 @@ def _phase_b_fixture_repetition(label, fixture, *, rejected=True, **overrides):
         ),
         max_stderr_bytes=overrides.get("max_stderr_bytes", 0),
         max_latency_ms=overrides.get("max_latency_ms", 1),
+        cleanup_confirmed=overrides.get("cleanup_confirmed", True),
     )
+
+
+class _FakePhaseBEnvironment:
+    """Invented-only Phase B environment; performs no external operation."""
+
+    def __init__(self, *, raise_at=None, evidence=None):
+        self.raise_at = raise_at
+        self._evidence = evidence or runner._PhaseAEvidence(True, True)
+        self.calls: list[tuple[str, int]] = []
+        self.verified = False
+        self.built = False
+        self.teardowns = 0
+
+    def verify_identities(self):
+        if self.raise_at == "verify":
+            raise runner.ParityHarnessError("fixed fake failure")
+        self.verified = True
+
+    def build(self):
+        if self.raise_at == "build":
+            raise runner.ParityHarnessError("fixed fake failure")
+        self.built = True
+
+    def run_candidate(self, label, fixture, run_index):
+        self.calls.append((label, run_index))
+        if self.raise_at == "run":
+            raise runner.ParityHarnessError("fixed fake failure")
+        return _phase_b_fixture_repetition(label, fixture)
+
+    def evidence(self):
+        return self._evidence
+
+    def teardown(self):
+        self.teardowns += 1
+
+
+def test_phase_b_orchestration_uses_two_repetitions_and_aggregate_only():
+    env = _FakePhaseBEnvironment()
+    summary = runner._run_phase_b(env)
+    assert env.verified is True
+    assert env.built is True
+    assert env.calls == [
+        ("PIPE_STREAM", 0),
+        ("PIPE_STREAM", 1),
+        ("SINGLE_TOKEN_LIST", 0),
+        ("SINGLE_TOKEN_LIST", 1),
+    ]
+    assert tuple(summary) == runner.PHASE_B_SUMMARY_KEYS
+    assert summary["passing_candidate_count"] == 2
+    assert summary["selected_mode_label"] == "NONE"
+    assert summary["environment_identity_match"] is True
+    assert summary["offline_build"] is True
+    serialized = json.dumps(summary)
+    assert all(token not in serialized for token in runner.build_invented_fixture().query_tokens)
+
+
+@pytest.mark.parametrize("stage", ["verify", "build", "run"])
+def test_phase_b_orchestration_fails_closed_and_tears_down_once(stage):
+    env = _FakePhaseBEnvironment(raise_at=stage)
+    with pytest.raises(runner.ParityHarnessError):
+        runner._run_phase_b_with_teardown(env)
+    assert env.teardowns == 1
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        runner._PhaseAEvidence(False, True),
+        runner._PhaseAEvidence(True, False),
+    ],
+)
+def test_phase_b_orchestration_rejects_unconfirmed_environment_evidence(evidence):
+    env = _FakePhaseBEnvironment(evidence=evidence)
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        runner._run_phase_b_with_teardown(env)
+    assert str(excinfo.value) == "Phase B environment evidence was not confirmed"
+    assert env.teardowns == 1
+
+
+def test_enabled_phase_b_cli_uses_only_injected_invented_environment(
+    monkeypatch, capsys
+):
+    env = _FakePhaseBEnvironment()
+    monkeypatch.setattr(runner, "_LIVE_PHASE_B_ENABLED", True)
+    monkeypatch.setattr(runner, "_LivePhaseBEnvironment", lambda *a, **k: env)
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("real acquisition and transport must remain offline")
+
+    monkeypatch.setattr(runner, "_acquire_public_pinned_source", fail_if_called)
+    monkeypatch.setattr(runner, "run_bounded", fail_if_called)
+    assert runner.main(["--allow-phase-b-run"]) == runner.EXIT_SUCCESS
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    summary = json.loads(captured.out)
+    assert summary["passing_candidate_count"] == 2
+    assert summary["selected_mode_label"] == "NONE"
+    assert env.teardowns == 1
 
 
 @pytest.mark.parametrize(
@@ -1591,6 +1763,7 @@ def test_phase_b_candidate_assessment_does_not_pass_wrong_truth_or_instability()
         {"max_stderr_bytes": -1},
         {"max_latency_ms": runner.BATCH_TIMEOUT_SECONDS * 1000 + 1},
         {"max_latency_ms": -1},
+        {"cleanup_confirmed": False},
     ],
 )
 def test_phase_b_assessment_fails_closed_when_retained_limits_fail(overrides):
@@ -1625,8 +1798,14 @@ def test_phase_b_summary_never_automatically_selects(passing_labels):
         label: _phase_b_assessment(label in passing_labels)
         for label in runner.CANDIDATE_LABELS
     }
-    summary = runner.build_phase_b_summary(assessments)
+    summary = runner.build_phase_b_summary(
+        assessments,
+        environment_identity_match=True,
+        offline_build=True,
+    )
     assert tuple(summary) == runner.PHASE_B_SUMMARY_KEYS
+    assert summary["environment_identity_match"] is True
+    assert summary["offline_build"] is True
     assert summary["passing_candidate_count"] == len(passing_labels)
     assert summary["selected_mode_label"] == "NONE"
     assert summary["no_real_resource_or_corpus_access"] is True
