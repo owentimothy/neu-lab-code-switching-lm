@@ -6,7 +6,7 @@
 Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
 Phase A live-execution wiring:                        IMPLEMENTED / ENABLED (opt-in only)
-Live pinned-Hunspell Phase A execution:               EXECUTED ONCE (2026-07-20) — TRANSPORT-INVALID; RERUN REQUIRED
+Live pinned-Hunspell Phase A execution:               CORRECTED EXECUTION COMPLETE (2026-07-20) — AGGREGATE OBSERVED
 Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
 
@@ -24,18 +24,18 @@ synthetic, offline *observation infrastructure* and the Phase A live-execution
 CLI opt-in and separate acquisition/execution authorization, and by default the CLI
 still refuses before any Docker, network, filesystem-resource, or subprocess
 activity. It does not implement or activate a response parser and makes **no** `-a`
-or `-l` framing assumption. One separately authorized Phase A execution was
-performed on 2026-07-20; it exited cleanly and only the fixed aggregate result was
-recorded (see the Phase A execution result section below). A later read-only audit
-found that the Docker invocation lacked `--interactive`, so host-side delivery to
-the Docker client did not establish forwarding into the container. That execution
-is retained as historical execution evidence but is **transport-invalid for
-protocol evidence**. The per-token protocol remains **UNRESOLVED**: neither
-candidate has PASS status, and no parser, marker enum, membership verdict, or mode
-selection has been approved. A corrected Phase A rerun and every further live
-execution remain separately authorized.
+or `-l` framing assumption. Two separately authorized Phase A executions occurred
+on 2026-07-20, and only their fixed aggregate results were recorded. A read-only
+audit found that the first invocation lacked Docker `--interactive`, so that first
+execution is retained as historical evidence but is **transport-invalid for
+protocol evidence**. After the tracked stdin-forwarding correction was reviewed,
+verified, committed, and pushed, one corrected execution completed cleanly under
+the same pins and limits (see both result sections below). The per-token protocol
+remains **UNRESOLVED**: neither candidate has PASS status, and no parser, marker
+enum, membership verdict, or mode selection has been approved. Every further live
+execution remains separately authorized.
 
-## Phase A execution result (2026-07-20, aggregate only)
+## Initial Phase A execution result (2026-07-20, transport-invalid aggregate)
 
 One separately authorized Phase A execution was run once on 2026-07-20. Recorded
 below are only the fixed protocol-neutral aggregates — no raw stdout, response
@@ -50,8 +50,7 @@ not forwarding to Hunspell inside the container. The `PIPE_STREAM` 69-byte,
 one-LF result is the fixed public startup heading, while complete
 `SINGLE_TOKEN_LIST` silence cannot establish membership behavior. The unchanged
 aggregate is retained below as historical execution evidence only; it cannot
-support framing, membership, candidate PASS, selection, or Phase B. A separately
-authorized corrected Phase A rerun is required.
+support framing, membership, candidate PASS, selection, or Phase B.
 
 ```text
 Process exit:                             0 (clean); exactly one aggregate JSON object; no stderr
@@ -103,8 +102,71 @@ nor `SINGLE_TOKEN_LIST` has PASS status. No parser contract, marker enum, member
 verdict, or mode selection has been approved; the selected mode remains `NONE` and
 the per-token protocol remains **UNRESOLVED**. Phase B, real Spanish coverage,
 validation, clean promotion, routing, dataset construction, tokenizer work, model
-training, and probes remain **CLOSED**. A separately authorized corrected Phase A
-rerun is required before a parser-contract source diff can proceed.
+training, and probes remain **CLOSED**.
+
+## Corrected Phase A execution result (2026-07-20, aggregate only)
+
+After commit `9fe7bc879f423dac249369b1ec6a5c9291ec3777` added exactly one Docker
+`--interactive` option to each candidate-container invocation, one separately
+authorized corrected Phase A execution completed under the existing pins and
+defensive limits. It exited `0` in approximately 23.1 seconds and emitted exactly
+one aggregate JSON object with no reported stderr or additional stdout. A
+post-execution audit confirmed a clean synchronized repository, zero remaining
+Phase A temporary workspaces, and zero lingering containers from the pinned image.
+
+Only the following fixed protocol-neutral aggregates were retained:
+
+```text
+Process exit:                             0 (clean); exactly one aggregate JSON object; no stderr
+hunspell_release:                         v1.7.3
+hunspell_commit:                          c5f98152a274e25b5107101104bef632b83a0cc9  (public pinned upstream)
+container_platform:                       linux/arm64
+environment_identity_match:               true
+offline_build:                            true
+modes_compared:                           2
+selected_mode_label:                      NONE
+pipe_stream_observation_completed:        true
+single_token_list_observation_completed:  true
+candidate_observation_count:              2
+no_real_resource_or_corpus_access:        true
+```
+
+```text
+PIPE_STREAM
+  observation_completed             = true
+  raw_stream_identical_across_runs  = true
+  structural_summary_stable         = true
+  total_bytes                       = 109
+  total_lf_count                    = 21
+  blank_line_count                  = 10
+  nonempty_line_count               = 11
+  max_stdout_bytes                  = 109
+  max_stderr_bytes                  = 0
+  max_batch_latency_ms              = 130
+
+SINGLE_TOKEN_LIST
+  observation_completed             = true
+  raw_stream_identical_across_runs  = true
+  structural_summary_stable         = true
+  total_bytes                       = 8
+  total_lf_count                    = 1
+  blank_line_count                  = 0
+  nonempty_line_count               = 1
+  max_stdout_bytes                  = 8
+  max_stderr_bytes                  = 0
+  max_batch_latency_ms              = 132
+```
+
+The changed aggregates establish that the corrected transport no longer has the
+first run's startup/EOF-only shape. Both repetitions were byte-identical and
+structurally stable, with empty stderr under the limits. Phase A still does not
+interpret a response line, map output to a token, assert membership, award
+candidate PASS, or select a mode. The public aggregates are compatible with the
+documented public protocol and invented fixture design, but that compatibility is
+not a parser verdict. `selected_mode_label` remains `NONE`; the parser-contract
+source diff and Phase B remain separate reviewed gates. Real Spanish coverage,
+validation, clean promotion, routing, datasets, tokenizer work, model training,
+and probes remain **CLOSED**.
 
 ## Scope
 
@@ -150,9 +212,9 @@ after a parser contract is presented as a reviewed source diff and approved.
 Live Phase A execution is enabled in this branch (`_LIVE_PHASE_A_ENABLED` is
 `True`) but opt-in only: the CLI refuses by default and reaches it only with
 `--allow-phase-a-run`, and acquisition and execution remain separately authorized.
-One separately authorized Phase A run was performed on 2026-07-20 (only the
-aggregate result was recorded; see the Phase A execution result section), and any
-further run remains separately authorized.
+Two separately authorized Phase A executions occurred on 2026-07-20; the first was
+transport-invalid and the corrected second execution produced the aggregate result
+recorded above. Any further run remains separately authorized.
 
 ## Selectable modes
 
@@ -301,9 +363,10 @@ always stubbed and its output is discarded to `DEVNULL`, never captured or expos
 Raw stdout and stderr are sensitive by discipline: reduced internally, never
 printed, logged, returned in the summary, or embedded in an error. Phase A and the
 real per-token response protocol remain unresolved; live Phase A wiring is enabled
-but opt-in only. One separately authorized Phase A run was performed on 2026-07-20
-(only the aggregate result was recorded; see the Phase A execution result section),
-and any further run remains separately authorized.
+but opt-in only. Two separately authorized Phase A executions occurred on
+2026-07-20; the first was transport-invalid and the corrected second execution
+produced the aggregate result recorded above. Any further run remains separately
+authorized.
 
 ## Invented fixtures
 
@@ -326,8 +389,8 @@ orchestration with a fake environment; without `--allow-phase-a-run` the CLI
 refuses **before** any Docker, network, filesystem-resource, or subprocess
 activity, and acquisition and execution remain separately authorized.
 
-When a future run is separately authorized to run Phase A, the live
-environment performs only the approved Phase A responsibilities: acquire the
+For each separately authorized Phase A run, the live environment performs only the
+approved Phase A responsibilities: acquire the
 already-approved public pinned Hunspell source and verify it by SHA-256; safely
 extract it and confirm the source layout and required build inputs are regular
 non-symlink files; verify the pinned container identity by acquiring the platform
