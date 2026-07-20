@@ -5,7 +5,8 @@
 ```text
 Per-token Hunspell response protocol:                 UNRESOLVED
 Phase A observation infrastructure:                   IMPLEMENTED (this branch)
-Live pinned-Hunspell Phase A execution:               NOT ENABLED / SEPARATELY AUTHORIZED
+Phase A live-execution wiring:                        IMPLEMENTED BUT DISABLED
+Live pinned-Hunspell Phase A execution:               NOT EXECUTED / SEPARATELY AUTHORIZED
 Response parser / marker enum:                        NOT DEFINED (Phase B, after review)
 Candidate PASS / membership matching / mode choice:   DEFERRED (Phase B / human review)
 
@@ -16,11 +17,12 @@ Validation / clean promotion / routing:               CLOSED
 Corpus / tokenizer / model / probe work:              CLOSED
 ```
 
-**The real per-token Hunspell protocol is UNRESOLVED.** This branch adds only the
-synthetic, offline *observation infrastructure*. It does not run pinned Hunspell,
-Docker, or the network; it does not implement or activate a response parser; and it
-makes **no** `-a` or `-l` framing assumption. No Phase A execution has been
-performed and no results are recorded here.
+**The real per-token Hunspell protocol is UNRESOLVED.** This branch adds the
+synthetic, offline *observation infrastructure* and the Phase A live-execution
+*wiring*, but that wiring remains **disabled** (`_LIVE_PHASE_A_ENABLED = False`) and
+is **not executed**. It does not implement or activate a response parser and makes
+**no** `-a` or `-l` framing assumption. No Phase A execution has been performed and
+no results are recorded here; live execution requires separate authorization.
 
 ## Scope
 
@@ -227,6 +229,65 @@ derived behaviours, include an ordered non-adjacent duplicate, and a fixed rejec
 form. Repeated records and continuation affixes are valid Hunspell interpreted by
 the real engine in Phase A; no restricted affix-directive parser is used, and this
 gate does not run them.
+
+## Phase A live-execution wiring (implemented, disabled)
+
+The live-execution wiring is implemented behind the disabled gate. It is
+dependency-injected so offline tests drive the orchestration with a fake
+environment; ordinary execution refuses in the gate **before** any Docker, network,
+filesystem-resource, or subprocess activity, and `_LIVE_PHASE_A_ENABLED` stays
+`False`.
+
+When a future run is separately authorized to enable the gate, the live
+environment performs only the approved Phase A responsibilities: acquire the
+already-approved public pinned Hunspell source and verify it by SHA-256; safely
+extract it and confirm the source layout and required build inputs are regular
+non-symlink files; verify the pinned container identity by acquiring the platform
+digest through a supervised, bounded `docker pull`; build Hunspell offline
+(`--network none`) in a **supervised, cleanup-confirmed** container tracked by a
+non-token-bearing `--cidfile`, followed by an installed-binary check; and create
+only temporary invented `.dic`/`.aff` inputs from the existing invented fixture and
+its known-by-construction query.
+
+Each candidate runs **twice** as a logical repetition, and each repetition preserves
+the invented input order: `PIPE_STREAM` runs **one supervised process per bounded
+token batch**, while `SINGLE_TOKEN_LIST` runs **one separate supervised
+`hunspell -l` process per input token**, sending exactly one token plus its newline
+to each process — never in argv, an environment variable, a path, or an error.
+Every foreground container and the `docker pull` are supervised through the bounded
+transport (`Popen(..., start_new_session=True)`, fixed timeout, bounded output,
+process-group SIGTERM → one-second grace → SIGKILL, checked `docker rm -f`, and
+confirmed cidfile removal). The `docker pull` and the offline build each use a
+**300-second** timeout, and each candidate process uses the **30-second** batch
+timeout; none is raised automatically after a failure. Each per-process raw stdout
+is summarised **separately** — outputs from different processes are never
+concatenated before structural counting — and the public byte, LF, blank-line, and
+nonempty-line totals are the **sums of the per-process summaries**. The two
+repetitions are compared internally as ordered tuples (raw streams for identity,
+per-process summaries for stability); ordered process boundaries stay internal; only
+those totals, per-process maxima, and timing are kept; and all raw streams are
+discarded before the summary.
+
+Identity and offline-build success are **derived from the actual verified results**
+— source SHA-256 identity, acquisition of the exact platform-digest image, and a
+clean supervised network-disabled build with an installed-binary check — and carried
+into the summary through a typed evidence value; the CLI accepts no caller-supplied
+Boolean claims. Exact platform-digest acquisition is the approved container-identity
+boundary; the in-container binary and library invocation (the `hunspell` path plus
+`LD_LIBRARY_PATH`) remains an **empirical Phase A check** to be confirmed at
+activation. The summary emits only the exact aggregate schema with
+`selected_mode_label` = `NONE`. The temporary workspace, invented fixtures, archive,
+installation, and cidfiles do not survive a successfully reported run; teardown is
+attempted exactly once and a cleanup failure surfaces one fixed error.
+
+Phase A **stops after the aggregate observations**. It returns no candidate PASS
+verdict and performs no per-token parsing, membership-sequence inference, marker
+classification, or banner/separator/suggestion interpretation. It does not recreate
+the abandoned affix-generation parser — real pinned Hunspell interprets the invented
+repeated-record and continuation-affix inputs. Acquisition-identity mismatch, build
+failure, nonzero execution, timeout, output overflow, worker failure, and cleanup
+failure each raise fixed, non-sensitive errors. The parser-contract source diff and
+Phase B remain closed and require separate explicit approval.
 
 ## Future PASS / STOP criteria (recorded, not yet evaluated)
 

@@ -32,16 +32,21 @@ printed, logged, returned in the summary, or embedded in an error.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import signal
 import subprocess
 import sys
+import tarfile
+import tempfile
 import threading
 import time
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from typing import Protocol
 
 EXIT_SUCCESS = 0
 EXIT_OPT_IN_REQUIRED = 2
@@ -947,18 +952,500 @@ def build_invented_fixture() -> InventedFixture:
 
 
 # ---------------------------------------------------------------------------
+# Phase A live-execution wiring (implemented, disabled).
+#
+# The orchestration is dependency-injected so offline tests drive it with a fake
+# environment.  The live environment performs the only Docker/network/filesystem/
+# subprocess work and is reached only when the gate is enabled; ordinary execution
+# refuses in ``_execute_phase_a`` before any of it runs.  ``PIPE_STREAM`` runs one
+# supervised process per bounded token batch; ``SINGLE_TOKEN_LIST`` runs one
+# separate supervised process per input token.  Phase A stops after the aggregate
+# observations: it never selects a mode, parses responses, classifies markers, or
+# infers membership.
+# ---------------------------------------------------------------------------
+
+# Public pinned acquisition identities (carried forward from the feasibility gate).
+HUNSPELL_ARCHIVE_NAME = "hunspell-1.7.3.tar.gz"
+HUNSPELL_ARCHIVE_URL = (
+    "https://github.com/hunspell/hunspell/releases/download/"
+    f"{HUNSPELL_RELEASE}/{HUNSPELL_ARCHIVE_NAME}"
+)
+HUNSPELL_ARCHIVE_SHA256 = (
+    "433274dac0619cb00c2e18b43a3dd3a9d50da5b5613fa9b5c21781e35dd76bc1"
+)
+CONTAINER_TAG = "bookworm"
+CONTAINER_INDEX_DIGEST = (
+    "sha256:5bfacbc6611775f980cf283fbc86b999517878d39723510687135a0d6366bbee"
+)
+
+# In-container invented-fixture layout for a live run.
+_FIXTURE_BASE = "synthetic"
+_CONTAINER_HUNSPELL_BIN = "/opt/hunspell/bin/hunspell"
+_CONTAINER_HUNSPELL_LIB = "/opt/hunspell/lib"
+
+# Timeouts for supervised Docker operations (tracked precedent; never raised auto).
+_DOCKER_PULL_TIMEOUT_SECONDS = 300
+_DOCKER_BUILD_TIMEOUT_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class _CandidateRun:
+    """Internal per-process record; ``raw_stdout`` is reduced then dropped."""
+
+    raw_stdout: bytes
+    stdout_bytes: int
+    stderr_bytes: int
+    latency_ms: int
+
+
+@dataclass(frozen=True)
+class _CandidateRepetition:
+    """One logical repetition: the ordered per-process raw outputs plus bounds.
+
+    ``raw_streams`` is the ordered tuple of each process's raw stdout; it is compared
+    internally across repetitions and reduced, then dropped.  The maxima are per
+    actual process batch, never an unbounded combined buffer.
+    """
+
+    raw_streams: tuple[bytes, ...]
+    max_stdout_bytes: int
+    max_stderr_bytes: int
+    max_latency_ms: int
+
+
+@dataclass(frozen=True)
+class _PhaseAEvidence:
+    """Verified environment evidence carried into the aggregate summary."""
+
+    environment_identity_match: bool
+    offline_build: bool
+
+
+class PhaseAEnvironment(Protocol):
+    """Injected Phase A dependency boundary (real in a live run, fake in tests)."""
+
+    def verify_identities(self) -> None: ...
+    def build(self) -> None: ...
+    def run_candidate(
+        self, label: str, fixture: InventedFixture, run_index: int
+    ) -> _CandidateRepetition: ...
+    def evidence(self) -> _PhaseAEvidence: ...
+    def teardown(self) -> None: ...
+
+
+def _phase_a_batch_stdin(tokens: Sequence[str]) -> bytes:
+    """Encode one process's tokens as a bounded, newline-delimited stdin stream."""
+    if not tokens:
+        return b""
+    return ("\n".join(tokens) + "\n").encode("utf-8")
+
+
+def _phase_a_container_argv(
+    label: str,
+    fixture_dir: Path,
+    install_dir: Path,
+    cidfile_path: Path,
+) -> list[str]:
+    """Build the pinned container argv for one candidate over invented inputs.
+
+    Only the invocation is fixed; no banner, separator, or response framing is
+    assumed.  Tokens are delivered via stdin, never via the command.
+    """
+    mode_flag = candidate_invocation(label, _FIXTURE_BASE)[-1]
+    inner = [_CONTAINER_HUNSPELL_BIN, "-d", f"/bundle/{_FIXTURE_BASE}", mode_flag]
+    argv = hardened_container_argv(
+        cidfile_path=cidfile_path,
+        bundle_dir=fixture_dir,
+        install_dir=install_dir,
+        inner_argv=inner,
+    )
+    marker = argv.index("LC_ALL=C.UTF-8")
+    argv[marker + 1 : marker + 1] = ["-e", f"LD_LIBRARY_PATH={_CONTAINER_HUNSPELL_LIB}"]
+    return argv
+
+
+def _reduce_candidate(result: BoundedRun) -> _CandidateRun:
+    """Convert one supervised process into a per-process record, or fail closed."""
+    if result.terminal_state != STATE_NORMAL_EXIT or result.returncode != 0:
+        raise ParityHarnessError("candidate execution did not complete cleanly")
+    if result.cleanup_required and not result.cleanup_confirmed:
+        raise ParityHarnessError("candidate cleanup could not be confirmed")
+    if not result.stdin_delivered:
+        raise ParityHarnessError("candidate stdin delivery was incomplete")
+    return _CandidateRun(
+        raw_stdout=result.stdout,
+        stdout_bytes=result.stdout_bytes,
+        stderr_bytes=result.stderr_bytes,
+        latency_ms=result.latency_ms,
+    )
+
+
+def _candidate_token_groups(label: str, tokens: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    """Group tokens per process: bounded batches for PIPE_STREAM, one per token else."""
+    if label == "PIPE_STREAM":
+        return batch_tokens(tokens)
+    if label == "SINGLE_TOKEN_LIST":
+        return tuple((token,) for token in tokens)
+    raise ParityInputError("unknown candidate label")
+
+
+def _run_candidate_processes(
+    label: str,
+    tokens: Sequence[str],
+    fixture_dir: Path,
+    install_dir: Path,
+    run_process: Callable[[list[str], bytes, Callable[[bool], None] | None], BoundedRun],
+    docker_remover: Callable[[str], None] | None,
+    cidfile_factory: Callable[[str, int], Path],
+) -> _CandidateRepetition:
+    """Launch one supervised process per token group, preserving input order.
+
+    Each process receives exactly its group's tokens on stdin (one token plus a
+    newline for SINGLE_TOKEN_LIST); no token enters argv, an environment variable, a
+    path, or an error.  Per-process raw stdout is retained only long enough to form
+    the ordered repetition; maxima are per actual process batch.
+    """
+    groups = _candidate_token_groups(label, tokens)
+    raw_streams: list[bytes] = []
+    max_stdout = 0
+    max_stderr = 0
+    max_latency = 0
+    for index, group in enumerate(groups):
+        cidfile = cidfile_factory(label, index)
+        argv = _phase_a_container_argv(label, fixture_dir, install_dir, cidfile)
+        cleanup = container_cleanup(cidfile, docker_remove=docker_remover)
+        record = _reduce_candidate(run_process(argv, _phase_a_batch_stdin(group), cleanup))
+        raw_streams.append(record.raw_stdout)
+        max_stdout = max(max_stdout, record.stdout_bytes)
+        max_stderr = max(max_stderr, record.stderr_bytes)
+        max_latency = max(max_latency, record.latency_ms)
+    return _CandidateRepetition(tuple(raw_streams), max_stdout, max_stderr, max_latency)
+
+
+def _per_process_summaries(
+    repetition: _CandidateRepetition,
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Summarise each process's raw stdout separately, preserving order."""
+    return tuple(whole_stream_summary(stream) for stream in repetition.raw_streams)
+
+
+def _observe_repetitions(
+    first: _CandidateRepetition, second: _CandidateRepetition
+) -> CandidateObservation:
+    """Reduce two logical repetitions to protocol-neutral observations.
+
+    Each process's raw stdout is summarised separately; outputs from different
+    processes are never concatenated before counting.  Public totals sum the first
+    repetition's per-process summaries; stability compares the ordered per-process
+    summary tuples; identity compares the ordered raw-stream tuples.  No individual
+    summary, raw stream, token, response line, marker, or hash is exposed.
+    """
+    first_summaries = _per_process_summaries(first)
+    second_summaries = _per_process_summaries(second)
+    total_bytes = sum(summary[0] for summary in first_summaries)
+    total_lf = sum(summary[1] for summary in first_summaries)
+    blank = sum(summary[2] for summary in first_summaries)
+    nonempty = sum(summary[3] for summary in first_summaries)
+    return CandidateObservation(
+        observation_completed=True,
+        raw_stream_identical_across_runs=first.raw_streams == second.raw_streams,
+        structural_summary_stable=first_summaries == second_summaries,
+        total_bytes=total_bytes,
+        total_lf_count=total_lf,
+        blank_line_count=blank,
+        nonempty_line_count=nonempty,
+        max_stdout_bytes=max(first.max_stdout_bytes, second.max_stdout_bytes),
+        max_stderr_bytes=max(first.max_stderr_bytes, second.max_stderr_bytes),
+        max_batch_latency_ms=max(first.max_latency_ms, second.max_latency_ms),
+    )
+
+
+def _run_phase_a(
+    environment: PhaseAEnvironment,
+    *,
+    fixture: InventedFixture | None = None,
+) -> dict[str, object]:
+    """Orchestrate Phase A: verify, build, two repetitions per candidate, aggregate.
+
+    Each repetition's raw streams are reduced to whole-stream observations and
+    dropped.  Identity/build success is taken from the environment's derived
+    evidence, not a hardcoded claim.  Emits only the fixed aggregate schema with
+    ``selected_mode_label`` = ``NONE`` and no candidate PASS verdict.
+    """
+    active = fixture if fixture is not None else build_invented_fixture()
+    environment.verify_identities()
+    environment.build()
+    observations: dict[str, CandidateObservation] = {}
+    for label in CANDIDATE_LABELS:
+        first = environment.run_candidate(label, active, 0)
+        second = environment.run_candidate(label, active, 1)
+        observations[label] = _observe_repetitions(first, second)
+        del first, second  # discard raw streams
+    evidence = environment.evidence()
+    return build_phase_a_summary(
+        observations,
+        environment_identity_match=evidence.environment_identity_match,
+        offline_build=evidence.offline_build,
+    )
+
+
+def _run_phase_a_with_teardown(environment: PhaseAEnvironment) -> dict[str, object]:
+    """Run Phase A and attempt teardown exactly once, on success or failure."""
+    try:
+        return _run_phase_a(environment)
+    finally:
+        environment.teardown()
+
+
+# --- Live boundary: the only Docker/network/subprocess work, reached only when
+# the gate is enabled and a real environment is constructed.
+def _acquire_public_pinned_source(archive_path: Path) -> None:
+    try:
+        with urllib.request.urlopen(HUNSPELL_ARCHIVE_URL, timeout=60) as response:
+            data = response.read()
+    except (OSError, TimeoutError):
+        raise ParityHarnessError("hunspell source acquisition failed") from None
+    if hashlib.sha256(data).hexdigest() != HUNSPELL_ARCHIVE_SHA256:
+        raise ParityHarnessError("hunspell source identity mismatch")
+    try:
+        archive_path.write_bytes(data)
+    except OSError:
+        raise ParityHarnessError("hunspell source archive could not be written") from None
+
+
+def _extract_source(archive_path: Path, destination: Path) -> Path:
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            members = archive.getmembers()
+            for member in members:
+                relative = PurePosixPath(member.name)
+                if relative.is_absolute() or ".." in relative.parts:
+                    raise ParityHarnessError("unsafe archive member path")
+                if not (member.isdir() or member.isfile()):
+                    raise ParityHarnessError("unsafe archive member type")
+            archive.extractall(destination, members=members, filter="data")
+    except (OSError, tarfile.TarError):
+        raise ParityHarnessError("hunspell source extraction failed") from None
+    source_dir = destination / "hunspell-1.7.3"
+    if source_dir.is_symlink() or not source_dir.is_dir():
+        raise ParityHarnessError("hunspell source layout unexpected")
+    configure = source_dir / "configure"
+    if configure.is_symlink() or not configure.is_file():
+        raise ParityHarnessError("hunspell source is missing the configure script")
+    return source_dir
+
+
+def _require_clean(result: BoundedRun) -> BoundedRun:
+    """Fail closed unless a supervised docker operation completed and cleaned up."""
+    if result.terminal_state != STATE_NORMAL_EXIT or result.returncode != 0:
+        raise ParityHarnessError("docker operation did not complete cleanly")
+    if result.cleanup_required and not result.cleanup_confirmed:
+        raise ParityHarnessError("docker cleanup could not be confirmed")
+    return result
+
+
+def _docker_pull_argv() -> list[str]:
+    """Argument vector for the bounded, quiet pull of the pinned image digest."""
+    return [
+        "docker", "pull", "--quiet",
+        "--platform", CONTAINER_PLATFORM,
+        CONTAINER_REFERENCE,
+    ]
+
+
+def _build_container_argv(
+    source_dir: Path, install_dir: Path, cidfile_path: Path
+) -> list[str]:
+    """Argument vector for the hardened, offline, cidfile-tracked build container."""
+    return [
+        "docker", "run", "--rm",
+        "--cidfile", str(cidfile_path),
+        "--network", "none",
+        "--platform", CONTAINER_PLATFORM,
+        "--read-only",
+        "--cap-drop", "ALL",
+        "--security-opt", "no-new-privileges",
+        "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m",
+        "-e", "LANG=C.UTF-8",
+        "-e", "LC_ALL=C.UTF-8",
+        "--mount", f"type=bind,src={source_dir},dst=/src",
+        "--mount", f"type=bind,src={install_dir},dst=/install",
+        "-w", "/src",
+        CONTAINER_REFERENCE,
+        "bash", "-lc",
+        "./configure --prefix=/install >/tmp/configure.log 2>&1 "
+        "&& make -j2 >/tmp/make.log 2>&1 "
+        "&& make install >/tmp/install.log 2>&1 "
+        "&& test -x /install/bin/hunspell",
+    ]
+
+
+class _LivePhaseAEnvironment:
+    """Real Phase A environment; performs the only Docker/network/subprocess work.
+
+    Every foreground container, the build container, and the ``docker pull`` are
+    supervised through the bounded transport (``Popen(..., start_new_session=True)``,
+    fixed timeouts, bounded output, process-group termination, checked container
+    cleanup).  Identity and build success are derived from the actual verified
+    results.  External effects are injected callables so an authorized run uses the
+    real defaults while offline tests substitute fakes; constructing the class has no
+    side effects.
+    """
+
+    def __init__(
+        self,
+        *,
+        source_acquirer: Callable[[Path], None] = _acquire_public_pinned_source,
+        source_extractor: Callable[[Path, Path], Path] = _extract_source,
+        runner: Callable[..., BoundedRun] = run_bounded,
+        docker_remover: Callable[[str], None] | None = None,
+    ) -> None:
+        self._acquire = source_acquirer
+        self._extract = source_extractor
+        self._runner = runner
+        self._docker_remover = docker_remover
+        self._workspace: tempfile.TemporaryDirectory | None = None
+        self._source_dir: Path | None = None
+        self._install_dir: Path | None = None
+        self._source_verified = False
+        self._container_verified = False
+        self._build_verified = False
+
+    def _supervise_docker(
+        self,
+        argv: list[str],
+        *,
+        timeout: int,
+        stdin_bytes: bytes = b"",
+        cleanup: Callable[[bool], None] | None = None,
+    ) -> BoundedRun:
+        result = self._runner(
+            argv,
+            stdin_bytes=stdin_bytes,
+            timeout_seconds=timeout,
+            max_stdout_bytes=MAX_STDOUT_BYTES,
+            max_stderr_bytes=MAX_STDERR_BYTES,
+            cleanup=cleanup,
+        )
+        return _require_clean(result)
+
+    def verify_identities(self) -> None:
+        try:
+            self._workspace = tempfile.TemporaryDirectory(
+                prefix="neu-lab-parity-phase-a-"
+            )
+        except OSError:
+            raise ParityHarnessError("phase A workspace could not be created") from None
+        root = Path(self._workspace.name)
+        archive = root / HUNSPELL_ARCHIVE_NAME
+        self._acquire(archive)  # sha-256 verified against the pinned identity
+        self._source_verified = True
+        self._source_dir = self._extract(archive, root / "source")
+        self._supervise_docker(_docker_pull_argv(), timeout=_DOCKER_PULL_TIMEOUT_SECONDS)
+        self._container_verified = True
+
+    def build(self) -> None:
+        if (
+            not (self._source_verified and self._container_verified)
+            or self._workspace is None
+            or self._source_dir is None
+        ):
+            raise ParityHarnessError("phase A build requested before verification")
+        install_dir = Path(self._workspace.name) / "install"
+        try:
+            install_dir.mkdir()
+        except OSError:
+            raise ParityHarnessError(
+                "phase A install directory could not be created"
+            ) from None
+        cidfile = Path(self._workspace.name) / "build.cid"
+        cleanup = container_cleanup(cidfile, docker_remove=self._docker_remover)
+        self._supervise_docker(
+            _build_container_argv(self._source_dir, install_dir, cidfile),
+            timeout=_DOCKER_BUILD_TIMEOUT_SECONDS,
+            cleanup=cleanup,
+        )
+        binary = install_dir / "bin" / "hunspell"
+        if binary.is_symlink() or not binary.is_file():
+            raise ParityHarnessError("hunspell build did not install the expected binary")
+        self._install_dir = install_dir
+        self._build_verified = True
+
+    def run_candidate(
+        self, label: str, fixture: InventedFixture, run_index: int
+    ) -> _CandidateRepetition:
+        if not self._build_verified or self._install_dir is None or self._workspace is None:
+            raise ParityHarnessError("phase A run requested before build")
+        root = Path(self._workspace.name)
+        fixture_dir = root / f"fixture_{label}_{run_index}"
+        try:
+            fixture_dir.mkdir()
+            (fixture_dir / f"{_FIXTURE_BASE}.dic").write_bytes(fixture.dictionary_bytes)
+            (fixture_dir / f"{_FIXTURE_BASE}.aff").write_bytes(fixture.affix_bytes)
+        except OSError:
+            raise ParityHarnessError(
+                "phase A invented fixture could not be materialised"
+            ) from None
+        tokens = validate_tokens(fixture.query_tokens)
+
+        def cidfile_factory(candidate_label: str, index: int) -> Path:
+            return root / f"cid_{candidate_label}_{run_index}_{index}"
+
+        def run_process(argv, stdin_bytes, cleanup):
+            return self._runner(
+                argv,
+                stdin_bytes=stdin_bytes,
+                timeout_seconds=BATCH_TIMEOUT_SECONDS,
+                max_stdout_bytes=MAX_STDOUT_BYTES,
+                max_stderr_bytes=MAX_STDERR_BYTES,
+                cleanup=cleanup,
+            )
+
+        return _run_candidate_processes(
+            label,
+            tokens,
+            fixture_dir,
+            self._install_dir,
+            run_process,
+            self._docker_remover,
+            cidfile_factory,
+        )
+
+    def evidence(self) -> _PhaseAEvidence:
+        return _PhaseAEvidence(
+            environment_identity_match=self._source_verified and self._container_verified,
+            offline_build=self._build_verified,
+        )
+
+    def teardown(self) -> None:
+        if self._workspace is None:
+            return
+        workspace = self._workspace
+        self._workspace = None  # attempted exactly once
+        try:
+            workspace.cleanup()
+        except OSError:
+            raise ParityHarnessError(
+                "phase A workspace cleanup could not be confirmed"
+            ) from None
+
+
+# ---------------------------------------------------------------------------
 # CLI.
 # ---------------------------------------------------------------------------
-def _execute_phase_a() -> dict[str, object]:
-    """Live Phase A execution seam.
+def _execute_phase_a(environment: PhaseAEnvironment | None = None) -> dict[str, object]:
+    """Gate live Phase A execution behind the disabled flag.
 
-    Disabled in this implementation gate.  A separately authorized step will flip
-    ``_LIVE_PHASE_A_ENABLED`` and inject the pinned-container probe; it must still
-    emit only :data:`SUMMARY_KEYS` and never expose raw streams or marker values.
+    Refuses before any Docker, network, filesystem-resource, or subprocess activity
+    while the gate is disabled.  When a future authorized run enables it, the
+    injected (or default live) environment verifies identities, builds offline, runs
+    two repetitions per candidate, and reduces to the aggregate schema only, with
+    teardown attempted exactly once.  The CLI accepts no caller-supplied evidence.
     """
     if not _LIVE_PHASE_A_ENABLED:
         raise ParityHarnessError("live Phase A execution is not enabled in this gate")
-    raise ParityHarnessError("live Phase A execution wiring is deferred")  # pragma: no cover
+    env = environment if environment is not None else _LivePhaseAEnvironment()
+    return _run_phase_a_with_teardown(env)
 
 
 def _build_parser() -> argparse.ArgumentParser:

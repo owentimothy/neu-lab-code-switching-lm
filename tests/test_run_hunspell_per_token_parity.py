@@ -17,9 +17,12 @@ stubbed; no Docker command actually runs.
 from __future__ import annotations
 
 import importlib.util
+import io
+import json
 import os
 import subprocess
 import sys
+import tarfile
 import time
 import types
 from pathlib import Path
@@ -892,3 +895,661 @@ def test_run_bounded_rejects_bad_argv_and_launch_failure(tmp_path):
             max_stdout_bytes=1,
             max_stderr_bytes=1,
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- shared helpers.
+# ---------------------------------------------------------------------------
+def _phase_a_bounded_run(**overrides):
+    base = dict(
+        returncode=0,
+        terminal_state=runner.STATE_NORMAL_EXIT,
+        forced_termination=False,
+        stdin_delivered=True,
+        stdout=b"out\n",
+        stderr=b"",
+        stdout_bytes=4,
+        stderr_bytes=0,
+        stdout_limit_exceeded=False,
+        stderr_limit_exceeded=False,
+        timed_out=False,
+        worker_failed=False,
+        workers_joined=True,
+        cleanup_required=False,
+        cleanup_confirmed=True,
+        latency_ms=3,
+    )
+    base.update(overrides)
+    return runner.BoundedRun(**base)
+
+
+def _repetition(streams, **over):
+    return runner._CandidateRepetition(
+        raw_streams=tuple(streams),
+        max_stdout_bytes=over.get("max_stdout_bytes", 4),
+        max_stderr_bytes=over.get("max_stderr_bytes", 0),
+        max_latency_ms=over.get("max_latency_ms", 1),
+    )
+
+
+class _FakeEnvironment:
+    """A fake Phase A environment; performs no acquisition, build, or subprocess."""
+
+    def __init__(self, raise_at=None, raw=b"line\n", evidence=None):
+        self.raise_at = raise_at
+        self.raw = raw
+        self._evidence = evidence or runner._PhaseAEvidence(
+            environment_identity_match=True, offline_build=True
+        )
+        self.calls: list[tuple[str, int]] = []
+        self.fixture_seen = None
+        self.verified = False
+        self.built = False
+        self.teardowns = 0
+
+    def verify_identities(self):
+        if self.raise_at == "verify":
+            raise runner.ParityHarnessError("verify failed")
+        self.verified = True
+
+    def build(self):
+        if self.raise_at == "build":
+            raise runner.ParityHarnessError("build failed")
+        self.built = True
+
+    def run_candidate(self, label, fixture, run_index):
+        self.fixture_seen = fixture
+        self.calls.append((label, run_index))
+        if self.raise_at == "run":
+            raise runner.ParityHarnessError("run failed")
+        return _repetition((self.raw,), max_stdout_bytes=len(self.raw))
+
+    def evidence(self):
+        return self._evidence
+
+    def teardown(self):
+        self.teardowns += 1
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- orchestration wiring (dependency-injected; no Docker/network).
+# ---------------------------------------------------------------------------
+def test_orchestration_runs_two_candidates_two_runs_each():
+    env = _FakeEnvironment()
+    runner._run_phase_a(env)
+    assert env.verified is True
+    assert env.built is True
+    assert env.calls == [
+        ("PIPE_STREAM", 0),
+        ("PIPE_STREAM", 1),
+        ("SINGLE_TOKEN_LIST", 0),
+        ("SINGLE_TOKEN_LIST", 1),
+    ]
+
+
+def test_orchestration_emits_exact_schema_none_and_no_verdict():
+    summary = runner._run_phase_a(_FakeEnvironment())
+    assert tuple(summary) == runner.SUMMARY_KEYS
+    assert summary["selected_mode_label"] == "NONE"
+    assert summary["candidate_observation_count"] == 2
+    assert "candidate_passed" not in summary
+    assert "passing_candidate_count" not in summary
+    for observation in summary["candidate_observations"].values():
+        assert "candidate_passed" not in observation
+
+
+def test_orchestration_only_invented_fixture_reaches_environment():
+    env = _FakeEnvironment()
+    runner._run_phase_a(env)
+    assert env.fixture_seen == runner.build_invented_fixture()
+
+
+def test_orchestration_reduces_raw_and_emits_only_scalars():
+    env = _FakeEnvironment(raw=b"aa\nbb\n")
+    summary = runner._run_phase_a(env)
+    observation = summary["candidate_observations"]["PIPE_STREAM"]
+    assert observation["total_bytes"] == len(b"aa\nbb\n")
+    assert observation["total_lf_count"] == 2
+    serialized = json.dumps(summary)  # content-free: no raw bytes reach the summary
+    assert "aa" not in serialized and "bb" not in serialized
+
+
+@pytest.mark.parametrize("stage", ["verify", "build", "run"])
+def test_orchestration_fails_closed_at_each_stage(stage):
+    with pytest.raises(runner.ParityHarnessError):
+        runner._run_phase_a(_FakeEnvironment(raise_at=stage))
+
+
+def test_summary_reports_derived_evidence_not_hardcoded():
+    env = _FakeEnvironment(
+        evidence=runner._PhaseAEvidence(
+            environment_identity_match=False, offline_build=True
+        )
+    )
+    summary = runner._run_phase_a(env)
+    assert summary["environment_identity_match"] is False
+    assert summary["offline_build"] is True
+
+
+def test_run_phase_a_with_teardown_success_tears_down_once():
+    env = _FakeEnvironment()
+    runner._run_phase_a_with_teardown(env)
+    assert env.teardowns == 1
+
+
+@pytest.mark.parametrize("stage", ["verify", "build", "run"])
+def test_run_phase_a_with_teardown_tears_down_on_failure(stage):
+    env = _FakeEnvironment(raise_at=stage)
+    with pytest.raises(runner.ParityHarnessError):
+        runner._run_phase_a_with_teardown(env)
+    assert env.teardowns == 1
+
+
+def test_both_failure_surfaces_only_fixed_cleanup_error():
+    class _BadTeardownEnv(_FakeEnvironment):
+        def teardown(self):
+            super().teardown()
+            raise runner.ParityHarnessError("cleanup could not be confirmed")
+
+    env = _BadTeardownEnv(raise_at="build")
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        runner._run_phase_a_with_teardown(env)
+    assert "build failed" not in str(excinfo.value)  # underlying detail not leaked
+    assert env.teardowns == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- per-token candidate processes (no Docker; captured via a fake runner).
+# ---------------------------------------------------------------------------
+def _recording_runner():
+    calls: list[dict] = []
+
+    def run_process(argv, stdin_bytes, cleanup):
+        calls.append({"argv": list(argv), "stdin": stdin_bytes, "cleanup": cleanup})
+        return _phase_a_bounded_run(stdout=b"r\n", stdout_bytes=2)
+
+    return run_process, calls
+
+
+def _cidfile_factory(tmp_path):
+    return lambda label, index: tmp_path / f"cid_{label}_{index}"
+
+
+def test_single_token_list_launches_one_process_per_token(tmp_path):
+    fixture = runner.build_invented_fixture()
+    tokens = runner.validate_tokens(fixture.query_tokens)
+    run_process, calls = _recording_runner()
+    repetition = runner._run_candidate_processes(
+        "SINGLE_TOKEN_LIST", tokens, tmp_path / "fx", tmp_path / "install",
+        run_process, None, _cidfile_factory(tmp_path),
+    )
+    assert len(calls) == len(tokens)  # one process per token
+    assert len(repetition.raw_streams) == len(tokens)
+    # order preserved; each stdin is exactly one token plus a newline
+    for call, token in zip(calls, tokens):
+        assert call["stdin"] == (token + "\n").encode("utf-8")
+    # duplicate token yields distinct invocations in their original positions
+    assert calls[0]["stdin"] == b"synbase\n"
+    assert calls[len(tokens) - 2]["stdin"] == b"synbase\n"
+    # no token ever appears in argv
+    for call in calls:
+        joined = " ".join(call["argv"])
+        for token in tokens:
+            assert token not in joined
+        assert callable(call["cleanup"])
+
+
+def test_pipe_stream_uses_one_bounded_batch_invocation(tmp_path):
+    fixture = runner.build_invented_fixture()
+    tokens = runner.validate_tokens(fixture.query_tokens)
+    run_process, calls = _recording_runner()
+    repetition = runner._run_candidate_processes(
+        "PIPE_STREAM", tokens, tmp_path / "fx", tmp_path / "install",
+        run_process, None, _cidfile_factory(tmp_path),
+    )
+    assert len(calls) == 1  # the invented query fits one bounded batch
+    assert len(repetition.raw_streams) == 1
+    assert calls[0]["stdin"] == ("\n".join(tokens) + "\n").encode("utf-8")
+
+
+def test_phase_a_batch_stdin_encoding():
+    assert runner._phase_a_batch_stdin(("a", "b")) == b"a\nb\n"
+    assert runner._phase_a_batch_stdin(()) == b""
+
+
+def test_observe_repetitions_compares_ordered_tuples_deterministically():
+    first = _repetition((b"x\n", b"y\n"))
+    same = _repetition((b"x\n", b"y\n"))
+    observation = runner._observe_repetitions(first, same)
+    assert observation.raw_stream_identical_across_runs is True
+    assert observation.structural_summary_stable is True
+    different = _repetition((b"x\n", b"z\n"))
+    observation_two = runner._observe_repetitions(first, different)
+    assert observation_two.raw_stream_identical_across_runs is False
+
+
+@pytest.mark.parametrize(
+    ("label", "mode"),
+    [("PIPE_STREAM", "-a"), ("SINGLE_TOKEN_LIST", "-l")],
+)
+def test_phase_a_container_argv_is_correct_without_framing(tmp_path, label, mode):
+    argv = runner._phase_a_container_argv(
+        label, tmp_path / "fx", tmp_path / "install", tmp_path / "cid"
+    )
+    assert argv[argv.index("--network") + 1] == "none"
+    assert "--read-only" in argv
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--cidfile") + 1] == str(tmp_path / "cid")
+    assert f"LD_LIBRARY_PATH={runner._CONTAINER_HUNSPELL_LIB}" in argv
+    assert argv[-4:] == [
+        runner._CONTAINER_HUNSPELL_BIN,
+        "-d",
+        f"/bundle/{runner._FIXTURE_BASE}",
+        mode,
+    ]
+
+
+def test_reduce_candidate_clean_returns_record():
+    record = runner._reduce_candidate(_phase_a_bounded_run())
+    assert record.raw_stdout == b"out\n"
+    assert record.stdout_bytes == 4
+    assert record.latency_ms == 3
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"terminal_state": runner.STATE_TIMEOUT, "timed_out": True},
+        {"terminal_state": runner.STATE_OUTPUT_OVERFLOW, "stdout_limit_exceeded": True},
+        {"terminal_state": runner.STATE_WORKER_FAILURE, "worker_failed": True},
+        {"returncode": 7},
+        {"cleanup_required": True, "cleanup_confirmed": False},
+        {"stdin_delivered": False},
+    ],
+)
+def test_reduce_candidate_fails_closed(overrides):
+    with pytest.raises(runner.ParityHarnessError):
+        runner._reduce_candidate(_phase_a_bounded_run(**overrides))
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- supervised Docker pull and build (Docker stubbed via a fake runner).
+# ---------------------------------------------------------------------------
+def test_docker_pull_argv_is_pinned_and_quiet():
+    argv = runner._docker_pull_argv()
+    assert argv[:2] == ["docker", "pull"]
+    assert "--quiet" in argv
+    assert argv[argv.index("--platform") + 1] == "linux/arm64"
+    assert runner.CONTAINER_REFERENCE in argv
+
+
+def test_build_container_argv_is_hardened_with_cidfile(tmp_path):
+    argv = runner._build_container_argv(
+        tmp_path / "src", tmp_path / "install", tmp_path / "cid"
+    )
+    assert argv[argv.index("--cidfile") + 1] == str(tmp_path / "cid")
+    assert argv[argv.index("--network") + 1] == "none"
+    assert "--read-only" in argv
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert any(value.startswith("/tmp:rw,") for value in argv)
+    assert runner.CONTAINER_REFERENCE in argv
+    assert "test -x /install/bin/hunspell" in argv[-1]
+
+
+def test_verify_identities_supervises_pull(tmp_path):
+    captured: list[tuple] = []
+
+    def fake_runner(argv, **kwargs):
+        captured.append((list(argv), kwargs))
+        return _phase_a_bounded_run()
+
+    env = runner._LivePhaseAEnvironment(
+        source_acquirer=lambda _p: None,
+        source_extractor=lambda _a, _d: tmp_path / "source",
+        runner=fake_runner,
+    )
+    env.verify_identities()
+    pull_argv, pull_kwargs = captured[-1]
+    assert pull_argv[:2] == ["docker", "pull"]
+    assert pull_kwargs["timeout_seconds"] == runner._DOCKER_PULL_TIMEOUT_SECONDS
+    assert env.evidence().environment_identity_match is True
+    env.teardown()
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"terminal_state": runner.STATE_TIMEOUT, "timed_out": True},
+        {"returncode": 1},
+    ],
+)
+def test_pull_failure_fails_closed(tmp_path, bad):
+    env = runner._LivePhaseAEnvironment(
+        source_acquirer=lambda _p: None,
+        source_extractor=lambda _a, _d: tmp_path / "source",
+        runner=lambda argv, **kwargs: _phase_a_bounded_run(**bad),
+    )
+    with pytest.raises(runner.ParityHarnessError):
+        env.verify_identities()
+    workspace_path = env._workspace.name  # created before the pull failed
+    env.teardown()  # attempted once whenever workspace creation succeeded
+    assert not Path(workspace_path).exists()
+
+
+def _prepared_build_env(tmp_path, fake_runner):
+    env = runner._LivePhaseAEnvironment(runner=fake_runner)
+    env._workspace = types.SimpleNamespace(name=str(tmp_path))
+    env._source_verified = True
+    env._container_verified = True
+    env._source_dir = tmp_path / "source"
+    return env
+
+
+def test_build_supervises_container_with_cidfile_and_cleanup(tmp_path):
+    captured: list[tuple] = []
+
+    def fake_runner(argv, **kwargs):
+        captured.append((list(argv), kwargs))
+        installed = tmp_path / "install" / "bin"
+        installed.mkdir(parents=True, exist_ok=True)
+        (installed / "hunspell").write_bytes(b"")
+        return _phase_a_bounded_run()
+
+    env = _prepared_build_env(tmp_path, fake_runner)
+    env.build()
+    build_argv, build_kwargs = captured[-1]
+    assert "--cidfile" in build_argv
+    assert build_kwargs["timeout_seconds"] == runner._DOCKER_BUILD_TIMEOUT_SECONDS
+    assert callable(build_kwargs["cleanup"])
+    assert env.evidence().offline_build is True
+
+
+@pytest.mark.parametrize(
+    "bad",
+    [
+        {"terminal_state": runner.STATE_TIMEOUT, "timed_out": True},
+        {"returncode": 2},
+        {"terminal_state": runner.STATE_OUTPUT_OVERFLOW, "stdout_limit_exceeded": True},
+        {"terminal_state": runner.STATE_WORKER_FAILURE, "worker_failed": True},
+        {"cleanup_required": True, "cleanup_confirmed": False},
+    ],
+)
+def test_build_failure_modes_fail_closed(tmp_path, bad):
+    env = _prepared_build_env(tmp_path, lambda argv, **kwargs: _phase_a_bounded_run(**bad))
+    with pytest.raises(runner.ParityHarnessError):
+        env.build()
+
+
+def test_build_missing_installed_binary_fails_closed(tmp_path):
+    env = _prepared_build_env(tmp_path, lambda argv, **kwargs: _phase_a_bounded_run())
+    with pytest.raises(runner.ParityHarnessError):
+        env.build()
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- evidence derivation, teardown, and hardened extraction.
+# ---------------------------------------------------------------------------
+def test_live_environment_evidence_is_derived():
+    env = runner._LivePhaseAEnvironment()
+    assert env.evidence() == runner._PhaseAEvidence(False, False)
+    env._source_verified = True
+    env._container_verified = True
+    assert env.evidence() == runner._PhaseAEvidence(True, False)
+    env._build_verified = True
+    assert env.evidence() == runner._PhaseAEvidence(True, True)
+
+
+def test_teardown_removes_workspace(tmp_path):
+    import tempfile as _tempfile
+
+    env = runner._LivePhaseAEnvironment()
+    workspace = _tempfile.TemporaryDirectory()
+    env._workspace = workspace
+    root = Path(workspace.name)
+    (root / "leftover").write_bytes(b"x")
+    env.teardown()
+    assert not root.exists()
+
+
+def test_teardown_failure_is_fixed_error():
+    class _BadWorkspace:
+        name = "/nonexistent/whatever"
+
+        def cleanup(self):
+            raise OSError("private cleanup detail")
+
+    env = runner._LivePhaseAEnvironment()
+    env._workspace = _BadWorkspace()
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        env.teardown()
+    assert "private" not in str(excinfo.value)
+
+
+def test_teardown_is_attempted_at_most_once():
+    import tempfile as _tempfile
+
+    env = runner._LivePhaseAEnvironment()
+    env._workspace = _tempfile.TemporaryDirectory()
+    env.teardown()
+    env.teardown()  # second call is a no-op; must not raise
+
+
+def test_extract_source_rejects_unsafe_member(tmp_path):
+    archive = tmp_path / "bad.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        payload = b"x"
+        info = tarfile.TarInfo("../escape")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    with pytest.raises(runner.ParityHarnessError):
+        runner._extract_source(archive, tmp_path / "dest")
+    assert not (tmp_path / "escape").exists()
+
+
+def test_extract_source_requires_configure(tmp_path):
+    archive = tmp_path / "src.tar.gz"
+    with tarfile.open(archive, "w:gz") as tar:
+        payload = b"readme\n"
+        info = tarfile.TarInfo("hunspell-1.7.3/README")
+        info.size = len(payload)
+        tar.addfile(info, io.BytesIO(payload))
+    with pytest.raises(runner.ParityHarnessError):
+        runner._extract_source(archive, tmp_path / "dest")
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- disabled-gate refusal and boundary symbols.
+# ---------------------------------------------------------------------------
+def test_disabled_gate_refuses_before_any_acquisition(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner, "_acquire_public_pinned_source", lambda _p: calls.append("acquire")
+    )
+    monkeypatch.setattr(runner, "_run_phase_a", lambda *a, **k: calls.append("run"))
+    assert runner._LIVE_PHASE_A_ENABLED is False
+    with pytest.raises(runner.ParityHarnessError):
+        runner._execute_phase_a()
+    assert calls == []
+
+
+def test_default_cli_refusal_performs_no_live_work(monkeypatch, capsys):
+    calls: list[str] = []
+    monkeypatch.setattr(
+        runner, "_acquire_public_pinned_source", lambda _p: calls.append("acquire")
+    )
+    monkeypatch.setattr(runner, "_execute_phase_a", lambda *a, **k: calls.append("exec"))
+    assert runner.main([]) == runner.EXIT_OPT_IN_REQUIRED
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == runner._OPT_IN_MESSAGE + "\n"
+    assert calls == []
+
+
+def test_no_parser_marker_or_autoselection_symbols():
+    for absent in (
+        "parse_response",
+        "classify_marker",
+        "response_marker_enum",
+        "membership_sequence_match",
+        "select_mode",
+        "select_candidate",
+    ):
+        assert not hasattr(runner, absent)
+    assert runner.SELECTED_MODE_ENUM == ("PIPE_STREAM", "SINGLE_TOKEN_LIST", "NONE")
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- per-process boundaries are preserved (no concatenation before counting).
+# ---------------------------------------------------------------------------
+def test_observe_repetitions_counts_per_process_not_concatenated():
+    # process 1 has no trailing newline; process 2 opens with a boundary blank line.
+    rep = _repetition((b"a", b"\nb\n"))
+    obs = runner._observe_repetitions(rep, rep)
+    # per-process (1,0,0,1)+(3,2,1,1) -> a boundary blank that concatenation would hide
+    assert obs.total_bytes == 4
+    assert obs.total_lf_count == 2
+    assert obs.blank_line_count == 1  # concatenation of b"a\nb\n" would yield 0
+    assert obs.nonempty_line_count == 2
+
+
+def test_no_trailing_newline_processes_stay_separate():
+    split = _repetition((b"ab", b"cd"))
+    joined = _repetition((b"abcd",))
+    assert runner._observe_repetitions(split, split).nonempty_line_count == 2
+    assert runner._observe_repetitions(joined, joined).nonempty_line_count == 1
+
+
+def test_equal_concatenation_different_partitions_not_identical():
+    split = _repetition((b"ab", b"cd"))
+    joined = _repetition((b"abcd",))  # equal concatenated bytes, different partition
+    obs = runner._observe_repetitions(split, joined)
+    assert obs.raw_stream_identical_across_runs is False
+    assert obs.structural_summary_stable is False
+
+
+def test_reordered_per_process_outputs_are_detected():
+    forward = _repetition((b"aa\n", b"b\n"))
+    reordered = _repetition((b"b\n", b"aa\n"))
+    obs = runner._observe_repetitions(forward, reordered)
+    assert obs.raw_stream_identical_across_runs is False
+    assert obs.structural_summary_stable is False
+
+
+def test_repetition_observation_exposes_no_framing_meaning():
+    obs = runner._observe_repetitions(_repetition((b"x\n",)), _repetition((b"x\n",)))
+    for forbidden in (
+        "candidate_passed",
+        "response_segment_count",
+        "known_truth_partition_consistent",
+        "marker",
+    ):
+        assert not hasattr(obs, forbidden)
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- control timeouts match the tracked precedent.
+# ---------------------------------------------------------------------------
+def test_control_timeouts_match_tracked_precedent():
+    assert runner._DOCKER_PULL_TIMEOUT_SECONDS == 300
+    assert runner._DOCKER_BUILD_TIMEOUT_SECONDS == 300
+    assert runner.BATCH_TIMEOUT_SECONDS == 30
+
+
+def _prepared_run_env(tmp_path, fake_runner):
+    env = runner._LivePhaseAEnvironment(runner=fake_runner)
+    env._workspace = types.SimpleNamespace(name=str(tmp_path))
+    env._source_verified = True
+    env._container_verified = True
+    env._build_verified = True
+    env._source_dir = tmp_path / "source"
+    env._install_dir = tmp_path / "install"
+    return env
+
+
+def test_candidate_process_uses_batch_timeout(tmp_path):
+    captured: list[dict] = []
+
+    def fake_runner(argv, **kwargs):
+        captured.append(kwargs)
+        return _phase_a_bounded_run(stdout=b"x\n", stdout_bytes=2)
+
+    env = _prepared_run_env(tmp_path, fake_runner)
+    env.run_candidate("PIPE_STREAM", runner.build_invented_fixture(), 0)
+    assert captured[0]["timeout_seconds"] == 30
+    assert captured[0]["timeout_seconds"] == runner.BATCH_TIMEOUT_SECONDS
+
+
+# ---------------------------------------------------------------------------
+# Phase A -- temporary local-operation failures become fixed, path-free errors.
+# ---------------------------------------------------------------------------
+def test_workspace_creation_failure_is_fixed_error(monkeypatch):
+    def boom(*args, **kwargs):
+        raise OSError("private tmp detail")
+
+    monkeypatch.setattr(runner.tempfile, "TemporaryDirectory", boom)
+    env = runner._LivePhaseAEnvironment(
+        source_acquirer=lambda _p: None,
+        source_extractor=lambda _a, _d: None,
+        runner=lambda *a, **k: _phase_a_bounded_run(),
+    )
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        env.verify_identities()
+    assert "private" not in str(excinfo.value)
+
+
+def test_archive_write_failure_is_fixed_error(monkeypatch):
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return b"data"
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", lambda *a, **k: _Response())
+    monkeypatch.setattr(
+        runner.hashlib,
+        "sha256",
+        lambda data: types.SimpleNamespace(
+            hexdigest=lambda: runner.HUNSPELL_ARCHIVE_SHA256
+        ),
+    )
+
+    class _UnwritablePath:
+        def write_bytes(self, data):
+            raise OSError("private write detail")
+
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        runner._acquire_public_pinned_source(_UnwritablePath())
+    assert "private" not in str(excinfo.value)
+
+
+def test_install_dir_creation_failure_is_fixed_error(tmp_path):
+    (tmp_path / "install").mkdir()  # pre-exists so mkdir() fails
+    env = _prepared_build_env(tmp_path, lambda *a, **k: _phase_a_bounded_run())
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        env.build()
+    assert str(tmp_path) not in str(excinfo.value)
+
+
+def test_fixture_directory_creation_failure_is_fixed_error(tmp_path):
+    env = _prepared_run_env(tmp_path, lambda *a, **k: _phase_a_bounded_run())
+    (tmp_path / "fixture_PIPE_STREAM_0").mkdir()  # pre-exists so mkdir() fails
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        env.run_candidate("PIPE_STREAM", runner.build_invented_fixture(), 0)
+    assert str(tmp_path) not in str(excinfo.value)
+
+
+def test_fixture_write_failure_is_fixed_error(tmp_path, monkeypatch):
+    env = _prepared_run_env(tmp_path, lambda *a, **k: _phase_a_bounded_run())
+
+    def boom(self, data):
+        raise OSError("private write detail")
+
+    monkeypatch.setattr(runner.Path, "write_bytes", boom)
+    with pytest.raises(runner.ParityHarnessError) as excinfo:
+        env.run_candidate("PIPE_STREAM", runner.build_invented_fixture(), 0)
+    assert "private" not in str(excinfo.value)
