@@ -8,6 +8,7 @@ identifiers used here are invented placeholders.
 
 from __future__ import annotations
 
+import inspect
 import subprocess
 import types
 
@@ -27,6 +28,98 @@ def test_public_pins_match_tracked_evidence():
     assert cont.CONTAINER_REFERENCE.startswith(
         "docker.io/library/buildpack-deps@sha256:"
     )
+
+
+def test_hardened_container_argv_output_is_unchanged_by_the_shared_prefix(tmp_path):
+    """The historical vector must stay byte-for-byte identical after the extraction."""
+    argv = cont.hardened_container_argv(
+        cidfile_path=tmp_path / "cid",
+        bundle_dir=tmp_path / "bundle",
+        install_dir=tmp_path / "install",
+        inner_argv=["hunspell", "-d", "/bundle/es", "-a"],
+    )
+    assert argv == [
+        "docker",
+        "run",
+        "--rm",
+        "--interactive",
+        "--cidfile",
+        str(tmp_path / "cid"),
+        "--network",
+        "none",
+        "--platform",
+        "linux/arm64",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--tmpfs",
+        "/tmp:rw,nosuid,nodev,noexec,size=64m",
+        "-e",
+        "LANG=C.UTF-8",
+        "-e",
+        "LC_ALL=C.UTF-8",
+        "--mount",
+        f"type=bind,src={tmp_path / 'bundle'},dst=/bundle,readonly",
+        "--mount",
+        f"type=bind,src={tmp_path / 'install'},dst=/opt/hunspell,readonly",
+        cont.CONTAINER_REFERENCE,
+        "hunspell",
+        "-d",
+        "/bundle/es",
+        "-a",
+    ]
+    assert "LD_LIBRARY_PATH=/opt/hunspell/lib" not in argv
+
+
+def test_pipe_stream_container_argv_is_pinned_hardened_and_fixed(tmp_path):
+    argv = cont.pipe_stream_container_argv(
+        cidfile_path=tmp_path / "cid",
+        bundle_dir=tmp_path / "bundle",
+        install_dir=tmp_path / "install",
+    )
+    assert argv[:4] == ["docker", "run", "--rm", "--interactive"]
+    assert argv.count("--interactive") == 1
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("--platform") + 1] == cont.CONTAINER_PLATFORM
+    assert argv[argv.index("--cap-drop") + 1] == "ALL"
+    assert argv[argv.index("--security-opt") + 1] == "no-new-privileges"
+    assert argv[argv.index("--tmpfs") + 1] == "/tmp:rw,nosuid,nodev,noexec,size=64m"
+    assert "--read-only" in argv
+    assert argv[argv.index("--cidfile") + 1] == str(tmp_path / "cid")
+    assert "LANG=C.UTF-8" in argv and "LC_ALL=C.UTF-8" in argv
+    assert "LD_LIBRARY_PATH=/opt/hunspell/lib" in argv
+    mounts = [argv[i + 1] for i, part in enumerate(argv) if part == "--mount"]
+    assert mounts == [
+        f"type=bind,src={tmp_path / 'bundle'},dst=/bundle,readonly",
+        f"type=bind,src={tmp_path / 'install'},dst=/opt/hunspell,readonly",
+    ]
+    assert cont.CONTAINER_REFERENCE in argv
+    assert argv[-4:] == ["/opt/hunspell/bin/hunspell", "-d", "/bundle/es", "-a"]
+
+
+def test_pipe_stream_container_argv_has_no_tty_or_working_directory(tmp_path):
+    argv = cont.pipe_stream_container_argv(
+        cidfile_path=tmp_path / "cid",
+        bundle_dir=tmp_path / "bundle",
+        install_dir=tmp_path / "install",
+    )
+    assert "-w" not in argv
+    assert "--workdir" not in argv
+    assert "--tty" not in argv and "-t" not in argv
+
+
+def test_pipe_stream_dictionary_basename_is_governed_without_override(tmp_path):
+    assert cont.CONTAINER_DICTIONARY_BASENAME == "es"
+    argv = cont.pipe_stream_container_argv(
+        cidfile_path=tmp_path / "cid",
+        bundle_dir=tmp_path / "bundle",
+        install_dir=tmp_path / "install",
+    )
+    assert argv[argv.index("-d") + 1] == "/bundle/es"
+    parameters = inspect.signature(cont.pipe_stream_container_argv).parameters
+    assert set(parameters) == {"cidfile_path", "bundle_dir", "install_dir"}
 
 
 def test_hardened_container_argv_is_pinned_and_locked_down(tmp_path):

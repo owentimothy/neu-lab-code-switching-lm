@@ -37,6 +37,10 @@ CONTAINER_REFERENCE = f"{CONTAINER_REPOSITORY}@{CONTAINER_PLATFORM_DIGEST}"
 _CONTAINER_HUNSPELL_BIN = "/opt/hunspell/bin/hunspell"
 _CONTAINER_HUNSPELL_LIB = "/opt/hunspell/lib"
 
+# The governed public dictionary basename selected inside the read-only bundle mount.
+# It is fixed here; no caller may override it.
+CONTAINER_DICTIONARY_BASENAME = "es"
+
 # Docker removal is bounded and never runs in ordinary tests.
 _DOCKER_REMOVE_TIMEOUT = 20
 _DOCKER_RUN = subprocess.run
@@ -45,15 +49,20 @@ _DOCKER_RUN = subprocess.run
 # ---------------------------------------------------------------------------
 # Container transport helpers (structure only; not executed in this gate).
 # ---------------------------------------------------------------------------
-def hardened_container_argv(
+def _hardened_prefix(
     *,
     cidfile_path: Path,
     bundle_dir: Path,
     install_dir: Path,
-    inner_argv: Sequence[str],
+    library_path: str | None = None,
 ) -> list[str]:
-    """Build the pinned, network-disabled, read-only container argument vector."""
-    return [
+    """Build the hardened option prefix shared by every pinned container invocation.
+
+    ``library_path`` is the only variation, and it is inserted at a fixed position so a
+    caller never has to splice into a finished argument vector.  With ``None`` the
+    result is byte-for-byte the historical prefix.
+    """
+    argv = [
         "docker",
         "run",
         "--rm",
@@ -75,12 +84,58 @@ def hardened_container_argv(
         "LANG=C.UTF-8",
         "-e",
         "LC_ALL=C.UTF-8",
+    ]
+    if library_path is not None:
+        argv += ["-e", f"LD_LIBRARY_PATH={library_path}"]
+    argv += [
         "--mount",
         f"type=bind,src={bundle_dir},dst=/bundle,readonly",
         "--mount",
         f"type=bind,src={install_dir},dst=/opt/hunspell,readonly",
         CONTAINER_REFERENCE,
+    ]
+    return argv
+
+
+def hardened_container_argv(
+    *,
+    cidfile_path: Path,
+    bundle_dir: Path,
+    install_dir: Path,
+    inner_argv: Sequence[str],
+) -> list[str]:
+    """Build the pinned, network-disabled, read-only container argument vector."""
+    return [
+        *_hardened_prefix(
+            cidfile_path=cidfile_path, bundle_dir=bundle_dir, install_dir=install_dir
+        ),
         *inner_argv,
+    ]
+
+
+def pipe_stream_container_argv(
+    *,
+    cidfile_path: Path,
+    bundle_dir: Path,
+    install_dir: Path,
+) -> list[str]:
+    """Build the fixed PIPE_STREAM (``-a``) container argument vector.
+
+    The inner invocation, the library path, and the governed dictionary basename are
+    fixed here; no caller may override them.  Tokens are delivered only on stdin and
+    never enter this vector.
+    """
+    return [
+        *_hardened_prefix(
+            cidfile_path=cidfile_path,
+            bundle_dir=bundle_dir,
+            install_dir=install_dir,
+            library_path=_CONTAINER_HUNSPELL_LIB,
+        ),
+        _CONTAINER_HUNSPELL_BIN,
+        "-d",
+        f"/bundle/{CONTAINER_DICTIONARY_BASENAME}",
+        "-a",
     ]
 
 
