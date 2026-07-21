@@ -1221,6 +1221,137 @@ def test_marker_deletion_cancellation_never_recreates_a_cidfile(tmp_path, monkey
 
 
 # ---------------------------------------------------------------------------
+# Cancellation raised by the control-directory removal itself.
+# ---------------------------------------------------------------------------
+def _cancelling_rmdir(cancellation: BaseException, workspace: Path, attempts: list[str]):
+    """Patch ``Path.rmdir`` to cancel *before* a control directory is removed.
+
+    Only directories inside the injected workspace are intercepted; every other
+    removal still reaches the real implementation.
+    """
+    real_rmdir = Path.rmdir
+
+    def cancelling_rmdir(self):
+        if workspace in self.parents:
+            attempts.append(str(self))
+            raise cancellation  # the directory itself is left in place
+        return real_rmdir(self)
+
+    return cancelling_rmdir
+
+
+def _recording_unlink(unlinks: list[str]):
+    """Record every deletion so a retry or a fallback cidfile deletion would show."""
+    real_unlink = os.unlink
+
+    def recording_unlink(path, *args, **kwargs):
+        unlinks.append(str(path))
+        return real_unlink(path, *args, **kwargs)
+
+    return recording_unlink
+
+
+@pytest.mark.parametrize("cancellation", [KeyboardInterrupt(), SystemExit(11)])
+def test_directory_removal_cancellation_wins_when_nothing_cancelled_earlier(
+    tmp_path, monkeypatch, cancellation
+):
+    """``Path.rmdir()`` is itself interrupted, so it becomes the winning cancellation."""
+    attempts: list[str] = []
+    unlinks: list[str] = []
+    removers: list[str] = []
+    runner = _FakeRunner(clean_exit=False)
+    transport, kwargs = _transport(
+        tmp_path, process_runner=runner, container_remover=removers.append
+    )
+    monkeypatch.setattr(tr.os, "unlink", _recording_unlink(unlinks))
+    monkeypatch.setattr(
+        Path, "rmdir", _cancelling_rmdir(cancellation, kwargs["workspace_dir"], attempts)
+    )
+
+    with pytest.raises(type(cancellation)) as excinfo:
+        transport.run_pipe_batch(_STDIN, **_LIMITS)
+
+    control_dir = runner.calls[0]["control_dir"]
+    marker = control_dir / tr.CONTROL_OWNER_MARKER_NAME
+    cidfile = control_dir / tr.CONTROL_CIDFILE_NAME
+    assert attempts == [str(control_dir)]  # reached exactly once, never retried
+    assert excinfo.value is cancellation  # the same object crosses the boundary
+    assert type(excinfo.value) is type(cancellation)
+    assert not isinstance(excinfo.value, h.ParityTransportError)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None
+    # Frame names only: no locals are formatted, logged, serialized, or exported.
+    names = [frame.name for frame in traceback.extract_tb(excinfo.value.__traceback__)]
+    assert "cancelling_rmdir" in names  # the injected removal frame is retained
+    assert cancellation.pipe_stream_cleanup_status == tr.PIPE_STREAM_CLEANUP_UNCONFIRMED
+    assert cancellation.pipe_stream_cleanup_status == "UNCONFIRMED"
+    # Cleanup deleted the cidfile once and the release deleted the marker once; nothing
+    # else was unlinked, so there was no retry and no fallback cidfile deletion.
+    assert unlinks == [str(cidfile), str(marker)]
+    assert not cidfile.exists()  # never recreated
+    assert removers == [_INVENTED_CONTAINER_ID]  # no second container-removal attempt
+    assert control_dir.is_dir()  # preserved: the fake removed nothing
+    assert marker.exists()  # the ownership claim was restored
+
+
+@pytest.mark.parametrize(
+    ("original_type", "later_type"),
+    [
+        (KeyboardInterrupt, KeyboardInterrupt),
+        (KeyboardInterrupt, SystemExit),
+        (SystemExit, KeyboardInterrupt),
+        (SystemExit, SystemExit),
+    ],
+)
+def test_original_runner_cancellation_outranks_a_directory_removal_cancellation(
+    tmp_path, monkeypatch, original_type, later_type
+):
+    """A later ``Path.rmdir()`` cancellation never displaces the original winner."""
+    original = original_type()
+    later = later_type()
+    attempts: list[str] = []
+    unlinks: list[str] = []
+    removers: list[str] = []
+    runner = _FakeRunner(raises=original, clean_exit=False)
+    transport, kwargs = _transport(
+        tmp_path, process_runner=runner, container_remover=removers.append
+    )
+    monkeypatch.setattr(tr.os, "unlink", _recording_unlink(unlinks))
+    monkeypatch.setattr(
+        Path, "rmdir", _cancelling_rmdir(later, kwargs["workspace_dir"], attempts)
+    )
+
+    with pytest.raises(original_type) as excinfo:
+        transport.run_pipe_batch(_STDIN, **_LIMITS)
+
+    control_dir = runner.calls[0]["control_dir"]
+    marker = control_dir / tr.CONTROL_OWNER_MARKER_NAME
+    cidfile = control_dir / tr.CONTROL_CIDFILE_NAME
+    assert attempts == [str(control_dir)]  # reached exactly once, never retried
+    assert excinfo.value is original  # the exact original object survives
+    assert excinfo.value is not later
+    assert type(excinfo.value) is original_type
+    assert not isinstance(excinfo.value, h.ParityTransportError)
+    assert not isinstance(later, h.ParityTransportError)
+    assert excinfo.value.__cause__ is None
+    assert excinfo.value.__context__ is None  # never exposed through chaining
+    names = [frame.name for frame in traceback.extract_tb(excinfo.value.__traceback__)]
+    assert "__call__" in names  # the original runner frame is preserved
+    assert "cancelling_rmdir" not in names  # the later frame never replaces it
+    assert original.pipe_stream_cleanup_status == tr.PIPE_STREAM_CLEANUP_UNCONFIRMED
+    assert original.pipe_stream_cleanup_status == "UNCONFIRMED"
+    assert not hasattr(later, "pipe_stream_cleanup_status")
+    assert unlinks == [str(cidfile), str(marker)]  # no retry, no fallback deletion
+    assert not cidfile.exists()  # never recreated
+    assert removers == [_INVENTED_CONTAINER_ID]  # no second container remover
+    assert control_dir.is_dir()  # surviving evidence matches UNCONFIRMED
+    assert marker.exists()
+    assert sorted(entry.name for entry in control_dir.iterdir()) == [
+        tr.CONTROL_OWNER_MARKER_NAME
+    ]  # nothing was recursively deleted
+
+
+# ---------------------------------------------------------------------------
 # Strict integer fields.
 # ---------------------------------------------------------------------------
 @pytest.mark.parametrize("field", ["returncode", "stdout_bytes", "stderr_bytes", "latency_ms"])
