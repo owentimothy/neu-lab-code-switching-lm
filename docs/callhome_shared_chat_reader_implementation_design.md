@@ -14,11 +14,8 @@ not open questions.
 
 Provide one shared, reliable TalkBank CHAT reader for **both** English and
 Spanish that supplies faithful main-tier utterance text for future construction
-of the four local conditions:
-
-```text
-EnglishMono   SpanishMono   MonoCont   CsCont
-```
+of the four local conditions (`EnglishMono`, `SpanishMono`, `MonoCont`,
+`CsCont`).
 
 The reader is the earliest blocking artifact on the first-pilot path: no
 condition dataset can be built until CHAT transcripts can be read faithfully.
@@ -50,7 +47,7 @@ tests/test_callhome_chat.py         # add synthetic strict-reader tests
 
 No third file is justified by inspection. The strict reader reuses the existing
 dataclasses (`CallhomeTier`, `CallhomeUtterance`, `CallhomeTranscript`) and the
-existing tier-dispatch logic, so no new module, no separate English/Spanish
+shared tier-dispatch logic, so no new module, no separate English/Spanish
 parser, and no change to consumer signatures is required.
 
 ## D. API decision — add one strict entry point, reuse shared internals
@@ -71,7 +68,7 @@ Consumers and their coupling to permissive behavior:
 |---|---|---|
 | `callhome_project.project_transcript` | transcript/utterance objects | No |
 | `callhome_screening.screen_utterance` | `utterance.parser_warnings` (count→bool) | Reads warnings, tolerates zero |
-| `callhome_structure_scan.summarize_transcripts` / `scan_directory` | `n_parser_warnings`; **swallows** `OSError/UnicodeDecodeError/ValueError` per file | **Yes** — it is the permissive survey tool |
+| `callhome_structure_scan.summarize_transcripts` / `scan_callhome_transcripts` | `n_parser_warnings`; **swallows** `OSError/UnicodeDecodeError/ValueError` per file | **Yes** — it is the permissive survey tool |
 | `callhome_lexicon_validation`, `english_scowl_coverage` | `utterance.raw_main_tier_text` | No |
 | `scripts/dry_run_english_scowl_coverage.py` | `parse_file: Callable = parse_chat_file` injection seam | No (seam already exists) |
 | `scripts/summarize_callhome_projection_local.py` | `parse_chat_file(path)` directly | No |
@@ -83,140 +80,241 @@ semantics and regress its tests. Adding a distinct strict entry point:
 
 - gives future dataset construction one fail-closed reader;
 - leaves the permissive survey path intact and separately named;
-- shares one reconstruction + tier-dispatch implementation, so the two paths can
-  never drift into "two readers" with different notions of a main tier.
+- shares only tier **dispatch** (not reconstruction policy), so the two paths
+  agree on what a main tier is without collapsing into one ambiguous branch.
 
 Proposed new public function (name illustrative, to be finalized in review):
+`read_chat_transcript(path: str | Path) -> CallhomeTranscript`.
+
+## E. Logical-line reconstruction — two separate wrappers
+
+The permissive and strict paths do **not** share one reconstruction algorithm
+controlled by an internal `strict` flag. They are two functions that may share
+only small content-neutral helpers (e.g. stripping trailing CR/LF); they do not
+pretend to implement one identical reconstruction policy.
 
 ```text
-read_chat_transcript(path: str | Path) -> CallhomeTranscript
+_reconstruct_permissive_lines(physical_lines)      -> logical tiers  # exact current behavior
+_reconstruct_strict_logical_lines(physical_lines)  -> logical tiers  # fail-closed
 ```
 
-## E. Shared logical-line reconstruction
-
-One shared internal converts physical lines to logical tiers **before** any
-filtering, normalization, or tokenization. A `strict` flag selects fail-closed
-versus the existing permissive behavior; the reconstruction itself is shared.
+### Permissive path (unchanged — preserves current `parse_chat_lines` semantics)
 
 ```text
-reconstruct_logical_lines(physical_lines, *, strict):
-    logical = []          # list of (owner_line, [continuation, ...])
-    current = None
-    for raw in physical_lines:
-        line = raw without trailing CR/LF
-        if line == "":                      # blank
-            if strict: current = None       # blank ends a logical tier
-            else:      record permissive warning as today
-            continue
-        if line starts with TAB:            # continuation
-            if current is None:
-                fail_closed("orphan continuation")     # strict
-                # permissive: record "unmerged continuation" warning, skip
-            else:
-                current.continuations.append(line without leading TAB)
-            continue
-        if line[0] in {"@", "*", "%"}:      # new logical tier owner
-            current = new_owner(line); logical.append(current)
-            continue
-        # any other line (incl. space-prefixed continuation-looking line)
-        fail_closed("malformed / space-prefixed line")  # strict
-        # permissive: record "unknown structural line" warning, skip
-
-    for owner in logical:
-        owner.text = join(owner.raw, owner.continuations, sep=" ")  # exactly one U+0020
-    return logical
-
-parse_logical_tiers(logical, ...):          # existing dispatch, unchanged
-    @  -> header (setdefault list); @Languages seeds nullable language
-    *  -> new main tier / CallhomeUtterance (turn_index increments)
-    %  -> dependent tier on current utterance; %snd/%mov set media_id
+blank / whitespace-only line          : silently skipped
+TAB- or space-prefixed content line   : warning "unmerged continuation line" + text dropped
+unknown structural line               : warning "unknown structural line" + dropped
+@ / * / % owner                       : dispatched exactly as today
+orphan dependent tier (% before main) : warning + skipped
 ```
 
-Required strict behavior (R-2): a physical TAB begins a continuation; it attaches
-to the immediately preceding logical `@`/`*`/`%` tier; joins with **exactly one**
-`U+0020`; multiple continuations are allowed; reconstruction happens before tier
-filtering; no continuation is ever emitted as an independent object; a
-space-prefixed continuation-looking line fails; an orphan continuation fails; any
-malformed structure fails.
+The permissive parser never reconstructs continuations — it drops them. This is
+verbatim current behavior and must not change in this docs-only gate.
 
-## F. Strict TalkBank file loading (R-1)
+### Strict path
 
-`read_chat_transcript` performs, in order, with no fallback and no retry:
+```text
+blank line          : ends current continuation ownership (current = None)
+TAB-prefixed line   : continuation — attach to current owner; orphan (no owner) → abort
+space-prefixed line : abort
+@ / * / % owner      : begins a new logical tier owner
+any other line      : abort ("unknown structural line")
+```
+
+### Strict continuation boundary grammar (R-2, exact)
+
+```text
+physical continuation line := single leading TAB + payload
+after the one required leading TAB:
+    payload must NOT begin with TAB or SPACE
+    payload must contain at least one non-whitespace character
+```
+
+The join is applied **only** at the physical continuation boundary:
+
+```text
+owner_fragment := owner_fragment.rstrip(" \t")   # remove only trailing horizontal layout ws
+continuation   := line[1:]                        # remove exactly the one required leading TAB
+reject if continuation begins with " " or "\t"    # no extra leading horizontal whitespace
+reject if continuation.strip() == ""              # empty / whitespace-only payload
+joined := owner_fragment + " " + continuation  # exactly one U+0020
+```
+
+Invariants: punctuation is never changed; interior whitespace is not normalized;
+only the physical continuation boundary is normalized; the output boundary
+contains exactly one `U+0020`. No bare `rstrip()` appears anywhere in
+reconstruction — only the explicit `rstrip(" \t")` above, whose removed
+characters are defined as physical layout whitespace.
+
+### Strict logical-tier validation (R-3 precondition)
+
+Before shared tier dispatch, the strict path validates each reconstructed owner
+and aborts on any malformed tier. Malformed tiers — **each aborts the strict
+read**:
+
+```text
+colonless main tier                        (* line with no ':')
+empty main-tier speaker marker             (marker between '*' and ':' is empty)
+main tier missing required TAB after colon
+colonless dependent tier                   (% line with no ':')
+empty dependent-tier marker                (marker between '%' and ':' is empty)
+dependent tier missing required TAB after colon
+orphan dependent tier                      (% before any main tier)
+unknown structural line
+```
+
+### Shared tier dispatch (reused after reconstruction)
+
+```text
+parse_logical_tiers(logical, ...):   # existing dispatch semantics, reused by both paths
+    @ -> header (setdefault list); @Languages seeds nullable language
+    * -> new main tier / CallhomeUtterance (turn_index increments)
+    % -> dependent tier on current utterance; %snd/%mov set media_id
+```
+
+Reusing dispatch keeps both paths agreeing on what a main tier is without making
+them share a reconstruction policy.
+
+## F. Strict read pipeline — `read_chat_transcript` (R-1 loading + R-3 enforcement)
+
+`read_chat_transcript(path)` runs, in order, with no fallback and no retry:
 
 1. read raw **bytes**;
-2. reject a UTF-8 BOM (`b"\xef\xbb\xbf"` prefix) → fail closed;
-3. one strict `bytes.decode("utf-8")` (strict errors) → decode failure is fail
-   closed;
-4. reject any literal `U+FFFD` replacement character in the decoded text → fail
-   closed;
-5. require `@UTF8` as the **first logical line** → otherwise fail closed;
-6. no encoding sniffing, no per-call encoding option, no alternate decoder.
+2. reject a UTF-8 BOM (`b"\xef\xbb\xbf"` prefix) → abort;
+3. one strict `bytes.decode("utf-8")` (strict errors) → decode failure aborts;
+4. reject any literal `U+FFFD` replacement character in the decoded text → abort;
+5. require `@UTF8` as the **first logical line**, matched by exact logical-line
+   equality with the string `@UTF8` — no trailing colon, no trailing space, no
+   trailing TAB, no continuation, and it must be first → otherwise abort;
+6. `_reconstruct_strict_logical_lines(...)` (section E);
+7. strict logical-tier validation (section E) — abort on any malformed tier;
+8. shared tier dispatch (section E);
+9. **mandatory post-parse assertion (R-3):** `transcript.parser_warnings` must be
+   empty **and** every `utterance.parser_warnings` must be empty; otherwise abort
+   with a sanitized strict-reader error. No warning-bearing strict transcript is
+   ever returned.
 
-## G. Failure model
+No encoding sniffing, no per-call encoding option, no alternate decoder. Step 9
+closes the R-3 gap: even though tier dispatch is reused, any warning it or
+validation could surface becomes an immediate strict failure, so a strict
+transcript that reaches the caller is warning-free **by construction**.
 
-Proportional to a pilot reader — no container/snapshot/authorization/recovery
-machinery.
+## G. Failure model and exception sanitization (R-3)
 
-- No silent file, line, tier, or utterance skipping in the strict path.
-- A failed file yields **no** partial transcript object — the function raises
-  instead of returning a truncated result.
-- Exceptions carry **fixed, non-content** messages. Public error text must not
-  contain transcript text, filename, path, conversation ID, speaker ID, line
-  number, or byte sequence. (Category is allowed, e.g. "strict UTF-8 decode
-  failed"; specifics are not.)
-- `KeyboardInterrupt` and `SystemExit` propagate exactly and are never caught,
-  wrapped, or reclassified.
+All strict-path failures raise one dedicated exception,
+`StrictChatReaderError(Exception)`, with a closed set of fixed, content-free
+messages (category only), e.g.
+`"strict CHAT read failed"`, `"strict UTF-8 decode failed"`,
+`"CHAT continuation grammar violated"`, `"malformed CHAT tier"`,
+`"missing or malformed @UTF8 header"`.
 
-For future multi-file dataset construction: the **dataset builder** — not this
-low-level parser — owns atomic publication of the final combined output. The
-parser reads one file at a time and must not be required to buffer the entire
-corpus before yielding.
+Chaining and context are suppressed. Every caught operational/decoding exception
+is re-raised with the chain broken:
+
+```python
+raise StrictChatReaderError("strict UTF-8 decode failed") from None
+```
+
+Rules:
+
+- catch `Exception`, never `BaseException`;
+- never catch `KeyboardInterrupt` or `SystemExit` — they propagate exactly and
+  are never caught, wrapped, or reclassified;
+- the sanitized exception stores **no** supplied path and **no** original
+  exception object as a field;
+- no filename, path, transcript fragment, speaker, line number, byte offset, or
+  byte sequence appears in any public surface — `str`, `repr`, `args`,
+  `__cause__`, `__context__`, or anything printed to stdout/stderr;
+- filesystem errors (`FileNotFoundError`, `PermissionError`, generic `OSError`)
+  are caught and re-raised as a fixed `StrictChatReaderError` with `from None`,
+  exposing no path.
+
+A failed file yields **no** partial transcript object — the function raises
+instead of returning a truncated result. For future multi-file dataset
+construction the **dataset builder** — not this low-level parser — owns atomic
+publication; the parser reads one file at a time.
 
 ## H. Traversal boundary
 
-Directory traversal stays **out** of this reader change. This gate is limited to
-correctly parsing one file. Multi-file iteration and any per-file
-error-aggregation policy belong to the later four-condition dataset builder,
-where the atomic-publication and fail-vs-skip policy can be decided together. The
-existing `callhome_structure_scan.scan_directory` remains the only traversal
-helper and is untouched here. No population authorization is opened by this
+Directory traversal stays **out** of this reader change: this gate parses one
+file. Multi-file iteration and per-file error-aggregation policy belong to the
+later four-condition dataset builder, where atomic-publication and fail-vs-skip
+policy are decided together. The existing
+`callhome_structure_scan.scan_callhome_transcripts` remains the only traversal
+helper and is untouched here; no population authorization is opened by this
 design.
 
 ## I. Compatibility and migration
 
 - `parse_chat_lines` / `parse_chat_file` keep their current permissive behavior
   and signatures. No existing consumer or test changes in this gate.
-- `callhome_structure_scan.scan_directory` still swallows per-file
+- `callhome_structure_scan.scan_callhome_transcripts` still swallows per-file
   `OSError/UnicodeDecodeError/ValueError` to complete its survey. This is the one
   permissive behavior that must remain available **temporarily**. It is named
   here as a migration item: when the dataset builder is written, condition
   construction must use `read_chat_transcript` (fail-closed), and the builder —
   not the survey scanner — decides file-level disposition. This survey path is
   **not** silently broken by the current gate.
+- The future four-condition **condition builder must use only**
+  `read_chat_transcript` and must **never** call the permissive
+  `parse_chat_file` / `parse_chat_lines`. When the implementation gate lands,
+  this prohibition must be stated in the `callhome_chat.py` module docstring, in
+  the `parse_chat_file` / `parse_chat_lines` docstrings (permissive: survey /
+  diagnostic use only), and in the `read_chat_transcript` docstring (the sole
+  reader for condition construction).
 - The `parse_file` injection seam in `dry_run_english_scowl_coverage.py` already
   allows a strict reader to be substituted later without a signature change.
 
 ## J. Synthetic test matrix
 
-All fixtures use invented content only (`syn_*` tokens, `AAA`/`BBB` speakers) —
-no real transcript text. New strict-reader cases:
+All fixtures use invented content only (`syn_*` tokens, `AAA`/`BBB` speakers,
+unique sentinel strings for the privacy tests) — no real transcript text.
 
-- **Encoding:** valid UTF-8; accented multibyte characters decode intact;
-  invalid UTF-8 bytes fail; missing `@UTF8`; `@UTF8` not first; BOM present
-  fails; literal `U+FFFD` fails; no fallback/retry occurs on any failure.
-- **Continuations:** one continuation joins with a single space; multiple
-  continuations join in order; continuations on main / dependent / header tiers;
-  one-space join exactly; punctuation preserved across the join; orphan
-  continuation (before any tier) fails; continuation immediately after a blank
-  line fails (blank ends the logical tier); space-prefixed continuation-looking
-  line fails; malformed tier fails.
-- **Tier semantics:** main tier included; dependent/header tiers excluded from
-  main-tier utterance text; no continuation emitted as an independent object; no
-  main-tier text silently dropped.
-- **Failure model:** failures raise fixed, non-sensitive messages containing no
-  path/text/id/line/byte; `KeyboardInterrupt` and `SystemExit` propagate exactly.
-- **Compatibility:** existing permissive `parse_chat_file` / `parse_chat_lines`
-  behavior and warning counts unchanged; existing consumer tests still pass.
+### Encoding / `@UTF8` header exactness
+
+- valid UTF-8; accented multibyte characters decode intact; invalid UTF-8 bytes
+  abort; BOM present aborts; literal `U+FFFD` aborts; no fallback/retry on any
+  failure;
+- `@UTF8` acceptance is exact logical-line equality with `@UTF8`. Reject each of:
+  `@UTF8:`, `@UTF8 ` (trailing space), `@UTF8<TAB>`, continuation-bearing
+  `@UTF8`, `@UTF8` not the first logical line, and missing `@UTF8`.
+
+### Tier structure (every warning-producing legacy condition becomes a strict abort)
+
+- orphan dependent tier; colonless main tier; empty main-tier speaker marker;
+  main tier missing TAB; colonless dependent tier; empty dependent-tier marker;
+  dependent tier missing TAB; unknown structural line.
+
+### Continuation boundaries
+
+- owner ends with SPACE; owner ends with TAB (both: single `U+0020` at the
+  boundary, no doubling); continuation begins TAB+SPACE+text → abort;
+  continuation begins TAB+TAB+text → abort; TAB-only continuation → abort;
+  TAB + spaces-only continuation → abort; valid TAB + text → joins with exactly
+  one `U+0020`; multiple continuations join in order; punctuation preserved
+  across the join; interior whitespace not normalized.
+
+### Failure privacy (all surfaces)
+
+Inject a unique sentinel into each of: path, filename, transcript text, speaker
+marker, invalid byte payload; then assert the sentinel appears in **none** of:
+`str(exc)`, `repr(exc)`, `exc.args`, `exc.__cause__`, `exc.__context__`, stdout,
+stderr.
+
+### Filesystem failures (synthetic / mocked)
+
+- missing file (`FileNotFoundError`); permission failure (`PermissionError`);
+  generic `OSError` — each raises a fixed sanitized `StrictChatReaderError`
+  exposing no path.
+
+### Compatibility (behavior parity, unchanged legacy)
+
+- permissive TAB/space continuation still: warning + dropped text;
+- permissive blank line still: silently skipped;
+- permissive unknown structural line still: warning + dropped;
+- existing permissive warning counts and consumer tests unchanged;
+- the same inputs on the strict path abort or reconstruct per the strict rules
+  above.
 
 ## K. Definition of done (for the later implementation gate)
 
@@ -227,13 +325,10 @@ no real transcript text. New strict-reader cases:
 
 ## L. Exact next gate
 
-One bounded **implementation** gate changing only:
-
-```text
-src/cslm/data/callhome_chat.py
-tests/test_callhome_chat.py
-```
-
-using **synthetic transcripts only**, adding the strict `read_chat_transcript`
-entry point and shared reconstruction internals, with the test matrix in
-section J. It opens no corpus, dataset, tokenizer, model, or execution gate.
+One bounded **implementation** gate changing only `src/cslm/data/callhome_chat.py`
+and `tests/test_callhome_chat.py`, using **synthetic transcripts only**, adding
+the strict `read_chat_transcript`
+entry point, the separate `_reconstruct_strict_logical_lines` reconstruction,
+strict logical-tier validation, the `StrictChatReaderError` contract, and the
+post-parse warning assertion, with the test matrix in section J. It opens no
+corpus, dataset, tokenizer, model, or execution gate.
