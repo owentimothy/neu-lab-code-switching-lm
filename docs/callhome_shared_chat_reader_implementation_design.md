@@ -244,6 +244,8 @@ caught `except` block. Rules:
 
 - catch `Exception`, never `BaseException`;
 - `KeyboardInterrupt` / `SystemExit` propagate exactly — never caught or wrapped;
+  the exact-instance propagation tests in section J prove the handler catches
+  `Exception`, not `BaseException`;
 - the public exception satisfies both `__cause__ is None` and `__context__ is
   None`, storing no supplied path, original exception, traceback detail, offending
   bytes, filename, or byte offset;
@@ -342,6 +344,62 @@ stderr.
 - missing file (`FileNotFoundError`); permission failure (`PermissionError`);
   generic `OSError` — each raises a fixed sanitized `StrictChatReaderError`
   exposing no path.
+
+### Interrupt propagation (proves `Exception`, never `BaseException`)
+
+The inner read/decode handler catches `Exception`, not `BaseException`
+(section G). Two tests fix that boundary at the strict reader's file-read step by
+injecting one specific control-flow exception **instance** and asserting the exact
+same object propagates unchanged:
+
+- **`KeyboardInterrupt`**: inject one specific `KeyboardInterrupt()` instance at
+  the strict reader's file-read boundary; `read_chat_transcript(...)` must let it
+  propagate as the exact same object — the intended property is
+  `interrupt = KeyboardInterrupt()`, then
+  `with pytest.raises(KeyboardInterrupt) as captured:` around the injected read
+  failure, then `assert captured.value is interrupt` (exact syntax not
+  prescribed). The `KeyboardInterrupt` is not caught, not wrapped, not converted
+  to `StrictChatReaderError`, and its object identity is preserved.
+- **`SystemExit`**: inject one specific `SystemExit()` instance at the same
+  boundary with the same required outcome — the exact same object instance
+  propagates (`captured.value is` the injected `SystemExit`). It is not caught,
+  not wrapped, not converted to `StrictChatReaderError`, and its identity is
+  preserved.
+
+Because a `BaseException`-catching handler would convert either instance into a
+`StrictChatReaderError`, these two exact-identity assertions prove the handler
+catches `Exception` rather than `BaseException`.
+
+### Forced post-dispatch warning enforcement (R-3 assertion exercised after dispatch)
+
+The malformed-input tests above (header exactness, tier structure, continuation)
+all fail **before** shared tier dispatch, so they do not by themselves prove that
+the mandatory post-dispatch R-3 assertion (section F, step 10) exists or is
+reachable. Two tests force a warning to survive into the post-dispatch result so
+the assertion itself is exercised. The design authorizes monkeypatching or a
+small in-test injection seam confined to `tests/test_callhome_chat.py` — no
+production configuration, registry, plugin, or third file is introduced, and the
+future implementation stays within `src/cslm/data/callhome_chat.py` and
+`tests/test_callhome_chat.py`.
+
+- **Forced transcript-level warning**: arrange an injected shared-dispatch result
+  whose `transcript.parser_warnings == ["synthetic warning"]` with **no**
+  utterance-level warnings; `read_chat_transcript(...)` must raise a sanitized
+  `StrictChatReaderError` and must **not** return the transcript. Assert the fixed
+  privacy contract still holds: the warning text is not exposed on any public
+  surface, `__cause__ is None`, and `__context__ is None`.
+- **Forced utterance-level warning**: arrange an injected shared-dispatch result
+  where `transcript.parser_warnings == []` and exactly one
+  `utterance.parser_warnings == ["synthetic warning"]`; `read_chat_transcript(...)`
+  must raise a sanitized `StrictChatReaderError` and must **not** return the
+  transcript. Assert the same contract: the warning text is not exposed,
+  `__cause__ is None`, and `__context__ is None`.
+
+Purpose of the split: malformed-input tests prove that known invalid structures
+fail early; these forced-warning tests separately prove that any warning produced
+by reused shared dispatch also fails at the mandatory post-dispatch R-3
+assertion. Early validation alone must not make the post-dispatch assertion
+untested or removable.
 
 ### Compatibility (behavior parity, unchanged legacy)
 
