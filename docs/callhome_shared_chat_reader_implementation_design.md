@@ -114,12 +114,15 @@ verbatim current behavior and must not change in this docs-only gate.
 ### Strict path
 
 ```text
-blank line          : ends current continuation ownership (current = None)
-TAB-prefixed line   : continuation — attach to current owner; orphan (no owner) → abort
-space-prefixed line : abort
-@ / * / % owner      : begins a new logical tier owner
-any other line      : abort ("unknown structural line")
+exact empty physical line : ends continuation ownership (current = None)
+TAB-prefixed line         : continuation — attach to current owner; orphan (no owner) → abort
+space-prefixed line       : malformed → abort (a SPACE-first line is never blank)
+@ / * / % owner            : begins a new logical tier owner
+any other line            : abort ("unknown structural line")
 ```
+
+Blank vs. malformed is decided by exact physical emptiness, never
+`line.strip() == ""`: a SPACE-only line is malformed, not blank.
 
 ### Strict continuation boundary grammar (R-2, exact)
 
@@ -183,18 +186,26 @@ them share a reconstruction policy.
 2. reject a UTF-8 BOM (`b"\xef\xbb\xbf"` prefix) → abort;
 3. one strict `bytes.decode("utf-8")` (strict errors) → decode failure aborts;
 4. reject any literal `U+FFFD` replacement character in the decoded text → abort;
-5. require `@UTF8` as the **first logical line**, matched by exact logical-line
-   equality with the string `@UTF8` — no trailing colon, no trailing space, no
-   trailing TAB, no continuation, and it must be first → otherwise abort;
-6. `_reconstruct_strict_logical_lines(...)` (section E);
-7. strict logical-tier validation (section E) — abort on any malformed tier;
-8. shared tier dispatch (section E);
-9. **mandatory post-parse assertion (R-3):** `transcript.parser_warnings` must be
-   empty **and** every `utterance.parser_warnings` must be empty; otherwise abort
-   with a sanitized strict-reader error. No warning-bearing strict transcript is
-   ever returned.
+5. split the decoded text into physical lines;
+6. `_reconstruct_strict_logical_lines(...)` (section E) — build logical lines;
+7. require the **first reconstructed logical line** to equal exactly `@UTF8` — no
+   trailing colon, no trailing space, no trailing TAB, no continuation payload,
+   and it must be first → otherwise abort;
+8. strict logical-tier validation (section E) — abort on any malformed tier;
+9. shared tier dispatch (section E);
+10. **mandatory post-parse assertion (R-3):** `transcript.parser_warnings` must be
+    empty **and** every `utterance.parser_warnings` must be empty; otherwise abort
+    with a sanitized strict-reader error. No warning-bearing strict transcript is
+    ever returned;
+11. return the warning-free transcript.
 
-No encoding sniffing, no per-call encoding option, no alternate decoder. Step 9
+Ordering rationale: BOM / UTF-8 checks (2–4) precede reconstruction because bytes
+must decode before any line exists; header equality (7) follows reconstruction
+because `@UTF8` is a reconstructed logical line — so a continuation-bearing `@UTF8`
+reconstructs to a non-exact header and fails step 7; validation and dispatch (8–9)
+run only after header verification.
+
+No encoding sniffing, no per-call encoding option, no alternate decoder. Step 10
 closes the R-3 gap: even though tier dispatch is reused, any warning it or
 validation could surface becomes an immediate strict failure, so a strict
 transcript that reaches the caller is warning-free **by construction**.
@@ -208,26 +219,43 @@ messages (category only), e.g.
 `"CHAT continuation grammar violated"`, `"malformed CHAT tier"`,
 `"missing or malformed @UTF8 header"`.
 
-Chaining and context are suppressed. Every caught operational/decoding exception
-is re-raised with the chain broken:
+`raise ... from None` alone is insufficient: it hides the *display* of the chain,
+but raising inside an active `except` block still sets `__context__` to the caught
+exception, which stays reachable and may carry a protected path, bytes, or offset.
+The strict reader instead catches in an inner helper, records only a content-free
+category (sentinel), exits the handler, then raises `StrictChatReaderError`
+**outside** any active exception handler:
 
 ```python
-raise StrictChatReaderError("strict UTF-8 decode failed") from None
+def _read_and_decode_strict(path: Path) -> str:
+    failure = decoded = None
+    try:
+        decoded = path.read_bytes().decode("utf-8")  # strict; no fallback
+    except Exception:                 # never BaseException
+        failure = "strict CHAT read failed"
+    if failure is not None:           # raised only after the except block exits
+        raise StrictChatReaderError(failure)
+    return decoded  # decoded is not None on this path
 ```
 
-Rules:
+Syntax is illustrative; the required property is that **`StrictChatReaderError` is
+raised only after the caught exception handler has exited**, never from inside the
+caught `except` block. Rules:
 
 - catch `Exception`, never `BaseException`;
-- never catch `KeyboardInterrupt` or `SystemExit` — they propagate exactly and
-  are never caught, wrapped, or reclassified;
-- the sanitized exception stores **no** supplied path and **no** original
-  exception object as a field;
+- `KeyboardInterrupt` / `SystemExit` propagate exactly — never caught or wrapped;
+- the public exception satisfies both `__cause__ is None` and `__context__ is
+  None`, storing no supplied path, original exception, traceback detail, offending
+  bytes, filename, or byte offset;
 - no filename, path, transcript fragment, speaker, line number, byte offset, or
   byte sequence appears in any public surface — `str`, `repr`, `args`,
   `__cause__`, `__context__`, or anything printed to stdout/stderr;
 - filesystem errors (`FileNotFoundError`, `PermissionError`, generic `OSError`)
-  are caught and re-raised as a fixed `StrictChatReaderError` with `from None`,
-  exposing no path.
+  convert to a fixed-category `StrictChatReaderError` raised after the handler
+  exits, exposing no path.
+
+Precedent for this raise-after-exit pattern (pattern only, not its unrelated
+lifecycle machinery): `src/cslm/data/spanish_hunspell_diagnostic.py`.
 
 A failed file yields **no** partial transcript object — the function raises
 instead of returning a truncated result. For future multi-file dataset
@@ -275,9 +303,10 @@ unique sentinel strings for the privacy tests) — no real transcript text.
 - valid UTF-8; accented multibyte characters decode intact; invalid UTF-8 bytes
   abort; BOM present aborts; literal `U+FFFD` aborts; no fallback/retry on any
   failure;
-- `@UTF8` acceptance is exact logical-line equality with `@UTF8`. Reject each of:
-  `@UTF8:`, `@UTF8 ` (trailing space), `@UTF8<TAB>`, continuation-bearing
-  `@UTF8`, `@UTF8` not the first logical line, and missing `@UTF8`.
+- `@UTF8` acceptance is exact equality of the **first reconstructed logical line**
+  with `@UTF8`, checked after reconstruction. Reject each of: `@UTF8:`, `@UTF8 `
+  (trailing space), `@UTF8<TAB>`, continuation-bearing `@UTF8` (reconstructs to a
+  non-exact header), `@UTF8` not the first logical line, and missing `@UTF8`.
 
 ### Tier structure (every warning-producing legacy condition becomes a strict abort)
 
@@ -293,6 +322,13 @@ unique sentinel strings for the privacy tests) — no real transcript text.
   TAB + spaces-only continuation → abort; valid TAB + text → joins with exactly
   one `U+0020`; multiple continuations join in order; punctuation preserved
   across the join; interior whitespace not normalized.
+- **SPACE-only physical line** (one or more spaces, no other content) → strict
+  abort with sanitized `StrictChatReaderError`; malformed space-prefixed line, must
+  **not** be classified blank via `line.strip() == ""`.
+- **exact empty physical line ends ownership**: valid owner line, then an exact
+  empty physical line, then a TAB-prefixed continuation → the empty line ends
+  ownership, the continuation is orphaned, and the strict read aborts (ownership
+  never survives an exact blank physical line).
 
 ### Failure privacy (all surfaces)
 
