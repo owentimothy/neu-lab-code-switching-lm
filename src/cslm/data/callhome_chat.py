@@ -400,8 +400,8 @@ def _validate_main_tier(line: str) -> None:
     if ":" not in line:
         raise StrictChatReaderError(_TIER_MALFORMED)  # colonless main tier
     marker, value = line.split(":", 1)
-    if marker[1:] == "":
-        raise StrictChatReaderError(_TIER_MALFORMED)  # empty speaker marker
+    if marker[1:].strip() == "":
+        raise StrictChatReaderError(_TIER_MALFORMED)  # empty / whitespace-only speaker marker
     if not value.startswith("\t"):
         raise StrictChatReaderError(_TIER_MALFORMED)  # missing required TAB after colon
 
@@ -411,8 +411,8 @@ def _validate_dependent_tier(line: str) -> None:
     if ":" not in line:
         raise StrictChatReaderError(_TIER_MALFORMED)  # colonless dependent tier
     marker, value = line.split(":", 1)
-    if marker[1:] == "":
-        raise StrictChatReaderError(_TIER_MALFORMED)  # empty dependent marker
+    if marker[1:].strip() == "":
+        raise StrictChatReaderError(_TIER_MALFORMED)  # empty / whitespace-only dependent marker
     if not value.startswith("\t"):
         raise StrictChatReaderError(_TIER_MALFORMED)  # missing required TAB after colon
 

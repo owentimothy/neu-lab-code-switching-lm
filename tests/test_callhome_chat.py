@@ -302,6 +302,30 @@ def test_strict_malformed_tier_rejected(tmp_path, content):
     assert str(ei.value) == "malformed CHAT tier"
 
 
+@pytest.mark.parametrize(
+    "content",
+    [
+        # Whitespace-only speaker marker: "* :<TAB>syn_alpha" — the remainder after
+        # '*' is a lone space that shared dispatch would strip to speaker_id == "".
+        "@UTF8\n* :\tsyn_alpha\n",
+        # Whitespace-only dependent marker: "% :<TAB>syn_annotation" — dispatch would
+        # otherwise produce a marker-only dependent tier (prefix == "%").
+        "@UTF8\n*AAA:\tsyn_alpha\n% :\tsyn_annotation\n",
+    ],
+)
+def test_strict_whitespace_only_marker_rejected(tmp_path, content):
+    # Regression for the P1 finding: a marker whose remainder is only whitespace
+    # must fail closed through the public read_chat_transcript API rather than
+    # become an empty identifier in a returned transcript.
+    assert "\t" in content  # guard: the fixtures use real TAB separators
+    p = _write_text(tmp_path, content)
+    with pytest.raises(StrictChatReaderError) as ei:
+        read_chat_transcript(p)  # raises → no transcript is returned
+    assert str(ei.value) == "malformed CHAT tier"
+    assert ei.value.__cause__ is None
+    assert ei.value.__context__ is None
+
+
 # ---------------------------------------------------------------------------
 # Strict reader — continuation boundaries
 # ---------------------------------------------------------------------------
