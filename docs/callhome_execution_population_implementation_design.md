@@ -6,6 +6,12 @@ hashing of real files, no strict-reader execution, no dataset construction. This
 document is an implementation-ready contract for a **later, separately reviewed**
 synthetic-only implementation gate.
 
+The eventual synthetic-only implementation is split into two normative checkpoints
+(§1.4): **Checkpoint A** (a pure, filesystem-free deterministic core) and
+**Checkpoint B** (the production/filesystem/publication boundary). This document
+fixes the privacy, schema, ordering, identity, and collision behavior so that a
+Checkpoint A implementer need invent none of it.
+
 **Permission state:** Decision B (see `docs/callhome_ground_rules.md`) —
 aggregate-only, non-transcript CALLHOME summaries *may* be committed with citation
 notes; per-row records, conversation identifiers, filenames, and transcript-
@@ -15,7 +21,7 @@ aggregate for commit.
 
 ---
 
-## 0. Finding-closure map (two review rounds)
+## 0. Finding-closure map (seven review rounds)
 
 **Round 1** (all closed):
 
@@ -42,8 +48,57 @@ aggregate for commit.
 | P3 — Python-private sentinel described too strongly as security | §8.2, §17.3 (supported-interface authorization boundary, not adversarial isolation) |
 | P3 — conversation-identity suffix removal not defined exactly | §10.5 (remove exactly the final `.cha`) |
 
-Round-1 findings are reopened only where round-2 changes must stay consistent
-with them.
+**Round 3** (this revision — implementation-plan contract correction):
+
+| Correction | Resolution |
+|---|---|
+| A — Checkpoint A/B boundary undefined; implementer would invent the pure/filesystem split | §1.4 (normative pure-core vs production/filesystem checkpoints; `.gitignore` deferred to B) |
+| B — constants left as prose/examples | §8.7 (normative constants table; identity-participation clarified) |
+| C — field predicates not enumerated per field | §8.8 (normative field-predicate table for every persisted/nested record) |
+| D — source-member array ordering unspecified | §10.8 (canonical ascending UTF-8-byte ordering; noncanonical persisted order rejected) |
+| E — ambiguous "duplicate normalized path identity" collision class; crossover under-defined | §13.1 (class removed), §13.4 (five exact classes + internal precedence), §13.5 (exact language-crossover), §9.1 (failure precedence) |
+| F — record/error representation privacy not normative | §18.5 (`repr=False` + fixed redacted `__repr__`; error carries only a category; sentinel repr tests) |
+| G — strict JSON persistence boundary not exact | §14.3 (BOM/NaN/Infinity/duplicate-key/surrogate rules; reserialize-and-compare; explicit mapping functions; `asdict` not the contract) |
+| H — identity/reconciliation closure not stated as one contract | §11.7 (four checksum scopes; reconciliation points; tampered counts never accepted) |
+| I — parsing/filesystem independence of the pure core not normative | §6.1 (import/dependency guard; no Path/handles/clock/Git in Checkpoint A) |
+| J — factual error: `Path.stem` claimed to mishandle multi-dot `.cha` | §10.5 (corrected; `filename[:-4]` is the *chosen contract*, not a `Path.stem` bug) |
+
+**Round 4** (this revision — focused Codex P1/P2 follow-up):
+
+| Correction | Resolution |
+|---|---|
+| 1 — NFC/NFD/case-fold path collisions not language-namespaced | §13.4 (keys carry `language`; same-language requirement; duplicate-byte stays global; cross-language equivalents permitted), §12 (tests) |
+| 2 — record-level invariants absent | §16.7 (normative invariant table for snapshots, candidate/approval, authorization, manifest, summary; Checkpoint B verification `ok` formula) |
+| 3 — Checkpoint A/B contradictions (`Path.stem`/re-resolution/`_census_population_core`/cancellation in A) | §8.3 (seam = Checkpoint B), §10.5/§12/§20.2 (Path.stem is doc-only, not an A test), §20.2 (cancellation → B) |
+| 4 — "production roots or paths" ambiguous vs logical-root strings | §1.4 (precise resolved-path exclusions), §6.1 (logical-root string constants explicitly allowed as identity values) |
+| 5 — missing `## 9.` main heading | §9 heading restored before §9.1 |
+| 6 — stale "test file uses only the private core" | §6 architecture, §20 intro (staged A-pure / B-filesystem roles; consistent across §§1.4, 6.1, 20.1, 20.2) |
+| 9 — narrow cleanups | §6 (dependency set stated normative/complete), §14.3 (mapping functions guard field-set drift + pre-approval canonicalization) |
+
+**Round 5** (this revision — final narrow Codex follow-up):
+
+| Finding | Resolution |
+|---|---|
+| CHC-P2-04 — source-approval contract version not pinned | §16.7 (exact `contract_version == POPULATION_CONTRACT_VERSION`; no upgrade/fallback/normalize/caller-select; enters `source_approval_sha256`), §20.1 (test) |
+| CHC-P2-05 — manifest snapshot-ID predicates not self-contained | §16.7 (intrinsic provider/language/`n_members`>0 predicates; per-language entry-count reconciliation independent of `counts`; `identity()` binding to approved snapshots; A/B enforcement boundaries), §11.4, §20.1/§20.2 (tests) |
+| CHC-P2-06 — stable-identity verification result missing | §8.5 + §16.7 (`population_identity_matches` added; four-term `ok`; `membership_matches` ≠ identity; `repository_commit_compatible` informational), §11.4 (re-verification), §20.2 (tests) |
+
+**Round 6** (this revision — final verification-semantics correction):
+
+| Finding | Resolution |
+|---|---|
+| CHC-P2-07 — verification error-versus-result semantics conflict | §16.4 (strict acceptance loader: accepts or raises), §16.8 (new: strict loader vs private non-accepting verification inspector), §11.4 (Stage-R raise list vs returned Booleans), §16.7 (live authenticated snapshot-ID mismatch RETURNS `population_identity_matches==False`/`ok==False`, not raise; acceptance/construction still raise), §18.2 (two outcome classes), §20.2 (returned-result vs raise-without-record tests) |
+
+**Round 7** (this revision — two-finding cleanup):
+
+| Finding | Resolution |
+|---|---|
+| CHC-P2-08 — stale §14.2 blanket "recomputes each and asserts equality" | §14.2 (replaced with the two-boundary contract: strict acceptance raises; live Checkpoint B verification returns Booleans for evaluable manifest-file / entry / stable-identity / count mismatches; agrees with §11.4/§16.4/§16.7/§16.8/§18.2/§20.2) |
+| CHC-P3-09 — inaccurate §18.2 "already-approved aggregate" wording | §18.2 (removed "already-approved"; `population_identity_sha256` is a privacy-safe local-only aggregate, disclosure governed by §19; a verification result grants no disclosure approval; record stays content-free) |
+
+Round-1 through Round-6 findings are reopened only where Round-7 changes must stay
+consistent with them. (The Round-1 through Round-6 rows above quote the wording each
+round superseded; those quotes are **historical and resolved**, not live rules.)
 
 ---
 
@@ -70,17 +125,134 @@ promotes, constructs a dataset, or assigns a split. It must not import or call
 **bytes** to compute a SHA-256 digest is not parsing: each `.cha` file (and each
 approved archive) is an opaque byte stream for hashing only.
 
-### 1.3 Exact implementation file scope (later gate)
+### 1.3 Exact implementation file scope (later gates)
+
+The eventual implementation touches only these files, and only across the two
+checkpoints of §1.4:
 
 ```text
-src/cslm/data/callhome_population.py     # production module (metadata-only census)
-scripts/census_callhome_population.py    # fixed-everything, authorization-gated runner
-tests/test_callhome_population.py         # synthetic filesystem fixtures only
-.gitignore                               # one narrow entry (§7)
+src/cslm/data/callhome_population.py     # Checkpoint A: pure core; Checkpoint B: + filesystem boundary
+scripts/census_callhome_population.py    # Checkpoint B only: fixed-everything, authorization-gated runner
+tests/test_callhome_population.py         # A: invented-only tests; B: synthetic filesystem fixtures
+.gitignore                               # Checkpoint B only: one narrow entry (§7)
 ```
 
-No other file may change in the implementation gate. This design document is the
-only file changed in the current docs-only gate.
+No other file may change in either implementation checkpoint. This design document
+is the only file changed in the current docs-only gate.
+
+### 1.4 Implementation checkpoint boundary (normative)
+
+The synthetic-only implementation is delivered in two separately reviewed
+checkpoints. This boundary is **normative**: it fixes exactly what a Checkpoint A
+implementer may and may not build, so no privacy, schema, ordering, identity, or
+collision behavior has to be invented, and so filesystem/production concerns cannot
+leak into the pure core.
+
+#### Checkpoint A — pure deterministic core
+
+Maximum eventual implementation scope:
+
+```text
+src/cslm/data/callhome_population.py
+tests/test_callhome_population.py
+```
+
+Checkpoint A may contain **only**:
+
+```text
+frozen typed records
+exact constants and field predicates
+privacy-safe representations
+strict mapping and JSON validation
+canonical serialization
+source-approval checksum calculation
+authorization checksum calculation
+stable population identity
+manifest-file identity
+count derivation and reconciliation
+exact conversation identity
+pure deterministic ordering
+pure collision checks over supplied values
+in-memory aggregate-summary construction
+invented-only tests
+```
+
+Checkpoint A must **exclude**:
+
+```text
+pathlib
+os
+filesystem-capable imports or APIs
+filesystem traversal
+archive or transcript hashing
+trusted bootstrap
+project_root
+authorization capability
+resolved production filesystem paths
+Path objects
+path-producing helpers
+filesystem-root discovery or access
+caller-supplied filesystem locations
+publication
+verification execution
+nullary production entry points
+CLI
+.gitignore changes
+real corpus or archive access
+strict CHAT parsing
+```
+
+Checkpoint A **may and must** contain the fixed public **logical identity strings**:
+
+```text
+ENGLISH_LOGICAL_ROOT = "data/raw/callhome/eng"
+SPANISH_LOGICAL_ROOT = "data/raw/callhome/spa"
+```
+
+These are **canonical serialized identity values** (they populate `logical_roots`,
+§11.1) — they are **not** resolved filesystem paths, **not** `Path` objects, and
+**not** filesystem capabilities. Excluding "resolved production filesystem paths"
+does not exclude these fixed strings; the exclusion targets `Path`/`os`/`project_root`
+resolution and access, not the presence of the logical-root string constants (§6.1).
+
+All Checkpoint A inputs (mappings, member values, candidate/approval/authorization
+records, JSON text or bytes) are **supplied to pure functions**; the pure core reads
+nothing from disk and resolves no path (see §6.1). Checkpoint A computes checksums
+and identities over values it is handed, validates JSON strings/bytes it is handed,
+and constructs records and the in-memory aggregate summary — all without touching
+the filesystem, the clock, the environment, or Git.
+
+#### Checkpoint B — production/filesystem boundary
+
+Deferred to Checkpoint B:
+
+```text
+trusted bootstrap
+authorization capability
+fixed paths
+directory and archive purity
+filesystem enumeration
+archive and transcript hashing
+approved-inventory comparison
+immutable publication
+frozen-manifest verification
+nullary production APIs
+CLI
+.gitignore
+filesystem, publication, cancellation, and boundary privacy tests
+```
+
+`.gitignore` is **not** part of Checkpoint A because Checkpoint A creates and
+accesses **no local-output path** — it neither writes nor resolves any file under
+`data/processed/callhome_population/`, so there is nothing for a `.gitignore` entry
+to protect until Checkpoint B introduces publication. The single `.gitignore` line
+(§7) and its guardrail test are Checkpoint B work.
+
+Sections §8.7 (constants), §8.8 (field predicates), §10.8 (member ordering), §11.7
+(identity/reconciliation closure), §13.4–§13.5 (collision/crossover algorithms),
+§14.3 (strict JSON), and §18.5 (privacy-safe representations) are Checkpoint A
+contracts. Sections §8.6, §9.2, §10.7, §15, §17, and the CLI (§8.4) are Checkpoint B
+contracts.
 
 ---
 
@@ -171,16 +343,27 @@ depend on directory-iteration order, locale, `LC_COLLATE`, or creation order.
 
 ### 4.4 Rejected identity collisions (each aborts) — see §13
 
+The five exact collision classes (§13.4), in internal precedence order:
+
 ```text
 duplicate byte content            (identical SHA-256)
-duplicate normalized path identity
-duplicate conversation identity
-Unicode NFC collision
-Unicode NFD collision
-Unicode case-fold collision
-manifest drift (enumerated set ≠ approved inventory)
-English/Spanish crossover
+duplicate conversation identity   (identical exact conversation_id)
+Unicode NFC collision             (exact bytes differ; equal after NFC)
+Unicode NFD collision             (exact bytes differ; equal after NFD)
+Unicode case-fold collision       (exact bytes differ; equal after casefold())
 ```
+
+Plus the two non-collision population aborts:
+
+```text
+manifest drift (enumerated set ≠ approved inventory)  → source_identity_mismatch
+English/Spanish crossover                             → language_crossover (§13.5)
+```
+
+The former generic "duplicate normalized path identity" class is **removed** as an
+independent collision category (§13.1); the four exact-path comparisons above
+(bytes, NFC, NFD, case-fold) plus conversation-ID equality already cover every
+deterministic path-collision class without an unspecified extra normalization.
 
 ---
 
@@ -240,13 +423,73 @@ scripts/census_callhome_population.py
      human-confirmation flag; opaque production authorization; census-only.
 
 tests/test_callhome_population.py
-  └── synthetic filesystem fixtures only; uses ONLY the private core.
+  ├── Checkpoint A: pure invented-value tests (constructors, validators, mapping
+  │                 functions, serializers, checksums, ordering, collision,
+  │                 reconciliation, summary) — NO filesystem, NO _census_population_core
+  └── Checkpoint B: synthetic filesystem trees + the private _census_population_core
+                    seam (authorization, traversal, hashing, publication, verification,
+                    privacy-boundary, cancellation, CLI)
 ```
 
-The module depends only on the standard library (`pathlib`, `hashlib`, `os`,
-`stat`, `json`, `unicodedata`, `dataclasses`, `io`) and
-`cslm.utils.paths.project_root`. It has **no dependency** on `callhome_chat` or any
-projection/screening module, so it cannot accidentally parse transcript content.
+The **eventual complete** module depends only on the standard library and
+`cslm.utils.paths.project_root`. This dependency list is **normative and complete**,
+not an accidentally-partial illustration:
+
+```text
+Checkpoint A (pure core) — COMPLETE allowed dependency set:
+    hashlib, json, unicodedata, dataclasses   (and only these)
+
+Checkpoint B (filesystem boundary) — ADDS exactly:
+    pathlib, os, stat, io, cslm.utils.paths.project_root
+```
+
+It has **no dependency** on `callhome_chat` or any projection/screening module, so it
+cannot accidentally parse transcript content. The filesystem-capable imports
+(`pathlib`, `os`, `stat`, `io`) and `project_root` are introduced **only at
+Checkpoint B**; at Checkpoint A the module imports **none** of them (§6.1).
+
+### 6.1 Parsing and filesystem independence of the pure core (normative)
+
+At **Checkpoint A**, the module (`callhome_population.py`) is a pure, deterministic
+core. Normatively, the Checkpoint A module:
+
+```text
+does not import callhome_chat
+does not import strict or permissive CHAT readers (read_chat_transcript,
+  parse_chat_file, parse_chat_lines)
+does not import screening, projection, condition, or routing modules
+does not import pathlib, os, stat, io, or any other filesystem-capable API
+does not accept Path values or filesystem handles as arguments
+does not access files, directories, archives, environment variables, Git, or the
+  clock
+```
+
+The pure core operates exclusively on values passed to it (mappings, member values,
+record objects, JSON strings/bytes, injected timestamps/commit strings when a record
+must carry one — supplied as data, never read from the environment). **One
+dependency/import guard test is sufficient** to establish the absence of filesystem
+and parsing capabilities in Checkpoint A (assert the module's imported names are a
+subset of the complete Checkpoint A set `{hashlib, json, unicodedata, dataclasses}`,
+contain none of the forbidden modules, and that the module exposes no path-accepting
+public helper).
+
+**Logical-root strings are not filesystem capability.** The fixed public constants
+`ENGLISH_LOGICAL_ROOT = "data/raw/callhome/eng"` and
+`SPANISH_LOGICAL_ROOT = "data/raw/callhome/spa"` (§8.7) are **canonical serialized
+identity strings** that Checkpoint A may and must hold (they populate the manifest's
+`logical_roots`, §11.1). Holding these `str` constants is **not** resolving a
+filesystem path, is **not** a `Path` object, and grants no filesystem access. The
+Checkpoint A exclusion (§1.4) bans **resolved production filesystem paths**, `Path`
+objects, path-producing helpers, filesystem-root discovery/access, and
+caller-supplied filesystem locations — not the presence of the logical-root string
+literals.
+
+Because Checkpoint A helpers are pure and **catch no exceptions from I/O**, do
+**not** require artificial filesystem-error or cancellation tests for them; those
+belong to Checkpoint B, where the filesystem boundary actually exists. Filesystem
+traversal, bootstrap, archive/transcript hashing, `project_root`, and publication
+(§8.6, §9.2, §10.7, §15, §17) are introduced at Checkpoint B; that is where the
+`pathlib`/`os`/`stat`/`io`/`project_root` dependencies first appear.
 
 ---
 
@@ -372,7 +615,13 @@ names are Python **convention, not enforcement**: nothing prevents code that
 deliberately reaches into module internals from reading `_CAPABILITY_SENTINEL`;
 that is explicitly out of scope (§17.3).
 
-### 8.3 Private synthetic-testing seam
+### 8.3 Private synthetic-testing seam (Checkpoint B)
+
+`_census_population_core` is a **Checkpoint B** construct: it exists only once the
+filesystem boundary is introduced, and it is the seam Checkpoint B tests drive with
+synthetic filesystem trees. Checkpoint A tests never use it — they call the pure
+supplied-value constructors, validators, mapping functions, serializers, checksum,
+ordering, collision, reconciliation, and summary functions directly (§20.1).
 
 ```python
 def _census_population_core(
@@ -526,13 +775,14 @@ class CallhomePopulationManifest:                 # callhome_population_manifest
     manifest_file_sha256: str                    # §11.3
 
 @dataclass(frozen=True)
-class CallhomePopulationVerification:
-    ok: bool
+class CallhomePopulationVerification:             # Checkpoint B live-verification result (§11.4, §16.7)
+    ok: bool                                     # == the four fatal terms below (§11.7)
     population_identity_sha256: str
-    manifest_file_sha256_ok: bool
-    membership_matches: bool
-    counts_reconciled: bool                      # §11.6
-    repository_commit_compatible: bool           # reported separately, never fatal
+    manifest_file_sha256_ok: bool                # FATAL
+    membership_matches: bool                     # FATAL; ordered entries only (NOT identity)
+    population_identity_matches: bool            # FATAL; recomputed stable identity == persisted (§11.1)
+    counts_reconciled: bool                      # FATAL; §11.6
+    repository_commit_compatible: bool           # INFORMATIONAL only; never affects ok
     checked_utc: str
     # content-free; carries no path/name/digest of any offending member.
 
@@ -598,6 +848,172 @@ private-path resolution; invalid authorization fails before `project_root()`; a
 bootstrap performs no access under `data/raw`; no environment or CLI override
 changes the bootstrap root.
 
+### 8.7 Normative constants (exact values — not examples)
+
+These are **exact module-level constants** (Checkpoint A defines the pure-core
+constants; Checkpoint B may reference them). None is a placeholder or example; each
+is fixed at exactly the value shown.
+
+```text
+CANDIDATE_SOURCE_SNAPSHOT_SCHEMA          = "callhome_candidate_source_snapshot"
+CANDIDATE_SOURCE_SNAPSHOT_SCHEMA_VERSION  = "1"
+
+SOURCE_APPROVAL_SCHEMA                    = "callhome_source_approval"
+SOURCE_APPROVAL_SCHEMA_VERSION            = "1"
+
+CENSUS_AUTHORIZATION_SCHEMA               = "callhome_census_authorization"
+CENSUS_AUTHORIZATION_SCHEMA_VERSION       = "1"
+
+POPULATION_MANIFEST_SCHEMA                = "callhome_population_manifest"
+POPULATION_MANIFEST_SCHEMA_VERSION        = "1"
+
+CENSUS_SUMMARY_SCHEMA                     = "callhome_population_census_summary"
+CENSUS_SUMMARY_SCHEMA_VERSION             = "1"
+
+POPULATION_CONTRACT_VERSION               = "callhome_population_contract/1"
+ORDERING_CONTRACT_ID                      = "eng_then_spa/bytewise_utf8/1"
+TOOL_VERSION                              = "callhome_population_census/1"
+
+PROVIDER                                  = "talkbank_cabank"
+DISTRIBUTION_FORMAT                       = "chat_utf8"
+
+ENGLISH_LOGICAL_ROOT                      = "data/raw/callhome/eng"
+SPANISH_LOGICAL_ROOT                      = "data/raw/callhome/spa"
+
+EXECUTION_STATUS                          = "verified"
+
+NORMALIZATION_POLICY                      = "none_byte_for_byte"
+DESTINATION_LAYOUT                        = "eng_root_spa_root"
+OVERWRITE_POLICY                          = "empty_destination_no_overwrite"
+MEMBER_PATH_POLICY                        = "exact_posix_no_escape_strict_utf8"
+```
+
+**Identity participation (normative).**
+
+```text
+- POPULATION_CONTRACT_VERSION, the manifest schema/schema_version
+  (POPULATION_MANIFEST_SCHEMA / POPULATION_MANIFEST_SCHEMA_VERSION), and
+  ORDERING_CONTRACT_ID PARTICIPATE in the stable population identity (§11.1).
+- TOOL_VERSION is RUN METADATA ONLY (§11.2); it never enters population identity.
+- The candidate, approval, authorization, and summary record schema versions
+  (CANDIDATE_SOURCE_SNAPSHOT_SCHEMA_VERSION, SOURCE_APPROVAL_SCHEMA_VERSION,
+  CENSUS_AUTHORIZATION_SCHEMA_VERSION, CENSUS_SUMMARY_SCHEMA_VERSION) govern their
+  OWN persisted formats but do NOT independently enter the stable population
+  identity, except where a value is already carried through a stable nested mapping
+  specified in §11.1 (e.g. the snapshot-id fields).
+- PROVIDER and DISTRIBUTION_FORMAT participate in stable identity via the manifest's
+  provider/distribution_format fields (§11.1). ENGLISH_LOGICAL_ROOT and
+  SPANISH_LOGICAL_ROOT participate via logical_roots (§11.1). EXECUTION_STATUS is run
+  metadata only.
+```
+
+The extraction-policy constants (`NORMALIZATION_POLICY`, `DESTINATION_LAYOUT`,
+`OVERWRITE_POLICY`, `MEMBER_PATH_POLICY`) are the exact required values every source
+snapshot's `extraction_procedure` must carry (§8.8, §10.A).
+
+### 8.8 Normative field predicates (every field of every record)
+
+Each persisted and nested record field is validated on construction and on strict
+load (§14.3, §16). Predicates are **normative**; a violation fails closed
+(`schema_error` unless a stricter category applies).
+
+**Type strictness (all records):**
+
+```text
+type(value) is str      for every string field
+type(value) is int      for every integer field
+type(value) is bool     for every Boolean field
+bool is NEVER accepted where an int is required (isinstance(x, bool) → reject as int)
+JSON arrays are validated explicitly and converted to IMMUTABLE tuples ONLY AFTER
+  validation (never trusted in place, never left as lists)
+unknown fields → reject; missing fields → reject
+```
+
+**String fields** (unless a stricter rule below applies):
+
+```text
+nonempty; strictly UTF-8 encodable; contains no lone surrogate; contains no NUL
+```
+
+**SHA-256 fields** (`sha256`, `archive_sha256`, `source_approval_sha256`,
+`census_authorization_sha256`, `population_identity_sha256`, `manifest_file_sha256`):
+
+```text
+exactly 64 characters; each character in [0-9a-f] (lowercase hex ASCII)
+```
+
+**Timestamp fields** (`observed_utc`, `retrieval_utc`, `approved_utc`, `created_utc`,
+`checked_utc`) — one exact grammar:
+
+```text
+YYYY-MM-DDTHH:MM:SSZ
+- a REAL calendar/time value in UTC (validated as an actual date-time);
+- no fractional seconds; no offset other than the literal trailing "Z";
+- no surrounding whitespace.
+```
+
+**Git commit field** (`repository_commit`):
+
+```text
+exactly 40 characters; each in [0-9a-f] (lowercase hex ASCII)
+```
+
+**Integer fields** (`size_bytes`, `archive_size_bytes`, `n_members`, all count and
+byte-total fields, `ordinal`):
+
+```text
+nonnegative unless a stricter rule applies;
+ordinals begin at 0 and are consecutive across the ordered population with no gaps
+  or duplicates (§4.3, §11.6)
+```
+
+**Boolean fields:**
+
+```text
+all_identity_checks_passed must be EXACTLY True in any persisted manifest or summary
+  (a persisted verified record never stores False)
+```
+
+**Provider / language / format agreement:**
+
+```text
+candidate.provider == PROVIDER and approval.provider == PROVIDER
+distribution_format == DISTRIBUTION_FORMAT
+english.language == "eng"        spanish.language == "spa"
+english snapshot provider == PROVIDER  and  spanish snapshot provider == PROVIDER
+```
+
+**Extraction-procedure policy (both snapshots, independently):**
+
+```text
+extraction_procedure.normalization_policy == NORMALIZATION_POLICY
+extraction_procedure.destination_layout   == DESTINATION_LAYOUT
+extraction_procedure.overwrite_policy      == OVERWRITE_POLICY
+extraction_procedure.member_path_policy    == MEMBER_PATH_POLICY
+procedure_id, tool_name, tool_version      : recorded nonempty labels; MAY differ
+                                             between the English and Spanish snapshots
+```
+
+**Archive filename field** (`archive_filename`): the exact basename rules of §10.7
+are normative here (nonempty strict-UTF-8 basename; no directory component; not "."
+or ".."; no "/" or "\\"; no NUL; no drive/absolute syntax; no parent-traversal
+component).
+
+**Source-member relative-path field** (`relative_path` in `CallhomeSourceMember` and
+`CallhomePopulationEntry`) — because membership is non-recursive, this is an exact
+**direct-child basename**:
+
+```text
+nonempty; contains no "/" and no "\\"; not "." and not ".."; contains no NUL;
+strictly UTF-8; ends in the exact lowercase ".cha" suffix;
+not hidden, temporary, metadata, or otherwise excluded by the membership policy
+  (§4.2)
+```
+
+The stored `relative_path` is **never normalized or case-folded** (§12); it is stored
+exactly as enumerated. `conversation_id` is derived per §10.5 and is likewise stored
+verbatim.
+
 ---
 
 ## 9. Deterministic enumeration algorithm (incl. base purity)
@@ -633,6 +1049,31 @@ changes the bootstrap root.
 ```
 
 Every abort yields no partial manifest object; publication failures follow §15.3.
+
+**Failure precedence (normative).** When more than one anomaly is present, the census
+fails in this exact order — the earlier stage's category wins:
+
+```text
+1. duplicate/collision checks over the observed population (§13.4)
+2. language crossover (§13.5)
+3. ordinary approved-inventory mismatch (§10.3)
+4. deterministic ordering and ordinal assignment (§4.3)
+```
+
+If more than one collision class applies at stage 1, the census fails with the first
+class in this exact internal precedence (§13.4):
+
+```text
+duplicate byte content
+duplicate conversation identity
+Unicode NFC collision
+Unicode NFD collision
+case-fold collision
+```
+
+The comparison of collision classes and crossover to inventory (stages 1–2 before
+stage 3) is deliberate: a duplicated or crossed member is reported as the collision
+or crossover it is, not misreported as a bare inventory mismatch.
 
 ### 9.2 Base-directory purity (three levels)
 
@@ -733,9 +1174,18 @@ conversation_id = f"{language}/{stem}"
 ```
 
 Do not split on the first dot, remove any earlier dot component, normalize Unicode,
-case-fold, remove another suffix, or rely on `Path.stem` without noting it is only
-acceptable if it is exactly equivalent to removing the final `.cha` (it is not, for
-multi-dot names, so use `filename[:-4]`). Examples (invented names):
+case-fold, or remove another suffix. The normative rule is direct removal of exactly
+the final four characters, `filename[:-4]`, because that is the **explicitly selected
+contract** — not because any alternative produces a different result for admitted
+names.
+
+**Factual correction (do not repeat the earlier error).** It is **not** true that
+`Path.stem` mishandles multi-dot `.cha` names: `Path.stem` strips only the final
+suffix, so for every admitted member (a name ending in exactly `.cha`)
+`Path(filename).stem` equals `filename[:-4]` — e.g. `Path("a.b.cha").stem == "a.b"`.
+The contract mandates `filename[:-4]` for explicitness and to avoid depending on
+`pathlib` in the pure core (§6.1), **not** because `Path.stem` would compute a
+different stem for admitted names. Examples (invented names):
 
 ```text
 a.cha    → eng/a
@@ -807,6 +1257,36 @@ archive size or digest rejected.
 Synthetic workflow test requirement: candidate snapshot → independent approval →
 authorization → census, all over invented archives/trees.
 
+### 10.8 Canonical source-member array ordering
+
+Each source snapshot's `members` array (in `candidate_source_snapshot.json` and
+`source_approval.json`) has a single canonical order:
+
+```text
+strictly ascending by the exact UTF-8 bytes of relative_path
+(raw bytes; not locale collation; not NFC/NFD-folded; not case-folded)
+```
+
+Normative requirements:
+
+```text
+- relative_path is UNIQUE within each language snapshot (no two members share it);
+- there are NO duplicate member entries;
+- candidate observation CONSTRUCTS the members array already in canonical order;
+- strict persisted-record loaders REJECT a noncanonical order (out-of-order or
+  duplicate relative_path) with schema_error;
+- strict loaders NEVER silently sort or repair persisted input — they reject it;
+- serialization PRESERVES the validated canonical order (§14.1).
+```
+
+Because the array order is fixed and validated, the source-approval checksum
+(`source_approval_sha256`, §14.2) binds **one unambiguous ordering of one
+inventory**: two byte-identical inventories in different orders cannot both be
+canonical, and only the canonical order round-trips (§14.3). This is the pure-core
+ordering of §1.4 (Checkpoint A) applied to supplied member values; it uses the same
+exact-UTF-8-byte key as population ordering (§4.3) but is a per-snapshot inventory
+order, distinct from the eng-then-spa population order.
+
 ---
 
 ## 11. Population identity vs run metadata vs manifest-file integrity
@@ -853,20 +1333,61 @@ fields *and* run metadata). It is explicitly **not** the stable population ident
 Two complete manifest files produced at different times may have **different**
 `manifest_file_sha256` while sharing the **same** `population_identity_sha256`.
 
-### 11.4 Re-verification (`verify_frozen_callhome_population`)
+### 11.4 Re-verification (`verify_frozen_callhome_population`) — Checkpoint B
+
+Live re-verification uses a **separate, private, non-accepting verification
+inspector** (§16.8), **not** the strict acceptance loader (§16.4). The inspector
+structurally decodes and canonical-form–validates enough of the persisted record to
+evaluate its integrity and its relationship to live authorized state, **without
+treating the record as accepted merely because it decoded**. The distinction is the
+CHC-P2-07 resolution: **structural / environmental / authorization / operational
+failures raise** (no record); **evaluable integrity and equality failures return** a
+`CallhomePopulationVerification` with explicit `False` Booleans.
 
 ```text
+Stage R — RAISE without a record (comparison impossible/unsafe; §16.8, §18):
+  manifest missing/unreadable; I/O failure; invalid UTF-8; UTF-8 BOM; duplicate JSON
+  keys; NaN/Infinity; lone surrogate; non-object top-level; missing/unknown fields;
+  wrong field types; invalid scalar grammar (incl. a malformed manifest_file_sha256
+  value); invalid schema/unsupported version; invalid contract-field grammar;
+  noncanonical persisted JSON bytes; authorization/bootstrap failure; unreadable or
+  structurally invalid source_approval.json or census_authorization.json; filesystem
+  traversal/hashing failure; archive-verification failure preventing a reliable live
+  population result.
+  → raise the existing fixed content-free category (§18); expose no protected value;
+    produce NO verification record. KeyboardInterrupt/SystemExit preserved (§18.4).
+
+Steps (only reached once Stage R has passed — structural decode + canonical-form
+validation + authorization + live recomputation all succeeded enough to compare):
 1. Read the existing frozen manifest (never write).
-2. Recompute and validate manifest_file_sha256 over the persisted bytes.
+2. Recompute manifest_file_sha256 over the complete persisted mapping excluding
+   manifest_file_sha256; compare to the persisted (grammar-valid) value
+   → manifest_file_sha256_ok (True/False).
 3. Re-run bootstrap/authorization, base purity, archive confinement + rehash,
-   enumeration, and hashing.
-4. Recompute counts from live entries and reconcile (§11.6).
-5. Recompute population_identity_sha256; compare exact membership and stable
-   identity to the manifest.
-6. Report repository-commit compatibility SEPARATELY (informational; never fatal).
-7. Never rewrite the frozen manifest and never touch its timestamps.
+   enumeration, and hashing (a failure here is a Stage-R raise, not a Boolean).
+4. Recompute counts from live entries and reconcile (§11.6) → counts_reconciled.
+5. Compare the exact current ordered entries to the persisted manifest entries
+   → membership_matches (ordered entries ONLY; NOT stable-identity equality).
+6. Recompute the stable population identity over ALL stable fields, using the
+   AUTHENTICATED approved English/Spanish snapshot identities, the fixed
+   schema/contract/logical-root/ordering values, the live ordered entries, and
+   independently reconciled counts (§11.1); compare to the persisted
+   population_identity_sha256 → population_identity_matches. An authenticated
+   persisted-versus-approved snapshot-ID mismatch makes this False (it does NOT
+   raise — §6/§16.7, CHC-P2-07).
+7. Report repository-commit compatibility SEPARATELY (informational; never fatal).
+8. Never rewrite the frozen manifest and never touch its timestamps.
+Set ok == (manifest_file_sha256_ok and membership_matches
+           and population_identity_matches and counts_reconciled)  (§11.7, §16.7).
 Return a content-free CallhomePopulationVerification.
 ```
+
+A stable-field change with unchanged entries (e.g. a differing or wrongly bound
+snapshot identity, contract version, logical root, ordering contract, provider,
+format, or schema version — where both records are structurally valid and
+authentication/comparison completed) leaves `membership_matches == True` but sets
+`population_identity_matches == False`, so `ok == False` — a **returned** result, not
+a raise.
 
 ### 11.6 Counts are bound to entries (identity + reconciliation)
 
@@ -898,6 +1419,40 @@ over the altered record): `n_english_files`, `n_spanish_files`, `n_total_files`,
 `all_identity_checks_passed`. Plus a test that reconciliation occurs at
 construction, loading, and re-verification.
 
+### 11.7 Identity and reconciliation closure (single contract)
+
+The four checksums remain **distinct** and cover **distinct scopes**:
+
+```text
+source_approval_sha256      covers the COMPLETE canonical source-approval object
+                            (§14.2; no field excluded).
+census_authorization_sha256 covers the COMPLETE canonical authorization object
+                            (§14.2; no field excluded).
+population_identity_sha256  covers ONLY the enumerated stable scientific mapping
+                            (§11.1; run metadata excluded, counts included).
+manifest_file_sha256        covers the COMPLETE manifest EXCEPT its own
+                            manifest_file_sha256 field (§11.3).
+```
+
+Count reconciliation (§11.6) is an **independent** check that runs at **every** point
+the counts are handled:
+
+```text
+- manifest construction        (Checkpoint A: pure, over supplied entries)
+- manifest loading             (Checkpoint A: strict-load validation)
+- summary construction         (Checkpoint A: in-memory aggregate summary, §19)
+- live re-verification         (Checkpoint B: verify_frozen_callhome_population, §11.4)
+```
+
+Reconciliation is independent of the four checksums. Therefore **recomputing
+`population_identity_sha256` and `manifest_file_sha256` around tampered counts does
+NOT make the manifest acceptable**: the recomputed-checksum count-tampering tests
+(§11.6) fail with `manifest_mismatch` because the persisted counts disagree with the
+counts re-derived from `entries`, regardless of any internally consistent checksum
+over the altered record. Stable population identity, run metadata, and file
+integrity stay separated exactly as in §11.1–§11.3; this section only states their
+closure as one contract.
+
 ---
 
 ## 12. Exact path preservation
@@ -917,33 +1472,36 @@ relative_path_utf8  : the exact UTF-8 encoding of relative_path, used for orderi
 NFC, NFD, and Unicode case-fold forms are transient comparison keys for collision
 detection only (§13); they **never** replace the actual path identity in
 serialization. Any relative-path string that cannot be encoded under strict UTF-8
-is rejected (`unexpected_entry`). Required tests: an NFD path round-trips exactly
-and is re-resolvable via the stored exact path; NFC/NFD and case-fold path pairs
-fail as collisions; ordering uses the exact UTF-8 bytes; serialization does not
-rewrite the member identity.
+is rejected (`unexpected_entry`). Required tests — **Checkpoint A** (pure, over
+supplied string values): an NFD path string round-trips byte-for-byte through
+canonical serialization; **same-language** NFC/NFD and case-fold path pairs fail as
+collisions (§13.4), while **cross-language** normalization-/case-equivalent pairs do
+**not** trigger those path-collision classes; ordering uses the exact UTF-8 bytes;
+serialization does not rewrite the member identity. **Checkpoint B** (filesystem):
+an NFD path re-resolves via the stored exact path on a real filesystem.
 
 ---
 
 ## 13. Duplicate and collision handling (incl. zero-byte boundary)
 
-### 13.1 Policy
+### 13.1 Policy and the removed generic class
 
 Detected over the fully-enumerated member set (§9.1 step 7) using raw on-disk bytes
 so NFC serialization can never mask a byte-level distinction. Every collision is an
 abort (`duplicate_identity`); the census never dedups, shrinks, or merges.
-
-| Collision | Definition |
-|---|---|
-| duplicate byte content | two members share a SHA-256 |
-| duplicate normalized path identity | two members map to one normalized path key |
-| duplicate conversation identity | two members yield the same `conversation_id` |
-| Unicode NFC collision | paths differ in bytes, equal after NFC |
-| Unicode NFD collision | paths differ in bytes, equal after NFD |
-| case-fold collision | paths equal after Unicode case-folding, differ in bytes |
-
 Case/normalization folding is used **only to detect** a collision, never to rewrite
 membership. Aborts name only the collision class (§18), never the offending paths
-or digests.
+or digests. Collision detection itself is a **pure check over supplied member values**
+(Checkpoint A, §1.4) — it needs no filesystem access.
+
+**Removed class.** The former generic collision category **"duplicate normalized
+path identity"** is **deleted** as an independent normative class. It is removed
+because **no unique additional normalization algorithm was ever specified** for it,
+and because the exact-path comparisons (raw UTF-8 bytes, NFC, NFD, case-fold) plus
+exact `conversation_id` equality (§13.4) already cover every required deterministic
+collision class. An unspecified "normalized path key" would be nondeterministic and
+redundant. All test requirements and implementation-plan references use the exact
+classes of §13.4 instead; no test may reference "duplicate normalized path identity".
 
 ### 13.2 Rationale
 
@@ -968,6 +1526,100 @@ two or more authorized zero-byte     : all share the empty-input SHA-256 (the
 Deliberate fail-closed behavior, not an automatic exclusion. Both cases are
 required synthetic tests: one zero-byte file retained as a member; two zero-byte
 files abort with `duplicate_identity`.
+
+### 13.4 Exact retained collision classes (internal precedence order)
+
+Over the observed population, detect exactly these classes (comparisons **detect
+collisions only; they never rewrite stored membership**). The **path** collision
+classes (NFC, NFD, case-fold) are **language-namespaced**: their comparison keys
+carry the entry's `language`, so a path collision requires two entries in the **same**
+language. Duplicate byte content stays **global** across English and Spanish;
+duplicate conversation identity uses the already language-namespaced
+`conversation_id` (§10.5).
+
+```text
+duplicate byte content (GLOBAL across eng and spa):
+    two population entries have equal sha256
+
+duplicate conversation identity (already language-namespaced via conversation_id):
+    two entries have equal exact conversation_id
+    (conversation_id = f"{language}/{filename[:-4]}", so equality already implies
+     same language)
+
+Unicode NFC collision (SAME language):
+    NFC key = (language, unicodedata.normalize("NFC", relative_path))
+    a collision exists only when two entries share a language, their exact
+    relative_path UTF-8 bytes differ, and their NFC keys are equal
+
+Unicode NFD collision (SAME language):
+    NFD key = (language, unicodedata.normalize("NFD", relative_path))
+    a collision exists only when two entries share a language, their exact
+    relative_path UTF-8 bytes differ, and their NFD keys are equal
+
+case-fold collision (SAME language):
+    case-fold key = (language, relative_path.casefold())
+    a collision exists only when two entries share a language, their exact
+    relative_path UTF-8 bytes differ, and their case-fold keys are equal
+```
+
+A path collision (NFC / NFD / case-fold) exists **only when all three** hold:
+
+```text
+the language values are the same;
+the exact relative_path UTF-8 bytes differ;
+the transformed (language-namespaced) keys are equal.
+```
+
+Therefore equal or normalization-equivalent filenames across **different** language
+roots (e.g. `eng/a.cha` and `spa/a.cha`, or a canonically equivalent Unicode pair
+split across languages) do **not** constitute an NFC, NFD, or case-fold path
+collision — they are permitted unless another independently defined rule applies
+(global duplicate byte content §13.4, or language crossover §13.5). Exact stored
+paths are **never** normalized, rewritten, or case-folded (§12); the transformed
+keys are transient comparison keys only.
+
+When more than one class applies, fail with the **first** in this exact internal
+precedence (also §4.4, §9.1):
+
+```text
+1. duplicate byte content
+2. duplicate conversation identity
+3. Unicode NFC collision
+4. Unicode NFD collision
+5. case-fold collision
+```
+
+### 13.5 Exact language-crossover definition
+
+Crossover is evaluated **after** the §13.4 collision checks and **before** ordinary
+inventory mismatch (§9.1). For each observed entry under expected language `L`,
+define its exact **member key**:
+
+```text
+member_key = (relative_path, size_bytes, sha256)
+```
+
+Let, from the approved inventory:
+
+```text
+same_language_inventory     = the approved member-key set for language L
+opposite_language_inventory = the approved member-key set for the other language
+```
+
+Return `language_crossover` for an observed entry **only when**:
+
+```text
+observed_key NOT IN same_language_inventory
+AND observed_key IN opposite_language_inventory
+```
+
+Otherwise an absent, extra, modified, or substituted member is **not** crossover; it
+remains `source_identity_mismatch` (§10.3). Equal filenames, stems, or conversation
+stems across languages do **not** by themselves constitute crossover — crossover
+requires the full `(relative_path, size_bytes, sha256)` key to appear under the
+opposite language and be absent under its own. External errors remain content-free
+and reveal only the fixed failure category (`language_crossover` /
+`source_identity_mismatch`), never paths, names, hashes, or records (§18).
 
 ---
 
@@ -1007,8 +1659,101 @@ manifest_file_sha256        : SHA-256 over the canonical serialization of the
                               inserted last before write.
 ```
 
-Re-verification recomputes each and asserts equality (`manifest_mismatch` /
-`source_identity_mismatch` / `authorization_error` as appropriate).
+These checksums are recomputed at two distinct boundaries with **different outcome
+semantics** (CHC-P2-08; agrees with §11.4, §16.4, §16.7, §16.8, §18.2, §20.2):
+
+**Strict acceptance loading (§16.4).** The strict manifest loader recomputes and
+**requires equality** for all required manifest checksums, stable identities, counts,
+and record invariants. A mismatch at this acceptance boundary **raises** the
+appropriate fixed content-free error (`manifest_mismatch` / `source_identity_mismatch`
+/ `authorization_error` / `serialization_error` / `schema_error` as appropriate) and
+**returns no accepted manifest**.
+
+**Live Checkpoint B verification (§11.4, §16.8).** Authorization validity and
+structural validity are **prerequisites**. Authorization, bootstrap, malformed-record,
+and structurally-unusable-input failures **raise** the appropriate fixed content-free
+error and return **no** verification record (§11.4 Stage R). Once a structurally valid
+comparison is possible, these recomputations become **returned Booleans**, not raises:
+
+```text
+manifest_file_sha256 mismatch                     → manifest_file_sha256_ok == False
+ordered population-entry mismatch                 → membership_matches == False
+stable population-identity mismatch, including an
+  authenticated snapshot-ID binding mismatch      → population_identity_matches == False
+count mismatch                                    → counts_reconciled == False
+```
+
+Each evaluable mismatch returns `CallhomePopulationVerification(ok=False)` per the
+existing four-term formula (§11.7, §16.7); an evaluable manifest-file or
+stable-population-identity mismatch does **not** raise during live verification.
+`source_approval`/authorization authentication failure, structural record invalidity,
+unsupported schema/version, and comparison-preventing operational failure remain in
+the raise-without-record class (§11.4, §16.8, §18).
+
+### 14.3 Strict JSON persistence boundary (exact)
+
+The persisted-JSON boundary is exact and is a **pure Checkpoint A contract** (it
+parses and reserializes supplied text/bytes; it opens no file). Persisted JSON must
+be:
+
+```text
+strict UTF-8
+no UTF-8 BOM
+top-level object only (never a top-level array/scalar)
+duplicate keys rejected at EVERY object depth (strict object hook; never last-wins)
+NaN rejected
+Infinity and -Infinity rejected
+lone surrogates rejected
+unknown fields rejected
+missing fields rejected
+canonical separators (",", ":")
+sorted mapping keys
+ensure_ascii=False
+exactly one final LF ("\n")
+```
+
+**Strict loading** performs, in order:
+
+```text
+1. parse and validate (types, predicates §8.8, enums, schema/version, duplicate-key
+   rejection, BOM/NaN/Infinity/lone-surrogate rejection);
+2. construct the exact typed record (JSON arrays → immutable tuples only after
+   validation);
+3. reserialize canonically (§14.1);
+4. require BYTE-FOR-BYTE equality with the persisted input.
+```
+
+Noncanonical persisted input (unsorted keys, wrong separators, BOM, trailing bytes,
+missing/extra final LF, noncanonical member order §10.8) is **rejected**
+(`serialization_error` / `schema_error`, or `manifest_mismatch` where a checksum
+binds the canonical form) — **never silently repaired**.
+
+**Explicit mapping functions.** Every record and every nested value has an explicit
+mapping function (record → canonical mapping, and mapping → validated record). The
+mapping is the canonical identity/checksum surface. Normatively:
+
+```text
+dataclasses.asdict is NEVER the canonical identity or checksum contract.
+```
+
+The explicit mapping functions exist to prevent **schema-field drift and unintended
+identity changes**: they fix exactly which fields enter the canonical mapping (and
+thus each checksum §14.2 and identity §11), so adding, renaming, reordering, or
+removing a dataclass field cannot silently change a serialized format or a stable
+identity without a deliberate mapping-function edit. `dataclasses.asdict` — which
+recurses automatically and mirrors declaration order — would couple identity to
+incidental dataclass shape and is therefore never the identity/checksum contract; the
+checksums (§14.2) and identities (§11) are computed over the explicit canonical
+mappings only. This is stronger than merely avoiding declaration-order effects: it
+guards the field **set** and semantics, not just field order.
+
+**Canonicalize before approval.** Because strict loading (above) **never reformats an
+already-approved artifact** — it rejects any noncanonical persisted input rather than
+repairing it — independently prepared `source_approval.json` and
+`census_authorization.json` records must be **canonicalized before** they are
+approved/frozen and before their checksums are computed. An approver that freezes a
+noncanonical artifact produces a file the census will later reject; canonicalization
+is a pre-approval responsibility, not a load-time repair.
 
 ---
 
@@ -1168,9 +1913,20 @@ manifest's `schema_version`, else authorization fails closed. LOCAL ONLY.
 ### 16.4 `callhome_population_manifest.json` (gate 13; immutable)
 
 `CallhomePopulationManifest` (§8.5). `schema="callhome_population_manifest"`,
-`schema_version="1"`. Loading validates `manifest_file_sha256` (§11.3), the counts
-reconciliation (§11.6), and the stable-identity recomputation (§11.1). LOCAL ONLY
-(per-file identities, conversation ids, checksums). No-overwrite publication (§15).
+`schema_version="1"`. LOCAL ONLY (per-file identities, conversation ids, checksums).
+No-overwrite publication (§15).
+
+**Strict acceptance loader (accepts or raises).** The strict persisted-manifest
+loader is an **acceptance boundary**: it validates `manifest_file_sha256` (§11.3),
+the counts reconciliation (§11.6), the record-level invariants (§16.7 intrinsic
+predicates + entry-count reconciliation), and the stable-identity recomputation
+(§11.1), and on **any** required acceptance failure it raises a fixed content-free
+error (§18) — it **never returns a partially accepted manifest**. It is the loader
+used by Checkpoint A construction/loading tests and by any production path that
+requires an accepted manifest object. It is **not** the live-verification inspection
+path: `verify_frozen_callhome_population()` uses a separate, non-accepting inspector
+(§11.4, §16.8) so that evaluable integrity mismatches become verification Booleans
+rather than exceptions (CHC-P2-07).
 
 ### 16.5 `callhome_population_census_summary.json` (aggregate; LOCAL until G3)
 
@@ -1186,6 +1942,269 @@ unsupported-version / invalid-enum / invalid-checksum / non-canonical → each a
 content-free failure. **Fixed invented canonical JSON test vectors** are required
 for all five records, proving that the dataclass fields, the serialized JSON fields,
 the checksum inputs, and the schema tables in this section are identical.
+
+### 16.7 Record-level invariants (normative)
+
+Enforced at **every applicable construction and strict-load boundary** (in addition
+to the per-field predicates of §8.8). A violation fails closed (`schema_error` unless
+a stricter category applies). Records/checks over supplied values are Checkpoint A;
+the verification record is Checkpoint B.
+
+**Source snapshots** (`CallhomeSourceSnapshot`, both English and Spanish):
+
+```text
+each snapshot has at least one member (len(members) >= 1);
+members satisfy the canonical ordering and uniqueness rules (§10.8);
+CallhomeSourceSnapshotId.n_members == len(snapshot.members);
+the identity view (CallhomeSourceSnapshotId) is DERIVED from the snapshot and is
+  never accepted as an independent, contradictory description.
+```
+
+**Candidate snapshot and source approval**
+(`CallhomeCandidateSourceSnapshotRecord`, `CallhomeSourceApproval`):
+
+```text
+top-level schema and schema_version equal their fixed constants (§8.7);
+provider == PROVIDER;
+distribution_format == DISTRIBUTION_FORMAT;
+the english and spanish records satisfy their assigned language and provider
+  contracts (§8.8: english.language == "eng", spanish.language == "spa",
+  each snapshot provider == PROVIDER).
+```
+
+**Source-approval contract version (CHC-P2-04).** At every `CallhomeSourceApproval`
+construction and strict-load boundary, require **exactly**:
+
+```text
+schema == SOURCE_APPROVAL_SCHEMA;
+schema_version == SOURCE_APPROVAL_SCHEMA_VERSION;
+contract_version == POPULATION_CONTRACT_VERSION;
+provider == PROVIDER;
+distribution_format == DISTRIBUTION_FORMAT;
+```
+
+The existing English/Spanish source-snapshot language, provider, ordering (§10.8),
+member, extraction-policy (§8.8), and canonicalization (§14.3) requirements are
+retained unchanged. A source approval carrying **any other** `contract_version` is
+**rejected** with the established fixed content-free `schema_error` (or
+`source_identity_mismatch` where a checksum binds the mismatch) category — there is
+**no** silent upgrading, **no** fallback to another contract version, **no**
+normalization of the value, and **no** caller-selected contract version. Because
+`source_approval_sha256` is computed over the **complete** canonical source-approval
+mapping (§14.2), the exact approved `contract_version` string is included in that
+mapping and any change to it changes `source_approval_sha256`.
+
+**Census authorization** (`CallhomeCensusAuthorizationRecord`):
+
+```text
+schema and schema_version equal their fixed constants (§8.7);
+contract_version == POPULATION_CONTRACT_VERSION;
+population_schema_version == POPULATION_MANIFEST_SCHEMA_VERSION;
+approved_operation is exactly one supported value ("census" | "verify");
+source_approval_sha256 satisfies the exact SHA-256 grammar (§8.8).
+```
+
+**Population manifest** (`CallhomePopulationManifest`):
+
+```text
+schema == POPULATION_MANIFEST_SCHEMA;
+schema_version == POPULATION_MANIFEST_SCHEMA_VERSION;
+population_contract_version == POPULATION_CONTRACT_VERSION;
+provider == PROVIDER;
+distribution_format == DISTRIBUTION_FORMAT;
+logical_roots == (ENGLISH_LOGICAL_ROOT, SPANISH_LOGICAL_ROOT);
+ordering_contract_id == ORDERING_CONTRACT_ID;
+tool_version == TOOL_VERSION;
+execution_status == EXECUTION_STATUS;
+entries are nonempty AND contain at least one English and at least one Spanish
+  entry;
+ordinals, ordering, collision checks, identities, and counts all reconcile
+  (§4.3, §11.1, §11.6, §13.4–§13.5).
+```
+
+**Manifest snapshot-ID predicates and reconciliation (CHC-P2-05).** The persisted
+snapshot identities are **self-contained and exact**.
+
+*Intrinsic scalar/namespace predicates* — for `english_snapshot_id`:
+
+```text
+provider == PROVIDER;
+language == "eng";
+corpus_name satisfies its exact string predicate (§8.8);
+public_release_label satisfies its exact string predicate (§8.8);
+archive_sha256 satisfies the exact 64-lowercase-hex SHA-256 predicate (§8.8);
+n_members is type int (not bool) and > 0.
+```
+
+for `spanish_snapshot_id`: the same, except `language == "spa"`.
+
+*Entry-count reconciliation* (at manifest construction AND strict loading;
+**independent** of the general `counts` fields — both are required):
+
+```text
+english_snapshot_id.n_members == count(entries where language == "eng");
+spanish_snapshot_id.n_members == count(entries where language == "spa");
+counts.n_english_files      == count(entries where language == "eng");
+counts.n_spanish_files      == count(entries where language == "spa").
+```
+
+If either snapshot identity disagrees with the manifest entries, the manifest is
+rejected — independently of the `counts`-field reconciliation (§11.6).
+
+*Binding to the approved source snapshots* — at the Checkpoint B boundary where a
+manifest is constructed from an accepted `source_approval`:
+
+```text
+english_snapshot_id == source_approval.english.identity();
+spanish_snapshot_id == source_approval.spanish.identity().
+```
+
+The identity views are **derived** from the bound approved snapshots; they may not be
+independently supplied as contradictory values (manifest construction rejects
+snapshot IDs that differ from the supplied approved snapshot identities).
+
+*Enforcement boundaries* (CHC-P2-05, with CHC-P2-07 outcome semantics):
+
+```text
+- manifest construction (Checkpoint A) — ACCEPTANCE boundary: intrinsic predicates +
+  entry-count reconciliation over supplied entries; and, where the manifest is built
+  from a supplied approval, the exact identity()-equality binding. A failure RAISES
+  the fixed content-free source_identity_mismatch (never returns a record).
+- persisted-manifest strict loading (Checkpoint A, §16.4) — ACCEPTANCE boundary,
+  where the full approval object is not necessarily supplied: intrinsic snapshot-ID
+  predicates, language/provider correctness, n_members reconciliation with the
+  manifest entries, and population-identity + manifest-file checksum verification. A
+  failure RAISES a fixed content-free category (never returns a record).
+- live re-verification (Checkpoint B, §11.4, §16.8) — INSPECTION boundary: after the
+  non-accepting inspector structurally decodes the manifest and loads + authenticates
+  the bound source_approval.json, the authenticated comparison
+  persisted english_snapshot_id == approved English snapshot identity and
+  persisted spanish_snapshot_id == approved Spanish snapshot identity is an
+  EVALUABLE comparison. A mismatch there does NOT raise; it sets
+  population_identity_matches == False (and hence ok == False) in the RETURNED
+  CallhomePopulationVerification (§16.7 verification block, CHC-P2-07).
+```
+
+At the **acceptance** boundaries (construction and strict loading) a snapshot-ID
+mismatch fails closed with the established content-free `source_identity_mismatch` /
+`manifest_mismatch` category and returns no record; the differing values are never
+exposed. At **live re-verification**, the same authenticated snapshot-ID comparison
+is a returned Boolean (`population_identity_matches == False`, `ok == False`), never a
+raise — this is the CHC-P2-07 resolution of the prior raise-versus-return conflict.
+
+**Summary** (`CallhomePopulationCensusSummary`):
+
+```text
+schema == CENSUS_SUMMARY_SCHEMA;
+schema_version == CENSUS_SUMMARY_SCHEMA_VERSION;
+provider == PROVIDER;
+all summary counts and population_identity_sha256 are DERIVED FROM and RECONCILED
+  WITH the accepted manifest (§11.6);
+all_identity_checks_passed is exactly True.
+```
+
+**Verification record — Checkpoint B** (`CallhomePopulationVerification`,
+CHC-P2-06). The record includes, at minimum:
+
+```text
+ok: bool
+population_identity_sha256: str
+manifest_file_sha256_ok: bool
+membership_matches: bool
+population_identity_matches: bool
+counts_reconciled: bool
+repository_commit_compatible: bool
+checked_utc: str
+```
+
+Field definitions (Boolean responsibilities kept separate and explicit):
+
+```text
+manifest_file_sha256_ok:
+    the complete persisted manifest-file checksum is valid (§11.3).
+membership_matches:
+    the exact current ordered population entries match the persisted manifest
+    entries. (This does NOT implicitly include stable-population-identity equality.)
+population_identity_matches:
+    the recomputed stable population identity equals the persisted
+    population_identity_sha256 after ALL stable fields, snapshot identities, entries,
+    ordering, and reconciled counts are recomputed (§11.1).
+counts_reconciled:
+    all persisted counts independently equal counts derived from the current
+    entries (§11.6).
+```
+
+The fatal conjunction (four terms):
+
+```text
+ok == (
+    manifest_file_sha256_ok
+    and membership_matches
+    and population_identity_matches
+    and counts_reconciled
+)
+repository_commit_compatible is INFORMATIONAL only and does NOT affect ok.
+```
+
+Therefore a **stable-population-identity mismatch** makes
+`population_identity_matches == False` and `ok == False` **even when**
+`membership_matches == True`, `counts_reconciled == True`, and
+`manifest_file_sha256_ok == True` — for example when the entries are unchanged but a
+stable field (source snapshot identity, contract version, logical root, ordering
+contract, provider, format, or schema version) differs.
+
+**Outcome model (CHC-P2-07).** The verification record is **returned** only for
+**evaluable** comparison outcomes — the four Booleans above are set to `True`/`False`
+after structural decode, canonical-form validation, authorization, and live
+recomputation have all succeeded enough to compare (§11.4 steps 1–8). A
+**structural, environmental, authorization, or operational** failure — where no
+reliable comparison can be produced (§11.4 Stage R; §16.8) — instead **raises** the
+existing fixed content-free error (§18) and returns **no** record. In particular, an
+authenticated persisted-versus-approved snapshot-ID mismatch during live verification
+is an evaluable comparison and is **returned** (`population_identity_matches == False`,
+`ok == False`), **not** raised; `source_identity_mismatch`/`manifest_mismatch` remain
+the outcome only at the strict acceptance / construction / structurally-invalid
+boundaries (§16.4, §16.7 enforcement boundaries).
+
+Verification-record construction, the non-accepting inspector (§16.8), and their
+tests **remain in Checkpoint B** (they require live re-verification of a frozen
+manifest, §11.4); only the pure type/schema contract of the record is described
+earlier (§8.5, §16.7).
+
+### 16.8 Strict acceptance loader versus verification inspector (CHC-P2-07)
+
+Two distinct persisted-manifest paths exist. They are **not** interchangeable:
+
+```text
+strict manifest loader (§16.4) — Checkpoint A:
+    accepts or raises;
+    never returns an invalid or partially accepted manifest;
+    used by construction/loading tests and any production path that needs an
+    accepted manifest object.
+
+verification inspector (§11.4) — Checkpoint B, PRIVATE:
+    structurally decodes and canonical-form-validates WITHOUT accepting;
+    RAISES a fixed content-free error when comparison is impossible or unsafe
+      (structural / environmental / authorization / operational failure, §11.4
+       Stage R) and returns no record;
+    RETURNS CallhomePopulationVerification with explicit False Booleans when
+      comparison is possible and an integrity/equality check fails.
+```
+
+Normative constraints:
+
+```text
+- The verification inspector is PRIVATE to Checkpoint B live verification. It is
+  NOT exposed as a general public manifest loader, and no other production path may
+  use it to bypass strict acceptance.
+- verify_frozen_callhome_population() must not call the strict acceptance loader in a
+  way that turns an evaluable integrity mismatch into a raise; evaluable mismatches
+  must surface as verification Booleans.
+- The public nullary verification API remains verify_frozen_callhome_population()
+  (§8.1). The inspector is a private helper beneath it.
+- A decoded record is NEVER treated as accepted merely because it decoded.
+- Do not add the inspection implementation or its API in Checkpoint A.
+```
 
 ---
 
@@ -1290,7 +2309,7 @@ archive-dir purity / basename / identity → archive_verification_error /
 archive hashing / verify    → archive_verification_error
 member hashing              → source_identity_mismatch; read failure →
                               environment_error/root_error (no path)
-counts reconciliation       → manifest_mismatch
+counts reconciliation       → manifest_mismatch (at strict acceptance / construction)
 JSON parsing / duplicate key → schema_error
 canonical serialization     → serialization_error
 temp-file creation / write / flush / file fsync → output_error
@@ -1298,7 +2317,23 @@ link publication            → frozen_output_exists (exists) / output_error (ot
 post-link durability (dir fsync / unlink / dir fsync) → publication_verification_required
 cleanup                     → sanitized secondary status; never masks primary (§15.5)
 top-level script handling   → fixed governance-safe message + stable nonzero exit
+live verification (§11.4/§16.8) — two outcome classes (CHC-P2-07):
+  comparison impossible/unsafe (structural/env/auth/operational, Stage R) → RAISE the
+    mapped fixed content-free category above (schema_error / serialization_error /
+    authorization_error / environment_error / archive_verification_error / …), NO record;
+  evaluable integrity/equality mismatch (incl. authenticated snapshot-ID mismatch) →
+    RETURN a content-free CallhomePopulationVerification with the relevant Boolean
+    False and ok == False (NOT a raise).
 ```
+
+The returned verification record remains **content-free** with respect to paths,
+filenames, archive members, per-file digests, conversation identifiers, and offending
+values. Its only aggregate identity field, `population_identity_sha256`, may exist in
+the **local** verification record as a privacy-safe aggregate identity value; it
+remains **local-only by default**, and its publication, commitment, or external
+disclosure is subject to the separate governance decision defined in §19 (CHC-P3-09).
+Producing a verification result does **not** itself grant disclosure approval, and it
+is **not** an "already-approved" value.
 
 ### 18.3 Forbidden on every failure surface
 
@@ -1323,6 +2358,64 @@ no protected stdout/stderr
   categories exposing no path or original text.
 - Cleanup-error precedence: the primary error always wins (§15.5).
 ```
+
+### 18.5 Privacy-safe record and error representations (Checkpoint A, normative)
+
+Representation safety is a **normative Checkpoint A** requirement — it holds for the
+pure records before any filesystem or publication code exists.
+
+**Every census record dataclass** (`CallhomeSourceMember`,
+`CallhomeExtractionProcedure`, `CallhomeSourceSnapshot`, `CallhomeSourceSnapshotId`,
+`CallhomeCandidateSourceSnapshotRecord`, `CallhomeSourceApproval`,
+`CallhomeCensusAuthorizationRecord`, `CallhomePopulationEntry`,
+`CallhomePopulationCounts`, `CallhomePopulationManifest`,
+`CallhomePopulationVerification`, `CallhomePopulationCensusSummary`, and any eventual
+verification record) must:
+
+```text
+- declare field(repr=False) for EVERY field, and
+- provide an explicit, fixed custom __repr__.
+```
+
+The custom representation must be **exactly equivalent in disclosure level** to:
+
+```text
+ClassName(<redacted>)
+```
+
+It must expose **no**:
+
+```text
+path            filename            archive name        hash or digest
+conversation identifier             timestamp           approver
+repository commit                    count               byte total
+population identity                  manifest identity   record content
+```
+
+This applies to **nested records, persisted top-level records, the summary, and any
+eventual verification record**. **Sentinel tests are required**: directly call
+`repr()` on every record type (constructed with injected sentinel values — path,
+filename, digest, member name, count, timestamp) and assert none of the sentinels
+appears in the result, which must be the fixed `ClassName(<redacted>)` form.
+
+**`CallhomePopulationError`** must:
+
+```text
+- expose ONLY a fixed content-free category (§18.1);
+- carry no protected value in args;
+- carry no protected value in its repr or str;
+- expose no exception chaining or original exception context across the supported
+  boundary (__cause__ is None and __context__ is None, §18.4);
+```
+
+and the **pure module performs no logging or printing** (no `print`, no logging
+handler emission from the pure core).
+
+**In-memory aggregate summary.** `CallhomePopulationCensusSummary` may be
+constructed in Checkpoint A (in memory only), but its representation must be redacted
+exactly as above, and its **real publication remains deferred and
+governance-controlled** (LOCAL until G3, §19). Checkpoint A neither writes it nor
+resolves any path for it (§1.4, §6.1).
 
 ---
 
@@ -1392,10 +2485,83 @@ This document does **not** imply Decision B has expanded. Until G3, nothing in
 
 All fixtures are invented (synthetic `.cha` byte blobs and archives, `AAA`/`BBB`
 names, `syn_*` tokens, unique sentinels). No real corpus filename, hash, archive
-name, conversation id, or text. Tests use only the private core (§8.3).
+name, conversation id, or text. The test module is **staged**: **Checkpoint A** tests
+(§20.1) use pure supplied-value constructors, validators, mapping functions,
+serializers, checksum functions, ordering, collision, reconciliation, and summary
+functions — with **no filesystem capability and no `_census_population_core`**;
+**Checkpoint B** tests (§20.2) use synthetic filesystem trees and the private
+`_census_population_core` seam (§8.3). The test module is **not** solely a
+filesystem/private-core suite.
+
+### 20.1 Checkpoint A test contract (pure core; no filesystem)
+
+Checkpoint A tests exercise pure functions over **supplied values only** — no
+filesystem trees, no archives, no bootstrap, no publication. Required:
 
 ```text
-Bootstrap / authorization (§8/§17)
+exact constants and schemas (§8.7, §16)
+protected repr for every record (§18.5)
+strict scalar predicates (§8.8)
+bool-as-int rejection (§8.8)
+missing and unknown field rejection (§8.8, §16)
+duplicate JSON keys at nested depths (§14.3, §16)
+BOM, invalid UTF-8, NaN, Infinity, and lone-surrogate rejection (§14.3)
+canonical JSON fixed byte vectors (§14.1, §16.6)
+approval checksum fixed vectors (§14.2)
+authorization checksum fixed vectors (§14.2)
+stable population identity fixed vectors (§11.1)
+manifest-file checksum fixed vectors (§11.3)
+run-metadata independence (§11.2)
+canonical source-member ordering (§10.8)
+noncanonical member-order rejection (§10.8)
+duplicate source-member rejection (§10.8)
+population entry ordering (§4.3)
+ordinal consecutiveness (§4.3, §8.8)
+filename[:-4] conversation identities (§10.5)
+multi-dot filenames (§10.5)
+count derivation and all eight reconciliation mismatch cases (§11.6)
+recomputed-checksum count tampering (§11.6, §11.7)
+duplicate byte collision — GLOBAL across eng and spa (§13.4)
+conversation-ID collision (§13.4)
+same-language NFC collision (§13.4)
+same-language NFD collision (§13.4)
+same-language case-fold collision — e.g. same-language A.cha vs a.cha (§13.4)
+cross-language equivalents do NOT path-collide — e.g. eng/A.cha and spa/a.cha
+  permitted unless another rule applies; cross-language canonically equivalent
+  Unicode names do not trigger NFC/NFD/case-fold path collisions (§13.4)
+exact language-crossover behavior (§13.5)
+collision and mismatch precedence (§9.1, §13.4)
+record-level invariants for every record (§16.7)
+snapshot id n_members == len(members); identity view derived not contradictory (§16.7)
+source-approval contract-version mismatch rejected at construction and strict
+  loading — no upgrade/fallback/normalize/caller-select (§16.7, CHC-P2-04)
+english/spanish snapshot-ID provider mismatch rejected (§16.7, CHC-P2-05)
+english/spanish snapshot-ID language mismatch rejected (§16.7, CHC-P2-05)
+snapshot-ID n_members zero / negative / Boolean / wrong-type rejected (§16.7, CHC-P2-05)
+english snapshot-ID n_members vs English manifest-entry count mismatch rejected (§16.7)
+spanish snapshot-ID n_members vs Spanish manifest-entry count mismatch rejected (§16.7)
+manifest construction rejects snapshot IDs differing from supplied approved snapshot
+  identities (english/spanish == source_approval.<lang>.identity()) (§16.7, CHC-P2-05)
+empty population rejection (§4.1)
+one-language-empty rejection (§4.1)
+aggregate-summary construction (§19)
+summary repr privacy (§18.5)
+fixed content-free errors (§18)
+dependency guard against CHAT/parsing/condition modules (§6.1)
+import guard: imports ⊆ {hashlib, json, unicodedata, dataclasses}; no pathlib/os/
+  Path/_census_population_core; no filesystem or archive activity (§6.1)
+```
+
+Deferred to **Checkpoint B** (do not attempt at Checkpoint A): synthetic filesystem
+trees, archives, symlinks, hard links, publication state-machine, trusted bootstrap,
+authorization capability, CLI, and any real-data tests. The blocks below (§20.2)
+labeled Checkpoint B are those tests; the earlier §20.1 items are their pure-core
+counterparts.
+
+### 20.2 Full integrated matrix (A = Checkpoint A pure; B = Checkpoint B filesystem)
+
+```text
+Bootstrap / authorization (§8/§17) — Checkpoint B
   - nullary functions expose no roots/output/write/glob/subset/provider args
   - lookalike _CensusCapability (public fields) cannot authorize traversal
   - CWD change to a dir with a lookalike authorization record has no effect
@@ -1406,12 +2572,12 @@ Bootstrap / authorization (§8/§17)
   - no env/CLI override changes the bootstrap root
   - the script drives only the nullary entry point; never the core
 
-Base purity (§9.2)
+Base purity (§9.2) — Checkpoint B
   - base contains exactly {eng, spa} → pass
   - missing eng / missing spa / extra dir / archive under base / control file under
     base / hidden base entry / ENG or SPA / symlinked root / special entry → fail
 
-Archive confinement (§10.7)
+Archive confinement (§10.7) — Checkpoint B
   - absolute / ../ / nested / forward- or backslash / "." / ".." / NUL basename → fail
   - symlink or special archive → fail
   - same eng/spa basename → fail
@@ -1419,7 +2585,7 @@ Archive confinement (§10.7)
   - unexpected third archive / hidden / temp archive entry → fail
   - changed archive size or digest → fail
 
-Snapshot workflow (§10)
+Snapshot workflow (§10) — Checkpoint B (pure record/checksum validation: A, §20.1)
   - candidate → independent approval → authorization → census (happy path)
   - altered archive / size / digest → fail
   - altered source approval (checksum) → fail
@@ -1427,39 +2593,55 @@ Snapshot workflow (§10)
   - changed extraction-procedure identity → fail
   - eng vs spa extraction-procedure contract mismatch → fail (§8.5)
   - replayed authorization bound to a different source_approval_sha256 → fail
+  - manifest CONSTRUCTION from a supplied approval with a snapshot ID differing from
+    source_approval.<lang>.identity() → RAISE source_identity_mismatch (acceptance
+    boundary, §16.7); (the LIVE-verification snapshot-ID comparison is a RETURNED
+    result — see the Live re-verification block, CHC-P2-07)
 
-Enumeration / rejection (§4/§9)
+Enumeration / rejection (§4/§9) — Checkpoint B (pure empty/one-language rejection: A, §20.1)
   - correct census → verified manifest, correct counts, ordinals 0..N-1
   - nested dir / hidden / metadata / temp / uppercase suffix / archive / broken
     symlink / special file → unexpected_entry
   - empty English / empty Spanish population → empty_population
 
-Determinism / identity (§4.3/§11/§12)
+Determinism / identity (§4.3/§11/§12) — Checkpoint A (re-resolution/verification: B)
   - stable ordering regardless of creation order; locale independence
   - same population, different timestamps → same population_identity_sha256
   - same population, different repository commits → same population_identity_sha256,
     distinct run metadata
   - changed member/order/snapshot/contract/count → different population_identity_sha256
   - complete manifest bytes changed → manifest_file_sha256 changes
-  - NFD path round-trips exactly and is re-resolvable
-  - NFC/NFD and case-fold path pairs → duplicate_identity
-  - ordering uses exact UTF-8 bytes; serialization does not rewrite identity
-  - verification never rewrites bytes or timestamps
+  - (A) NFD path STRING round-trips byte-for-byte through canonical serialization
+  - (A) same-language NFC/NFD/case-fold path pairs → duplicate_identity; cross-language
+    equivalents do NOT path-collide (§13.4)
+  - (A) ordering uses exact UTF-8 bytes; serialization does not rewrite identity
+  - (B) NFD path re-resolves via the stored exact path on a real filesystem
+  - (B) verification never rewrites bytes or timestamps
 
-Counts reconciliation (§11.6)
+Counts reconciliation (§11.6/§11.7) — Checkpoint A (re-verification point: B)
   - tamper each of the 8 count fields (with both checksums recomputed) → manifest_mismatch
   - reconciliation occurs at construction, loading, and re-verification
 
-Conversation identity (§10.5)
+Conversation identity (§10.5) — Checkpoint A
   - single-dot / multi-dot / Unicode name / equal eng-spa stems / name ending in
-    another suffix before .cha → correct f"{language}/{filename[:-4]}"
+    another suffix before .cha → correct f"{language}/{filename[:-4]}" over supplied
+    strings (no pathlib, no Path.stem, no filesystem)
+  - NOTE: the fact that Path(filename).stem equals filename[:-4] for admitted .cha
+    names is documentation only (§10.5); it is NOT a Checkpoint A test and must not
+    import pathlib
 
-Collisions / zero-byte (§13)
-  - duplicate byte content / duplicate conversation id → duplicate_identity
+Collisions / crossover / zero-byte (§13) — Checkpoint A (zero-byte enumeration fixture: B)
+  - duplicate byte content / duplicate conversation id / NFC / NFD / case-fold →
+    duplicate_identity (§13.4)
+  - collision internal precedence: byte → conversation → NFC → NFD → case-fold (§13.4)
+  - exact language crossover: opposite-language member key present AND own absent →
+    language_crossover; equal filenames/stems across languages are NOT crossover (§13.5)
+  - failure precedence: collision → crossover → inventory mismatch → ordering (§9.1)
   - one zero-byte .cha retained as a member (counted)
   - two zero-byte .cha → duplicate_identity (empty-input SHA-256)
+  - NO test references the removed "duplicate normalized path identity" class (§13.1)
 
-Publication state machine (§15)
+Publication state machine (§15) — Checkpoint B
   - inject failure at each transition (temp create / write / flush / file fsync /
     link / first dir fsync / temp unlink / second dir fsync); assert exactly one of:
     no final exists | existing final preserved | byte-complete final +
@@ -1469,18 +2651,67 @@ Publication state machine (§15)
   - residual temp names not printed; verification does not clean up or rewrite
   - cleanup failure during another failure does not mask the primary
 
-Schemas (§16)
+Schemas (§16/§14.3) — Checkpoint A
   - valid round trip for each of the 5 records; fixed canonical vectors match
     dataclass fields / JSON / checksum inputs / schema tables
-  - unknown / missing / duplicate-key / mistyped / unsupported-schema /
-    unsupported-version / invalid-enum / invalid-checksum / non-canonical → fail
+  - unknown / missing / duplicate-key (nested depths) / mistyped / bool-as-int /
+    unsupported-schema / unsupported-version / invalid-enum / invalid-checksum /
+    BOM / invalid-UTF-8 / NaN / Infinity / lone-surrogate / non-canonical → fail
+  - reserialize-and-compare byte equality; explicit mapping funcs; asdict not the
+    checksum contract (§14.3)
 
-Privacy / control-flow (§18)
+Privacy / record + error representation (§18/§18.5) — Checkpoint A
+  - repr() of EVERY record type returns the fixed ClassName(<redacted>) form with no
+    injected sentinel (path, filename, digest, member name, count, timestamp) (§18.5)
   - injected sentinels (path, filename, digest, member name, archive name) absent
-    from str/repr/args/__cause__/__context__/stdout/stderr of any raised error
+    from str/repr/args/__cause__/__context__ of any raised error (over supplied values)
   - every ordinary error: __cause__ is None and __context__ is None
-  - injected KeyboardInterrupt() and SystemExit() propagate as the exact object
+  - CallhomePopulationError carries only a fixed category; pure module never logs/prints
+
+Control-flow / cancellation / script (§18.4/§15.5) — Checkpoint B
+  - injected sentinels absent from stdout/stderr at the I/O / traversal / hashing /
+    publication / verification / CLI boundaries
+  - injected KeyboardInterrupt() and SystemExit() propagate as the exact object at the
+    Checkpoint B boundaries (I/O, authorization, traversal, hashing, publication,
+    verification, CLI); pure Checkpoint A helpers that catch no exceptions need no
+    artificial cancellation test
   - the script emits no traceback or protected detail; stable nonzero exit code
+
+Live re-verification — RETURNED result (§11.4/§11.7/§16.7/§16.8) — Checkpoint B (CHC-P2-06/CHC-P2-07)
+  (all inputs are valid canonical manifests that decode + authenticate + recompute)
+  - all four fatal fields true (manifest_file_sha256_ok, membership_matches,
+    population_identity_matches, counts_reconciled) → ok == True
+  - incorrect manifest-file checksum VALUE (grammar-valid but wrong) →
+    manifest_file_sha256_ok == False and ok == False
+  - persisted entries differ from recomputed live entries →
+    membership_matches == False and ok == False
+  - stable identity differs from identity recomputed with authenticated snapshot IDs
+    and live stable fields → population_identity_matches == False and ok == False
+  - persisted counts differ from independently derived live counts →
+    counts_reconciled == False and ok == False
+  - repository_commit_compatible False while every fatal field True → ok remains True
+  - valid canonical persisted English snapshot ID differs from authenticated English
+    approval identity → population_identity_matches == False and ok == False (RETURNED,
+    not raised) (§16.7/§16.8, CHC-P2-07)
+  - valid canonical persisted Spanish snapshot ID differs from authenticated Spanish
+    approval identity → population_identity_matches == False and ok == False (RETURNED)
+  - unchanged entries but changed stable snapshot/contract metadata →
+    membership_matches == True, population_identity_matches == False, ok == False
+
+Live re-verification — RAISE without a record (§11.4 Stage R/§16.8/§18) — Checkpoint B (CHC-P2-07)
+  (comparison impossible/unsafe → fixed content-free error, NO CallhomePopulationVerification)
+  - missing or unreadable manifest / I/O failure → raise
+  - invalid UTF-8 / UTF-8 BOM / duplicate JSON keys / NaN / Infinity / lone surrogate → raise
+  - non-object top-level / missing fields / unknown fields / wrong field types → raise
+  - invalid scalar grammar (incl. malformed manifest_file_sha256 value) → raise
+  - invalid schema / unsupported schema version / invalid contract-field grammar → raise
+  - noncanonical persisted JSON bytes → raise
+  - invalid authorization / bootstrap failure → raise
+  - structurally invalid source_approval.json or census_authorization.json → raise
+  - filesystem traversal / hashing / archive-verification failure preventing a
+    reliable live population result → raise
+  - NO returned false Booleans for any malformed/structurally-unusable input above;
+    all raises are content-free; KeyboardInterrupt/SystemExit preserved (§18.4)
 ```
 
 ---
@@ -1598,6 +2829,28 @@ exact path preservation                      — §12
 zero-byte duplicate boundary                 — §13.3
 correct Decision B classifications           — §19
 all closure tests                            — §20
+Checkpoint A / Checkpoint B boundary          — §1.4
+normative constants (exact values)            — §8.7
+normative field predicates (every field)      — §8.8
+canonical source-member ordering              — §10.8
+five exact collision classes + precedence     — §13.4
+exact language-crossover definition           — §13.5
+failure precedence (collision→crossover→…)    — §9.1
+privacy-safe record + error representations    — §18.5
+strict JSON persistence boundary              — §14.3
+identity/reconciliation closure                — §11.7
+parsing/filesystem independence of pure core  — §6.1
+Path.stem factual correction                  — §10.5
+Checkpoint A test contract                    — §20.1
+language-namespaced NFC/NFD/case-fold keys    — §13.4
+record-level invariants (every record)         — §16.7
+logical-root strings allowed in Checkpoint A   — §1.4, §6.1
+complete normative dependency set              — §6
+source-approval contract-version pinned        — §16.7 (CHC-P2-04)
+manifest snapshot-ID predicates + binding       — §16.7, §11.4 (CHC-P2-05)
+population_identity_matches + four-term ok      — §8.5, §16.7, §11.4, §11.7 (CHC-P2-06)
+strict acceptance loader vs verification inspector — §16.4, §16.8 (CHC-P2-07)
+verification raise-vs-return outcome model      — §11.4, §16.7, §18.2 (CHC-P2-07)
 ```
 
 No real-data value appears anywhere in this document.
