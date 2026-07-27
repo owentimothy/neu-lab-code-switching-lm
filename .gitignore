@@ -7,6 +7,7 @@ __pycache__/
 
 # Restricted raw corpus data (TalkBank ethics / consent) and derived verbatim text.
 data/raw/bangor/
+data/raw/switchlingua/
 data/processed/bangor_sample/
 
 # Restricted CALLHOME raw transcripts/archives (LDC/TalkBank; keep local only).
