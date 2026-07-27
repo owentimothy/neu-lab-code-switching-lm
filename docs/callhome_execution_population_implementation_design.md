@@ -1,10 +1,27 @@
 # CALLHOME Execution-Population Census — Implementation Design
 
-**Status:** Design only. No implementation, no tests, no script, no `.gitignore`
-change, no real corpus access, no private-directory inspection, no census, no
-hashing of real files, no strict-reader execution, no dataset construction. This
-document is an implementation-ready contract for a **later, separately reviewed**
-synthetic-only implementation gate.
+> [!IMPORTANT]
+> **Status: deferred, non-authoritative design**
+>
+> This document preserves the generalized Checkpoint A/B population-census
+> architecture for possible later scaling, reusable tooling, multi-operator
+> execution, publication workflows, or broader corpus support.
+>
+> It does **not** govern the minimum first-pilot CALLHOME census and is no longer
+> on the critical path to the initial `CsCont − MonoCont` experiment.
+>
+> The first-pilot census will be governed by a separate, minimum-defensible
+> census contract created and reviewed in a later gate.
+>
+> Nothing in this document currently authorizes implementation, corpus access,
+> source approval, real census execution, strict-reader execution, condition
+> construction, corpus freezing, tokenizer training, or model training.
+
+**Preserved generalized-design status:** Design only. No implementation, no
+tests, no script, no `.gitignore` change, no real corpus access, no
+private-directory inspection, no census, no hashing of real files, no strict-reader
+execution, no dataset construction. This document is an implementation-ready
+contract for a **later, separately reviewed** synthetic-only implementation gate.
 
 The eventual synthetic-only implementation is split into two normative checkpoints
 (§1.4): **Checkpoint A** (a pure, filesystem-free deterministic core) and
@@ -21,7 +38,7 @@ aggregate for commit.
 
 ---
 
-## 0. Finding-closure map (seven review rounds)
+## 0. Finding-closure map (fourteen review rounds)
 
 **Round 1** (all closed):
 
@@ -96,13 +113,101 @@ aggregate for commit.
 | CHC-P2-08 — stale §14.2 blanket "recomputes each and asserts equality" | §14.2 (replaced with the two-boundary contract: strict acceptance raises; live Checkpoint B verification returns Booleans for evaluable manifest-file / entry / stable-identity / count mismatches; agrees with §11.4/§16.4/§16.7/§16.8/§18.2/§20.2) |
 | CHC-P3-09 — inaccurate §18.2 "already-approved aggregate" wording | §18.2 (removed "already-approved"; `population_identity_sha256` is a privacy-safe local-only aggregate, disclosure governed by §19; a verification result grants no disclosure approval; record stays content-free) |
 
-Round-1 through Round-6 findings are reopened only where Round-7 changes must stay
-consistent with them. (The Round-1 through Round-6 rows above quote the wording each
+**Round 8** (this revision — bounded Checkpoint-A design-contract clarification, CHPA):
+
+| Finding | Resolution |
+|---|---|
+| CHPA-P2-01 — pure-core API contract incomplete | §8.9 (single authoritative Checkpoint A API table: exact names, visibility, signatures, raise/pure/serialized-format-facing attributes, Checkpoint B consumers; Rule-A type-syntax resolution preserving the four-module import set), §8.10 (Checkpoint A type/record inventory) |
+| CHPA-P2-02 — strict acceptance failure precedence incomplete | §16.9 (one total strict-loader pipeline — 22 stages at Round 8; **23 after Round 11** inserted the ordinary approved-inventory stage; one fixed category per stage; earliest-stage-wins; malformed/noncanonical serialization before checksum; fixed ordering/ordinals→collision→crossover→inventory→count→identity→manifest-checksum order) |
+| CHPA-P2-03 — verification-record checkpoint ownership contradictory | §16.10 (inert `CallhomePopulationVerification` type defined in Checkpoint A; live inspector, producer, and behavioral tests owned by Checkpoint B; defining the inert type authorizes no Checkpoint B capability) |
+| CHPA-P2-04 — record layout mechanics incomplete | §18.6 (uniform `@dataclass(frozen=True, slots=True)`, `eq=True`, `unsafe_hash=False`, `field(repr=False)` + fixed `__repr__`, `str` delegation, generated-hash policy; every record hashable), §8.5 (decorators updated) |
+| CHPA-P2-05 — closed error constructor not fully specified | §18.7 (exact supported category set; unsupported / protected / empty / wrong-type → non-echoing `ValueError("unsupported_error_category")`; no recursion; chain-free supported boundary) |
+| CHPA-P3-01 — non-blocking test-count planning estimate | §20.1 (≈170–220 collected cases retained as a PLANNING TARGET, not a Definition-of-Done count; behavioral coverage remains normative) |
+
+**Round 9** (this revision — bounded Codex follow-up on the Round-8 clarification, CHPA-R2):
+
+| Finding | Resolution |
+|---|---|
+| CHPA-R2-01 — bidirectional mapping API incomplete/ambiguous | §8.9 (complete typed converter inventory: 12 exactly-named `_<record>_to_mapping` / `_mapping_to_<record>` pairs with exact param/return types; generic `_<record>_…` forms removed), §14.3 (points to the §8.9 inventory; no second converter rule), §20.1 (per-pair round-trip tests) |
+| CHPA-R2-02 — manifest approval binding not observable | §8.9 (`_build_population_manifest` now takes `source_approval: CallhomeSourceApproval` and derives snapshot IDs internally; no caller-supplied IDs; verifies `source_approval_sha256` + contract version), §16.7 (derive-not-compare binding), §16.9 (builder vs loader), §20.1/§20.2 (tests) |
+| CHPA-R2-03 — structural decoding not separated from invariant construction | §16.9 (two-phase loader: Phase 1 raw-mapping structural + canonical byte comparison BEFORE any invariant-enforcing typed construction; Phase 2 ordered semantic construction/acceptance), §14.3 (two-phase steps), §16.7 (aggregate invariants are Phase-2), §8.9 (converter/constructor ownership) |
+| CHPA-R2-04 — `__context__` guarantee overscoped | §18.7 (constructor controls own state + no explicit chaining; `__context__ is None` guaranteed only at project-controlled supported boundaries that raise outside any active handler; arbitrary third-party construction inside a handler is outside the guarantee), §20.1 (scoped tests) |
+
+**Round 10** (this revision — final bounded Codex follow-up, CHPA-R3):
+
+| Finding | Resolution |
+|---|---|
+| CHPA-R3-01 (constructor/converter/builder split) — PARTIAL | Round 10 established the three-layer validation-ownership contract: direct constructors and `_mapping_to_<record>` converters own **intrinsic/local** validation only (`schema_error`); named ordered builders (`_build_population_manifest`, `build_population_census_summary`) and strict loaders (`_load_<record>`) own aggregate and cross-record acceptance; direct construction alone never establishes accepted persisted status. §8.9, §16.7, §16.9 (Stage 12), §11.7, §20.1. **This closed the constructor-vs-builder split but did NOT yet make crossover / approved-inventory ownership consistent — that remained open and is completed in Round 11 (do not read Round 10 as fully closing CHPA-R3-01).** |
+
+**Round 11** (this revision — crossover & approved-inventory ownership, CHPA-R3-01 completion):
+
+| Finding | Resolution |
+|---|---|
+| CHPA-R3-01 (ownership assignment) — crossover and approved-inventory acceptance ownership inconsistent across §§8.9, 9.1, 16.7, 16.9, 20.1 | Assigned `_build_population_manifest` as authoritative owner of both **language crossover** (§13.5) and **ordinary approved-inventory membership comparison** (§10.3), derived from `source_approval.english/spanish.members`: §8.9 (builder owns both), §9.1 (census core delegates), §16.7 (applicability rule), §16.9 (stage 19 added; contextual stages 14/18/19 skipped when unevaluable), §10.3/§13.5, §20.1. **Round 11 assigned ownership but left three residual contradictions — §1.4 boundary wording, §9.1 in-step ordering position, and the collective strict-loader error inventory — which Round 12 removes; do not read Round 11 as achieving whole-document consistency by itself.** |
+
+**Round 12** (this revision — checkpoint-boundary & per-loader error truthfulness, P2-01..03):
+
+| Finding | Resolution |
+|---|---|
+| P2-01 — Checkpoint ownership contradiction (§1.4 deferred "approved-inventory comparison" to Checkpoint B while §8.9 assigns it to the pure builder) | §1.4 now lists **pure approved-inventory membership comparison + language-crossover detection over supplied values** in the Checkpoint A allowance and removes "approved-inventory comparison" from the Checkpoint B deferred list, reframing Checkpoint B as live acquisition / authentication / candidate-entry creation / builder invocation / publication only; §1.4 summary line adds §10.3 as a Checkpoint A contract. |
+| P2-02 — §9.1 contradicts authoritative builder precedence (ordering listed after collision/crossover/inventory) | §9.1 step 8 and the failure-precedence block now use the exact §16.9 order — ordering/ordinals **before** collision → crossover → ordinary inventory → counts → identity → manifest-file checksum — and state §16.9 is the **sole** precedence contract. |
+| P2-03 — strict-loader error inventory claims unavailable contextual failures | §8.9 replaces the collective loader raise-set with **exact per-loader** inventories; `_load_population_manifest` raises only self-contained `{schema_error, serialization_error, duplicate_identity, ordering_error, manifest_mismatch}` and **cannot** emit `language_crossover` or contextual `source_identity_mismatch` (stages 14/18/19 skipped); §20.1 adds per-loader error-inventory tests. **Round 12 pinned the per-loader §8.9 declarations but left three residual stale statements — a collision-first §25 precedence summary, an unreachable `source_identity_mismatch` on `_load_source_approval`, and collective contextual categories in §14.2 / §16 — which Round 13 removes; do not read Round 12 as achieving whole-document consistency by itself.** |
+
+**Round 13** (this revision — residual precedence & loader-error contracts, P2-02-R1 / P2-03-R1 / P2-03-R2):
+
+| Finding | Resolution |
+|---|---|
+| P2-02-R1 — stale collision-first precedence summary in §25 | §25 now states the aggregate precedence beginning with **ordering/ordinals** → collision → crossover → ordinary approved-inventory mismatch → counts → stable identity → manifest-file checksum (§§9.1, 16.9); the §0 Round-8 shorthand is likewise ordering-first; no complete precedence summary begins with collision. |
+| P2-03-R1 — unreachable source-approval-loader error category | An invalid `archive_filename` basename / field grammar is an **intrinsic/local field defect → `schema_error`** (§8.8, §10.7), not a source-identity comparison. `_load_source_approval` now raises `{schema_error, serialization_error}` only; §8.9, §10.7, §18.2, §20.1 aligned. **Round 13 corrected the loader category but did not yet make the three approval-related boundaries fully consistent across §§8.9, 16.7, 17.1, 18.2, and 20.1; Round 14 closes that residual ownership issue.** |
+| P2-03-R2 — stale contextual strict-loader categories in §14.2 and §16 | §14.2 and the general §16 loading prose now defer to the exact §8.9 per-loader inventories: context-free loading authenticates no approval/authorization, so `_load_population_manifest` raises **no** `source_identity_mismatch` (binding/inventory) and **no** `authorization_error`; its `manifest_mismatch` arises only from the self-contained `n_members` / counts / stable-identity / manifest-file-checksum predicates. **This did not yet establish the complete boundary-specific split for `_load_source_approval`, `_build_population_manifest`, and `_grant_capability`; that is the Round-14 correction below.** |
+
+**Round 14** (this revision — boundary-specific approval error ownership, P2-03-R1-R2):
+
+| Finding | Resolution |
+|---|---|
+| P2-03-R1-R2 — boundary-specific error ownership remained inconsistent across §§8.9, 16.7, 17.1, and 18.2 | §§8.9, 16.7, 18.2, and 20.1 now assign exact categories by boundary: `_load_source_approval` performs structural, canonical-serialization, and intrinsic/local validation only and raises `schema_error` / `serialization_error`; `_build_population_manifest` performs pure supplied-approval contract/checksum/source/inventory binding and raises `source_identity_mismatch` where assigned; `_grant_capability` performs Checkpoint B authorization/authentication/trusted-bootstrap/capability binding and every failure raises `authorization_error` under §17.1. The categories are non-substitutable. |
+
+Round-1 through Round-13 findings are reopened only where Round-14 changes must stay
+consistent with them. (The Round-1 through Round-13 rows above quote the wording each
 round superseded; those quotes are **historical and resolved**, not live rules.)
 
 ---
 
 ## 1. Status and scope
+
+### 1.0 Transition to a minimum first-pilot design
+
+This document remains an honest record of the accepted generalized design. Its
+status has changed because that architecture is no longer on the first-pilot
+critical path.
+
+Preserved here:
+
+- prior design reasoning;
+- threat analysis;
+- generalized API proposals;
+- Checkpoint A/B separation;
+- privacy and publication concepts;
+- review and finding-closure history.
+
+No longer authoritative for the first pilot:
+
+- exact implementation file scope;
+- mandatory Checkpoint A/B sequencing;
+- record and loader family;
+- capability architecture;
+- global validation-stage precedence;
+- per-boundary error inventories;
+- generalized publication and verification machinery;
+- nullary production APIs and reusable CLI requirements.
+
+Terms such as “normative,” “authoritative,” “must,” “implementation-ready
+contract,” and “next implementation gate” elsewhere in this document apply only
+within the preserved, deferred generalized architecture. They do not authorize or
+govern first-pilot work.
+
+Where this document conflicts with the later minimum-defensible census contract,
+the minimum-defensible contract controls the first pilot.
 
 ### 1.1 What this layer is
 
@@ -173,9 +278,22 @@ count derivation and reconciliation
 exact conversation identity
 pure deterministic ordering
 pure collision checks over supplied values
+pure approved-inventory membership comparison over supplied immutable
+  CallhomeSourceApproval and CallhomePopulationEntry values (§10.3)
+pure language-crossover detection over those supplied approved inventories and
+  candidate entries (§13.5)
+pure aggregate acceptance with fixed deterministic failure categories and precedence
+  for those comparisons, via _build_population_manifest over supplied values (§16.9)
 in-memory aggregate-summary construction
 invented-only tests
 ```
+
+The pure approved-inventory and crossover comparisons operate **only** on values
+explicitly supplied to the pure core (a supplied `CallhomeSourceApproval` and supplied
+candidate `CallhomePopulationEntry` values). Checkpoint A must **not** enumerate real
+directories, open archives, inspect live resources, discover approval state, or
+authenticate a caller: it compares only handed-in values, with **no** filesystem,
+archive, environment, Git, clock, authorization-bootstrap, or live-source access.
 
 Checkpoint A must **exclude**:
 
@@ -224,16 +342,24 @@ the filesystem, the clock, the environment, or Git.
 
 #### Checkpoint B — production/filesystem boundary
 
-Deferred to Checkpoint B:
+Deferred to Checkpoint B — **live acquisition, authentication, input preparation,
+invocation, and publication** (NOT the pure aggregate comparisons themselves, which are
+Checkpoint A over supplied values):
 
 ```text
 trusted bootstrap
-authorization capability
+authorization capability and capability enforcement
 fixed paths
 directory and archive purity
-filesystem enumeration
+live filesystem and archive enumeration
 archive and transcript hashing
-approved-inventory comparison
+construction of candidate source snapshots from real resources
+acquisition and authentication of the accepted CallhomeSourceApproval
+creation of candidate CallhomePopulationEntry values from live enumeration
+supplying source_approval, entries, run metadata, and authorization checksums to
+  _build_population_manifest
+propagating builder failure
+publishing only the builder-returned accepted manifest
 immutable publication
 frozen-manifest verification
 nullary production APIs
@@ -242,13 +368,25 @@ CLI
 filesystem, publication, cancellation, and boundary privacy tests
 ```
 
+**Approved-inventory membership comparison and language-crossover detection are NOT
+deferred to Checkpoint B**: they are pure Checkpoint A comparisons over supplied values
+(§10.3, §13.5, §16.9), owned by `_build_population_manifest`. Checkpoint B **prepares**
+the inputs (live enumeration, authentication, candidate-entry creation) and **invokes**
+the builder; it must **not** independently replace the builder's authoritative ordering,
+collision, language-crossover, approved-inventory, count, stable-identity, or
+manifest-integrity acceptance decision. The correct distinction is: **Checkpoint A** =
+pure comparison and deterministic aggregate acceptance over supplied values;
+**Checkpoint B** = live acquisition, authentication, input preparation, invocation, and
+publication.
+
 `.gitignore` is **not** part of Checkpoint A because Checkpoint A creates and
 accesses **no local-output path** — it neither writes nor resolves any file under
 `data/processed/callhome_population/`, so there is nothing for a `.gitignore` entry
 to protect until Checkpoint B introduces publication. The single `.gitignore` line
 (§7) and its guardrail test are Checkpoint B work.
 
-Sections §8.7 (constants), §8.8 (field predicates), §10.8 (member ordering), §11.7
+Sections §8.7 (constants), §8.8 (field predicates), §10.3 (approved-inventory
+membership comparison, over supplied values), §10.8 (member ordering), §11.7
 (identity/reconciliation closure), §13.4–§13.5 (collision/crossover algorithms),
 §14.3 (strict JSON), and §18.5 (privacy-safe representations) are Checkpoint A
 contracts. Sections §8.6, §9.2, §10.7, §15, §17, and the CLI (§8.4) are Checkpoint B
@@ -663,13 +801,13 @@ Field notes use: **type**; required (R) / value set; **privacy** (PUB = public
 fact, LOC = local only); canonical representation. Strict loading per §16.
 
 ```python
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeSourceMember:
     relative_path: str        # exact POSIX str (§12); strict-UTF-8; LOC
     size_bytes: int           # >= 0; LOC
     sha256: str               # 64 lowercase hex; LOC
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeExtractionProcedure:
     procedure_id: str         # e.g. "talkbank_cha_extract/1"; PUB label
     tool_name: str            # PUB label
@@ -679,7 +817,7 @@ class CallhomeExtractionProcedure:
     overwrite_policy: str     # fixed "empty_destination_no_overwrite"; PUB
     member_path_policy: str   # fixed "exact_posix_no_escape_strict_utf8"; PUB
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeSourceSnapshot:
     provider: str             # "talkbank_cabank"; PUB
     corpus_name: str          # PUB (placeholder until G5/G6)
@@ -694,12 +832,12 @@ class CallhomeSourceSnapshot:
     members: tuple[CallhomeSourceMember, ...]           # frozen expected inventory; LOC
     def identity(self) -> "CallhomeSourceSnapshotId": ...
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeSourceSnapshotId:                 # identity-only view (no archive_filename)
     provider: str; corpus_name: str; language: str
     public_release_label: str; archive_sha256: str; n_members: int
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeCandidateSourceSnapshotRecord:    # candidate_source_snapshot.json
     schema: str               # "callhome_candidate_source_snapshot"
     schema_version: str       # "1"
@@ -710,7 +848,7 @@ class CallhomeCandidateSourceSnapshotRecord:    # candidate_source_snapshot.json
     spanish: CallhomeSourceSnapshot
     # NOTE: extraction procedure lives INSIDE each snapshot, not at top level.
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeSourceApproval:                   # source_approval.json (checksum-bound)
     schema: str               # "callhome_source_approval"
     schema_version: str       # "1"
@@ -722,7 +860,7 @@ class CallhomeSourceApproval:                   # source_approval.json (checksum
     approved_by: str
     approved_utc: str
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomeCensusAuthorizationRecord:         # census_authorization.json (checksum-bound)
     schema: str               # "callhome_census_authorization"
     schema_version: str       # "1"
@@ -733,7 +871,7 @@ class CallhomeCensusAuthorizationRecord:         # census_authorization.json (ch
     approved_by: str
     approved_utc: str
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomePopulationEntry:
     ordinal: int              # 0..N-1
     language: str             # "eng" | "spa" (expected, directory-derived)
@@ -742,14 +880,14 @@ class CallhomePopulationEntry:
     sha256: str               # 64 hex; LOC
     conversation_id: str      # derived (§10.5); LOC
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomePopulationCounts:                  # canonical stable field (§11.6)
     n_english_files: int; n_spanish_files: int; n_total_files: int
     english_total_bytes: int; spanish_total_bytes: int; total_bytes: int
     n_zero_byte_files: int
     all_identity_checks_passed: bool             # always True in a persisted manifest
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomePopulationManifest:                 # callhome_population_manifest.json
     schema: str               # "callhome_population_manifest"
     schema_version: str       # "1"  (the census-authorization population_schema_version)
@@ -774,8 +912,8 @@ class CallhomePopulationManifest:                 # callhome_population_manifest
     # --- whole-file integrity (excludes itself) ---
     manifest_file_sha256: str                    # §11.3
 
-@dataclass(frozen=True)
-class CallhomePopulationVerification:             # Checkpoint B live-verification result (§11.4, §16.7)
+@dataclass(frozen=True, slots=True)
+class CallhomePopulationVerification:             # inert type DEFINED in Checkpoint A; CONSTRUCTED by Checkpoint B live verification (§11.4, §16.7, §16.10)
     ok: bool                                     # == the four fatal terms below (§11.7)
     population_identity_sha256: str
     manifest_file_sha256_ok: bool                # FATAL
@@ -786,7 +924,7 @@ class CallhomePopulationVerification:             # Checkpoint B live-verificati
     checked_utc: str
     # content-free; carries no path/name/digest of any offending member.
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CallhomePopulationCensusSummary:            # callhome_population_census_summary.json
     schema: str               # "callhome_population_census_summary"
     schema_version: str       # "1"
@@ -1014,6 +1152,376 @@ The stored `relative_path` is **never normalized or case-folded** (§12); it is 
 exactly as enumerated. `conversation_id` is derived per §10.5 and is likewise stored
 verbatim.
 
+### 8.9 Normative Checkpoint A API contract (CHPA-P2-01)
+
+This subsection is the **single authoritative Checkpoint A API table**. Every
+Checkpoint A callable that implementation and tests are expected to use is pinned here
+by exact Python name, visibility, signature, raise behavior, purity,
+serialized-format exposure, and eventual Checkpoint B consumer. No Checkpoint A
+operation may be implemented under a different name, and **no earlier prose in this
+document overrides these names or signatures** — earlier prose that used phrases such
+as "a helper" or "equivalent function" is subordinate to this table.
+
+**Facts stated once for every row.** Every callable below is a **pure** Checkpoint A
+function or type: it reads nothing from disk, resolves no path, and touches no clock,
+environment, or Git (§6.1). The purity attribute is therefore `pure = yes` for every
+row and is not repeated per row. Legend: `PUB` = public, importable from
+`cslm.data.callhome_population`; `PRIV` = module-internal underscore name (Checkpoint
+B lives in the **same module** and calls these directly; Checkpoint A tests may also
+import them from the module — see "Direct imports" below). `raises` = may raise
+`CallhomePopulationError`. `fmt` = serialized-format-facing (operates on canonical
+JSON bytes, the explicit canonical mappings, or a cryptographic-checksum surface).
+`B-consumer` = the Checkpoint B component that may later call it.
+
+**A. Public types, constructors, and the one derivation method** (constructor
+parameters and types are exactly the field declarations of §8.5; §8.10 is the type
+inventory). **Per the validation-ownership rule (§16.7, CHPA-R3-01), every direct
+dataclass constructor below enforces INTRINSIC / LOCAL invariants only and raises
+`schema_error`; it never owns an aggregate / cross-record acceptance category — those
+belong exclusively to the named builders and strict loaders (Parts B–D).**
+
+```text
+CallhomeSourceMember(...)                   PUB  raises(schema_error §8.8; intrinsic/local)  fmt no
+    B-consumer: _census_population_core (builds live members before comparison)
+CallhomeExtractionProcedure(...)            PUB  raises(schema_error §8.8; intrinsic/local)  fmt no
+    B-consumer: _census_population_core
+CallhomeSourceSnapshot(...)                 PUB  raises(schema_error §8.8/§16.7; intrinsic/local: incl. own members canonical order §10.8, n_members==len)  fmt no
+    B-consumer: _census_population_core
+CallhomeSourceSnapshot.identity(self) -> CallhomeSourceSnapshotId
+                                            PUB (method)  raises no  fmt no
+    B-consumer: _census_population_core; verification inspector (snapshot-ID binding)
+CallhomeSourceSnapshotId(...)               PUB  raises(schema_error §8.8/§16.7; intrinsic/local)  fmt no
+    B-consumer: verification inspector
+CallhomeCandidateSourceSnapshotRecord(...)  PUB  raises(schema_error §8.8/§16.7; intrinsic/local)  fmt no
+    B-consumer: candidate-observation gate (writer is out of module scope)
+CallhomeSourceApproval(...)                 PUB  raises(schema_error §8.8/§16.7; intrinsic/local: contract_version==constant. The source_approval_sha256 → source_identity_mismatch binding is AGGREGATE, owned by _build_population_manifest (supplied source_approval + source_approval_sha256; §16.9), NOT this constructor and NOT _grant_capability — which authenticates the authorization record's own source_approval_sha256 at Checkpoint B → authorization_error, never source_identity_mismatch)  fmt no
+    B-consumer: _grant_capability; _census_population_core
+CallhomeCensusAuthorizationRecord(...)      PUB  raises(schema_error §8.8/§16.7; intrinsic/local)  fmt no
+    B-consumer: _grant_capability
+CallhomePopulationEntry(...)                PUB  raises(schema_error §8.8; intrinsic/local)  fmt no
+    B-consumer: _census_population_core
+CallhomePopulationCounts(...)               PUB  raises(schema_error §8.8; intrinsic/local)  fmt no
+    B-consumer: _census_population_core
+CallhomePopulationManifest(...)             PUB  raises(schema_error §8.8; INTRINSIC/LOCAL ONLY — fixed constants + ≥1 eng & ≥1 spa entry. Aggregate acceptance categories are owned by the named builder/loader boundaries per each boundary's evaluable stages (§16.7/§16.9/§8.9), NOT this constructor: _build_population_manifest owns language_crossover, binding/inventory source_identity_mismatch, ordering, duplicate_identity, count/identity/file-checksum manifest_mismatch; _load_population_manifest owns ONLY the self-contained subset {duplicate_identity, ordering_error, manifest_mismatch} and emits NO language_crossover or contextual source_identity_mismatch)  fmt no
+    B-consumer: _census_population_core; publisher; verification inspector
+CallhomePopulationCensusSummary(...)        PUB  raises(schema_error §8.8; INTRINSIC/LOCAL ONLY — fixed constants, all_identity_checks_passed==True, and local summary arithmetic. Manifest reconciliation (manifest_mismatch) is owned by build_population_census_summary, §16.7 — NOT this constructor)  fmt no
+    B-consumer: (aggregate; publication deferred/governance-gated, §19)
+CallhomePopulationVerification(...)         PUB (INERT type, §16.10)  raises(schema_error, constructor scalar invariants §8.8)  fmt no
+    B-consumer: verification inspector CONSTRUCTS live results (A never does)
+CallhomePopulationError(category: str)      PUB  raises(ValueError on unsupported category, §18.7)  fmt no
+    (is itself the raised type for supported categories; B: all raising paths)
+```
+
+**B. Public function:**
+
+```text
+build_population_census_summary(manifest: CallhomePopulationManifest)
+        -> CallhomePopulationCensusSummary
+    PUB  raises(schema_error/manifest_mismatch on reconciliation §11.6/§16.7)  fmt no
+    B-consumer: none required (A-constructed in memory; publication deferred, §19)
+```
+
+**C. Private serialized-format-facing helpers** (`fmt = yes`):
+
+```text
+_encode_canonical_json(mapping: dict[str, object]) -> bytes
+    PRIV  raises(serialization_error §14.1)   B: publisher; every checksum
+_decode_strict_json(data: str | bytes) -> dict[str, object]
+    PRIV  raises(serialization_error/schema_error §14.3)   B: verification inspector
+```
+
+Typed bidirectional converters — EXACTLY ONE PAIR per Checkpoint A record (CHPA-R2-01).
+This is the single authoritative converter inventory; §14.3 points here and defines no
+second converter rule. Each `_<record>_to_mapping` is a pure projection of an
+already-valid record to its canonical mapping (raises no). Each `_mapping_to_<record>`
+constructs the typed record, enforcing ONLY the intrinsic / local scalar invariants
+assigned to its construction stage (§16.9 Phase 2), and raises `schema_error` on an
+intrinsic/local violation. Aggregate, cross-record, checksum, reconciliation, ordering,
+collision, and crossover invariants are NEVER enforced by a converter — they are
+enforced by the ordered builder/loader (§16.9). All 24 are PRIV, pure, `fmt = yes`.
+
+```text
+_source_member_to_mapping(record: CallhomeSourceMember) -> dict[str, object]
+_mapping_to_source_member(mapping: dict[str, object]) -> CallhomeSourceMember
+_extraction_procedure_to_mapping(record: CallhomeExtractionProcedure) -> dict[str, object]
+_mapping_to_extraction_procedure(mapping: dict[str, object]) -> CallhomeExtractionProcedure
+_source_snapshot_to_mapping(record: CallhomeSourceSnapshot) -> dict[str, object]
+_mapping_to_source_snapshot(mapping: dict[str, object]) -> CallhomeSourceSnapshot
+_source_snapshot_id_to_mapping(record: CallhomeSourceSnapshotId) -> dict[str, object]
+_mapping_to_source_snapshot_id(mapping: dict[str, object]) -> CallhomeSourceSnapshotId
+_candidate_source_snapshot_record_to_mapping(record: CallhomeCandidateSourceSnapshotRecord) -> dict[str, object]
+_mapping_to_candidate_source_snapshot_record(mapping: dict[str, object]) -> CallhomeCandidateSourceSnapshotRecord
+_source_approval_to_mapping(record: CallhomeSourceApproval) -> dict[str, object]
+_mapping_to_source_approval(mapping: dict[str, object]) -> CallhomeSourceApproval
+_census_authorization_record_to_mapping(record: CallhomeCensusAuthorizationRecord) -> dict[str, object]
+_mapping_to_census_authorization_record(mapping: dict[str, object]) -> CallhomeCensusAuthorizationRecord
+_population_entry_to_mapping(record: CallhomePopulationEntry) -> dict[str, object]
+_mapping_to_population_entry(mapping: dict[str, object]) -> CallhomePopulationEntry
+_population_counts_to_mapping(record: CallhomePopulationCounts) -> dict[str, object]
+_mapping_to_population_counts(mapping: dict[str, object]) -> CallhomePopulationCounts
+_population_manifest_to_mapping(record: CallhomePopulationManifest) -> dict[str, object]
+_mapping_to_population_manifest(mapping: dict[str, object]) -> CallhomePopulationManifest
+_population_verification_to_mapping(record: CallhomePopulationVerification) -> dict[str, object]
+_mapping_to_population_verification(mapping: dict[str, object]) -> CallhomePopulationVerification
+_population_census_summary_to_mapping(record: CallhomePopulationCensusSummary) -> dict[str, object]
+_mapping_to_population_census_summary(mapping: dict[str, object]) -> CallhomePopulationCensusSummary
+
+    _<record>_to_mapping:  PRIV, pure, fmt yes, raises no (projects an already-valid
+      record).  B: checksums; publisher; the strict loaders' canonical reconstruction.
+    _mapping_to_<record>:  PRIV, pure, fmt yes, raises schema_error for an intrinsic/
+      local field violation ONLY (§16.9 Phase 2); it enforces no aggregate/cross-record
+      invariant.  B: strict loaders (§16.9); verification inspector.
+```
+
+One-directional canonical projection (NOT a bidirectional pair):
+
+```text
+_population_manifest_stable_mapping(record: CallhomePopulationManifest) -> dict[str, object]
+    # the §11.1 stable-fields mapping; the input to _population_identity_sha256
+    PRIV  pure  fmt yes  raises no   B: verification inspector
+```
+
+Inert-only record note (`CallhomePopulationVerification`). Its converter pair
+`_population_verification_to_mapping` / `_mapping_to_population_verification` supports
+the record's canonical **internal representation and synthetic testing only** (§8.10,
+§16.10). It does **not** authorize persistence of `CallhomePopulationVerification` and
+does **not** authorize any live verification production behavior; the live
+producer/inspector remain Checkpoint B.
+
+```text
+_source_approval_sha256(approval: CallhomeSourceApproval) -> str
+    PRIV  raises no   B: _grant_capability; _census_population_core
+_census_authorization_sha256(auth: CallhomeCensusAuthorizationRecord) -> str
+    PRIV  raises no   B: _grant_capability
+_population_identity_sha256(manifest: CallhomePopulationManifest) -> str   # over §11.1 stable mapping
+    PRIV  raises no   B: _census_population_core; verification inspector
+_manifest_file_sha256(manifest: CallhomePopulationManifest) -> str        # excludes own field, §11.3
+    PRIV  raises no   B: publisher; verification inspector
+```
+
+**Strict loaders — EXACT per-loader error inventory (CHPA-R3-01 / P2-03).** Each strict
+loader is pinned SEPARATELY; there is **no** collective "all loaders raise the full set"
+rule. A loader may raise **only** categories arising from stages its API context can
+actually evaluate (§16.9); contextual stages 14 (approval binding), 18 (crossover), and
+19 (approved-inventory membership) require the approved source record and are **skipped**
+where the API does not receive it. All are PRIV, pure, `fmt = yes`.
+
+```text
+_load_candidate_source_snapshot(data: str | bytes) -> CallhomeCandidateSourceSnapshotRecord
+    evaluable: Phase 1 (stages 1–11) + Phase-2 intrinsic construction/invariants (12–13),
+      incl. nested-snapshot member canonical order (§10.8) and archive_filename basename
+      rules (§10.7, candidate → schema_error). No population entries; no checksum binding.
+    raises(schema_error / serialization_error)
+    NOT performed (no context): approval/manifest binding, crossover, approved-inventory,
+      population collision/ordering/counts/identity/manifest-file checksum.
+    B: candidate-observation gate reviewer (out of module scope)
+
+_load_source_approval(data: str | bytes) -> CallhomeSourceApproval
+    evaluable: Phase 1 + Phase-2 intrinsic (12–13) incl. §16.7 source-approval invariants
+      (contract_version / provider / distribution_format constants; nested-snapshot
+      language/provider; member order §10.8) and the archive_filename basename/field-grammar
+      predicate (§8.8, §10.7 — an INTRINSIC/LOCAL field defect → schema_error, NOT a
+      source-identity comparison).
+    raises(schema_error / serialization_error)
+    NOT performed (no context): approval-to-MANIFEST binding; crossover; approved-inventory
+      membership; population collision/ordering/counts/identity/manifest-file checksum. This
+      loader performs NO expected-checksum or authenticated binding and therefore raises NO
+      source_identity_mismatch or authorization_error. Pure supplied-approval/checksum/source
+      binding belongs to _build_population_manifest → source_identity_mismatch where assigned;
+      authentication of the authorization record's own source_approval_sha256 belongs to
+      Checkpoint B _grant_capability → authorization_error.
+    B: _grant_capability
+
+_load_census_authorization(data: str | bytes) -> CallhomeCensusAuthorizationRecord
+    evaluable: Phase 1 + Phase-2 intrinsic (12–13) incl. §16.7 authorization invariants
+      (schema / schema_version / contract_version / population_schema_version constants;
+      approved_operation enum; source_approval_sha256 grammar).
+    raises(schema_error / serialization_error)
+    NOT performed (no context): the source_approval_sha256 BINDING to the frozen approval
+      (Checkpoint B _grant_capability); no population checks.
+    B: _grant_capability
+
+_load_population_manifest(data: str | bytes) -> CallhomePopulationManifest   # STRICT ACCEPTANCE loader §16.4/§16.9
+    evaluable SELF-CONTAINED stages ONLY: Phase 1 (1–11); typed construction (12);
+      intrinsic invariants (13); n_members-vs-own-entries reconciliation (15); ordering +
+      ordinals (16); collision over its own entries (17); count reconciliation (20);
+      stable-identity recomputation (21); manifest-file checksum recomputation (22).
+    raises(schema_error / serialization_error / duplicate_identity / ordering_error /
+      manifest_mismatch)
+    NOT performed — contextual stages 14 / 18 / 19 are SKIPPED because the API receives
+      only canonical persisted str|bytes and NO approved-source context. It therefore
+      CANNOT emit language_crossover (stage 18) and CANNOT emit source_identity_mismatch
+      from approval binding (14) or ordinary approved-inventory mismatch (19). Skipping is
+      NOT approval of a real source population, NOT evidence that persisted entries match an
+      external approved source, and NOT authorization or live verification (§16.9, §16.7).
+    B: verification inspector (§11.4/§16.8)
+
+_load_census_summary(data: str | bytes) -> CallhomePopulationCensusSummary
+    evaluable: Phase 1 + Phase-2 intrinsic (12–13) incl. §16.7 summary constants,
+      all_identity_checks_passed == True, and local summary arithmetic
+      (n_total_files == n_english_files + n_spanish_files; total_bytes ==
+      english_total_bytes + spanish_total_bytes).
+    raises(schema_error / serialization_error)
+    NOT performed (no context): reconciliation of counts / population_identity_sha256
+      AGAINST the accepted manifest (owned by build_population_census_summary); no
+      population collision/ordering/crossover/inventory checks.
+    B: (aggregate; publication deferred/governance-gated, §19)
+```
+
+**D. Private pure validation / derivation helpers** (`fmt = no` unless noted):
+
+```text
+_conversation_id(language: str, filename: str) -> str      # f"{language}/{filename[:-4]}", §10.5
+    PRIV  raises no   B: _census_population_core
+_derive_counts(entries: tuple[CallhomePopulationEntry, ...]) -> CallhomePopulationCounts   # §11.6
+    PRIV  raises no   B: _census_population_core; verification inspector (as a compared value)
+_reconcile_counts(counts: CallhomePopulationCounts,
+                  entries: tuple[CallhomePopulationEntry, ...]) -> None   # raises on mismatch, §11.6
+    PRIV  raises(manifest_mismatch)   B: _census_population_core
+    (live verification derives its Boolean as _derive_counts(entries) == counts, §11.4)
+_order_population_entries(entries: tuple[CallhomePopulationEntry, ...])
+                  -> tuple[CallhomePopulationEntry, ...]     # eng-then-spa, exact-UTF-8-byte, §4.3
+    PRIV  raises no   B: _census_population_core
+_validate_population_order(entries: tuple[CallhomePopulationEntry, ...]) -> None   # total order + ordinals 0..N-1, §4.3
+    PRIV  raises(ordering_error)   B: _census_population_core; verification inspector
+_detect_population_collisions(entries: tuple[CallhomePopulationEntry, ...]) -> None   # §13.4 internal precedence
+    PRIV  raises(duplicate_identity)   B: _census_population_core; verification inspector
+_detect_language_crossover(entries: tuple[CallhomePopulationEntry, ...],
+                  english_members: tuple[CallhomeSourceMember, ...],
+                  spanish_members: tuple[CallhomeSourceMember, ...]) -> None    # §13.5, over supplied inventory
+    PRIV  raises(language_crossover)   B: _census_population_core
+_build_population_manifest(*, source_approval: CallhomeSourceApproval,
+                  entries: tuple[CallhomePopulationEntry, ...], created_utc: str,
+                  repository_commit: str, source_approval_sha256: str,
+                  census_authorization_sha256: str) -> CallhomePopulationManifest
+    # Takes the approved CallhomeSourceApproval as a SUPPLIED pure value (never read
+    # from disk). DERIVES english_snapshot_id = source_approval.english.identity() and
+    # spanish_snapshot_id = source_approval.spanish.identity() INTERNALLY; it accepts NO
+    # caller-supplied snapshot IDs (CHPA-R2-02). Requires
+    # source_approval.contract_version == POPULATION_CONTRACT_VERSION and
+    # source_approval_sha256 == _source_approval_sha256(source_approval) (the canonical
+    # checksum of the supplied approval). DERIVES the approved English and Spanish
+    # inventories from source_approval.english.members / source_approval.spanish.members
+    # (no extra parameter needed), and is therefore the AUTHORITATIVE aggregate-acceptance
+    # boundary for approved in-memory construction (CHPA-R3-01). Reconciles each derived
+    # snapshot-ID n_members against the per-language entries, then INDEPENDENTLY performs,
+    # in §16.9 Phase-2 order: intrinsic + entry-count invariants (§16.7); ordering + ordinals
+    # (§4.3); collision validation (§13.4); language-crossover detection (§13.5); ordinary
+    # approved-inventory membership comparison (§10.3, over the derived inventories); count
+    # reconciliation (§11.6); stable-identity recomputation (§11.1); manifest-file checksum
+    # (§11.3). It NEVER trusts a claimed prevalidated Checkpoint B input: it re-evaluates
+    # every applicable aggregate rule in its authoritative order. created_utc and
+    # repository_commit are INERT supplied values: Checkpoint A validates only their
+    # scalar grammar (§8.8); Checkpoint B owns any live acquisition or semantic
+    # validation. No filesystem, authorization-bootstrap, clock, Git, or live-source
+    # access. Supplied entries are already ordered by _order_population_entries.
+    PRIV  raises(schema_error/duplicate_identity/language_crossover/
+      source_identity_mismatch/manifest_mismatch/ordering_error)   B: _census_population_core
+      (prepares entries + passes a separately approved CallhomeSourceApproval; the builder,
+      not the census core, is the acceptance authority — it never returns a partial manifest)
+```
+
+**Not part of the Checkpoint A API (Checkpoint B only — do NOT implement in A):**
+
+```text
+census_approved_callhome_population(), verify_frozen_callhome_population() (nullary, §8.1);
+_census_population_core (§8.3); _grant_capability, _require_valid (§8.2);
+_bootstrap_repository_root (§8.6); the six-state publisher (§15); the verification
+inspector (§11.4/§16.8); filesystem traversal; Path resolution; environment / Git /
+clock lookup; archive access; and the CLI (§8.4). Checkpoint A adds NO API for
+filesystem traversal, Path resolution, environment lookup, Git lookup, clock lookup,
+authorization bootstrap, archive access, publication, live verification, cancellation,
+or the CLI.
+```
+
+**Direct imports.** Tests and future consumers import Checkpoint A names **directly**
+from `cslm.data.callhome_population` (e.g. `from cslm.data.callhome_population import
+CallhomePopulationManifest, CallhomePopulationError`). **No `__init__.py` re-export is
+required or added**; `src/cslm/data/__init__.py` is out of scope for both this
+docs-only gate and Checkpoint A (§1.3). Private underscore helpers are imported from
+the same module by Checkpoint A tests where a pure-function test needs one; the
+underscore is a convention, not an export barrier (§8.2, §17.3), and no underscore
+helper accepts a `Path` or exposes a path-accepting public surface (§6.1).
+
+**Type-syntax constraint resolution — RULE A (chosen).** The preflight noted that
+Checkpoint A restricts imports to `{hashlib, json, unicodedata, dataclasses}` (§6),
+which could conflict with exact type signatures. This is resolved by **Rule A**: the
+four-module import set is **preserved unchanged**, and every signature above is
+expressed using **built-in Python 3.11+ typing only**:
+
+```text
+- built-in generics: tuple[...], dict[...], list[...]   (never typing.Tuple/Dict/List);
+- built-in unions: X | Y, X | None                       (never typing.Optional/Union);
+- built-in scalar/collection types and the module's own dataclass types;
+- object for heterogeneous canonical-mapping values (dict[str, object]).
+```
+
+No signature requires `typing`, `collections.abc`, `re`, `datetime`, or any module
+outside the four. The one operation that could tempt an extra import —
+**real-calendar validation** of the fixed `YYYY-MM-DDTHH:MM:SSZ` timestamp grammar
+(§8.8, "validated as an actual date-time") — is performed with **pure integer
+range + leap-year arithmetic** over the parsed digit fields; it uses neither
+`datetime` nor `re`. The §6 / §6.1 import-guard test
+(`imports ⊆ {hashlib, json, unicodedata, dataclasses}`) therefore remains exactly as
+already specified, with **no** added standard-library module. **Rule B** (expanding
+the authorized import list) is explicitly **not** taken; there is no residual conflict
+between the exact signatures and the authorized import set.
+
+### 8.10 Checkpoint A defined type and record inventory (CHPA-P2-01)
+
+Every dataclass and error type **defined in Checkpoint A** (`callhome_population.py`),
+with definition ownership, Checkpoint A construction/use scope, any future Checkpoint B
+use, persisted-vs-inert status, and privacy classification. "Persisted" means the type
+(or a record embedding it) is written to a fixed JSON file (§7/§16); "inert" means
+Checkpoint A defines the value type but Checkpoint A does not persist it.
+
+```text
+CallhomeSourceMember
+  A: defines + constructs from supplied values    B: builds from live inventory
+  persisted (nested in candidate/approval)        privacy LOC
+CallhomeExtractionProcedure
+  A: defines + constructs                         B: builds from live observation
+  persisted (nested in each snapshot)             privacy PUB labels
+CallhomeSourceSnapshot
+  A: defines + constructs; identity() derivation  B: builds from live observation
+  persisted (nested in candidate/approval)        privacy mixed (PUB labels + LOC archive/members)
+CallhomeSourceSnapshotId
+  A: defines; DERIVED via CallhomeSourceSnapshot.identity()   B: binding comparison
+  persisted (nested in manifest)                  privacy mixed (PUB provider/language + LOC archive_sha256)
+CallhomeCandidateSourceSnapshotRecord
+  A: defines + strict-loads                       B: observation gate writes it (out of module)
+  persisted (candidate_source_snapshot.json)      privacy LOC
+CallhomeSourceApproval
+  A: defines + strict-loads + checksums           B: _grant_capability loads/authenticates
+  persisted (source_approval.json; checksum-bound)  privacy LOC
+CallhomeCensusAuthorizationRecord
+  A: defines + strict-loads + checksums           B: _grant_capability loads/authenticates
+  persisted (census_authorization.json; checksum-bound)  privacy LOC
+CallhomePopulationEntry
+  A: defines + constructs                         B: builds from live enumeration
+  persisted (nested in manifest)                  privacy LOC
+CallhomePopulationCounts
+  A: defines + derives/reconciles                 B: reconciles at re-verification
+  persisted (nested in manifest/summary)          privacy aggregate (G3-eligible / LOC per §19)
+CallhomePopulationManifest
+  A: defines + constructs + strict-loads          B: builds live, publishes, verifies
+  persisted (callhome_population_manifest.json; immutable)  privacy LOC
+CallhomePopulationVerification
+  A: DEFINES the inert frozen value type + redacted representation only (§16.10);
+     A does NOT construct live results and exposes NO inspector
+  B: verification inspector CONSTRUCTS it during live re-verification
+  INERT / NOT persisted (in-memory result, local-only)
+  privacy content-free; population_identity_sha256 is a privacy-safe local-only
+    aggregate (§18.2/§19) — NOT a persisted manifest record
+CallhomePopulationCensusSummary
+  A: defines + constructs IN MEMORY (build_population_census_summary) + strict-loads
+  B: publication deferred / governance-gated (§19)
+  persisted (callhome_population_census_summary.json; LOCAL until G3)  privacy aggregate
+CallhomePopulationError
+  A: defines; raised across all failure surfaces (§18)   B: raised at B boundaries
+  NOT persisted (exception type)                  privacy content-free (category only, §18.1/§18.7)
+```
+
 ---
 
 ## 9. Deterministic enumeration algorithm (incl. base purity)
@@ -1035,45 +1543,69 @@ verbatim.
     unexpected_entry (never skipped). Empty language population -> empty_population.
  6. For each accepted member: read bytes once; compute size + SHA-256; derive exact
     POSIX relative_path (§12) and conversation_id (§10.5).
- 7. Collision detection (§13) -> duplicate_identity on any collision.
- 8. Language attribution / crossover check -> language_crossover.
- 9. Source-identity match against the approved frozen inventory (§10.3)
-    -> source_identity_mismatch on any missing/extra/modified/substituted member.
-10. Ordering (§4.3); assign ordinals; assert total & reproducible -> ordering_error.
-11. Derive counts from entries and reconcile (§11.6); compute
-    population_identity_sha256 (§11.1); assemble manifest with run metadata;
-    compute manifest_file_sha256 (§11.3).
-12. Publish via the six-state no-overwrite machine (§15); refuse if the frozen
-    manifest exists (frozen_output_exists).
-13. Return the verified manifest.
+ 7. Construct candidate CallhomePopulationEntry values (§8.9 direct constructors:
+    intrinsic/local only) and order them deterministically via _order_population_entries
+    (§4.3). This step PREPARES inputs; it does not accept an aggregate.
+ 8. Call _build_population_manifest(source_approval=<accepted approval>,
+    entries=<ordered candidate entries>, created_utc=<injected>,
+    repository_commit=<injected>, source_approval_sha256=<bound>,
+    census_authorization_sha256=<bound>). The BUILDER is the authoritative
+    aggregate-acceptance boundary (§8.9, §16.9): from source_approval it derives the
+    approved English/Spanish inventories and both snapshot IDs, then INDEPENDENTLY
+    re-evaluates, in the exact §16.9 Phase-2 applicable order:
+      (1)  intrinsic/local validity of the supplied typed values (schema_error);
+      (2)  source-approval contract-version and checksum binding (source_identity_mismatch);
+      (3)  derived snapshot-ID and source/manifest binding (source_identity_mismatch);
+      (4)  snapshot n_members reconciliation (manifest_mismatch);
+      (5)  population ordering and ordinal validation (§4.3 -> ordering_error);
+      (6)  collision validation, preserving the §13.4 internal collision order
+           (-> duplicate_identity);
+      (7)  language-crossover detection (§13.5 -> language_crossover);
+      (8)  ordinary approved-inventory membership comparison (§10.3 -> source_identity_mismatch);
+      (9)  population-count derivation and reconciliation (§11.6 -> manifest_mismatch);
+      (10) stable population-identity recomputation (§11.1 -> manifest_mismatch);
+      (11) manifest-file checksum recomputation (§11.3 -> manifest_mismatch);
+      (12) final accepted-manifest construction/return.
+    The earliest applicable stage wins; §16.9 is the SOLE authoritative precedence
+    contract and §9.1 defines no competing order. The census core does NOT independently
+    establish ordering, collision, crossover, inventory, count, identity, or file-integrity
+    acceptance. A builder raise aborts the census with that exact fixed category; no
+    partial manifest is produced.
+ 9. Publish the builder-returned accepted manifest via the six-state no-overwrite machine
+    (§15); refuse if the frozen manifest exists (frozen_output_exists).
+10. Return only the builder-returned, published manifest.
 ```
 
 Every abort yields no partial manifest object; publication failures follow §15.3.
 
-**Failure precedence (normative).** When more than one anomaly is present, the census
-fails in this exact order — the earlier stage's category wins:
+**Failure precedence (normative — delegated to the builder).** The census core does
+**not** define its own aggregate failure order; it surfaces exactly the fixed category
+`_build_population_manifest` raises, and the **sole authoritative** aggregate failure
+precedence is the builder's §16.9 Phase-2 order (ordering/ordinals **before**
+collisions, crossover, and inventory):
 
 ```text
-1. duplicate/collision checks over the observed population (§13.4)
-2. language crossover (§13.5)
-3. ordinary approved-inventory mismatch (§10.3)
-4. deterministic ordering and ordinal assignment (§4.3)
+population ordering / ordinals (§4.3)                -> ordering_error
+    before collisions (§13.4)                        -> duplicate_identity
+    before language crossover (§13.5)                -> language_crossover
+    before ordinary approved-inventory mismatch (§10.3) -> source_identity_mismatch
+    before population counts (§11.6)                 -> manifest_mismatch
+    before stable population identity (§11.1)        -> manifest_mismatch
+    before manifest-file checksum (§11.3)            -> manifest_mismatch
 ```
 
-If more than one collision class applies at stage 1, the census fails with the first
-class in this exact internal precedence (§13.4):
+The earliest applicable stage wins. If more than one collision class applies, the builder
+fails with the first class in the exact §13.4 internal precedence (byte content →
+conversation identity → NFC → NFD → case-fold). A duplicated or crossed member is reported
+as the collision or crossover it is, never misreported as a bare inventory mismatch. §9.1
+defines **no** separate order — §16.9 is the single precedence contract.
 
-```text
-duplicate byte content
-duplicate conversation identity
-Unicode NFC collision
-Unicode NFD collision
-case-fold collision
-```
-
-The comparison of collision classes and crossover to inventory (stages 1–2 before
-stage 3) is deliberate: a duplicated or crossed member is reported as the collision
-or crossover it is, not misreported as a bare inventory mismatch.
+The census core **may** precompute per-language inventory lookup structures for
+efficiency **only if**: the builder remains the normative acceptance authority; the
+builder independently re-evaluates each check; the precomputation cannot alter any fixed
+category or its precedence; and the only supported output is the builder-returned
+manifest. Prefer one authoritative evaluation (the builder) over duplicate normative
+validation in the census core.
 
 ### 9.2 Base-directory purity (three levels)
 
@@ -1161,6 +1693,15 @@ Compare enumerated `(relative_path, size_bytes, sha256)` triples to the approved
 `substituted` — each `source_identity_mismatch`. Provider and distribution_format
 must equal the single approved values.
 
+**Ownership (CHPA-R3-01).** This ordinary approved-inventory membership comparison is an
+AGGREGATE / CROSS-RECORD acceptance check owned by `_build_population_manifest`
+(§16.9 stage 19), which derives the approved inventories from
+`source_approval.english.members` / `source_approval.spanish.members`. The Checkpoint B
+census core prepares candidate entries and delegates to the builder (§9.1); it does not
+independently accept membership. It is evaluated only at a boundary that actually
+receives the approved source record (crossover §13.5 is the adjacent stage 18); a
+persisted-manifest-only strict loader without that context skips it (§16.9).
+
 ### 10.5 Derived conversation identity (exact)
 
 Because membership is non-recursive and requires an exact lowercase `.cha` suffix:
@@ -1221,8 +1762,11 @@ not "." or ".."; contains no "/"; contains no "\"; contains no NUL;
 no drive letter or absolute-path syntax; no parent-traversal component.
 ```
 
-The persisted filename is a **basename, never a path**. Any violation →
-`source_identity_mismatch` (approval-bound records) or `schema_error` (candidate).
+The persisted filename is a **basename, never a path**. Any violation of these
+basename/field-grammar rules is an **intrinsic/local field defect** → `schema_error`
+(for both `source_approval.json` and `candidate_source_snapshot.json`; §8.8, §16.7).
+This is a field-grammar check, **not** a source-identity comparison, so it does **not**
+produce `source_identity_mismatch`.
 
 **Archive-directory purity** — after authorization, before archive hashing:
 
@@ -1245,8 +1789,9 @@ No approval, authorization, manifest, summary, or temporary census output may sh
 the archive subdirectory. The archive path is constructed **only** as
 `fixed_archive_directory / validated_basename`, then re-checked by `lstat` without
 following links; caller-supplied or record-supplied directories are never used.
-Failures use `archive_verification_error` (directory/identity/digest) or
-`source_identity_mismatch`/`schema_error` (basename), all content-free.
+Failures use `archive_verification_error` (archive-directory purity / filesystem identity
+/ digest — a live Checkpoint B comparison) or `schema_error` (intrinsic archive_filename
+basename/field-grammar defect at loading), all content-free.
 
 Closure tests: absolute path / `../` traversal / nested path / forward- or
 backslash / `"."` / `".."` / NUL rejected; symlink or special archive rejected;
@@ -1410,8 +1955,9 @@ Any mismatch between persisted counts and recomputed counts fails closed with
 `manifest_mismatch` **before the manifest is accepted**, even if
 `population_identity_sha256` and `manifest_file_sha256` were recomputed
 consistently around the tampered counts (reconciliation is independent of the
-checksums). Reconciliation runs at initial construction, persisted-record loading,
-and re-verification.
+checksums). Reconciliation is an AGGREGATE / CROSS-RECORD check (§16.7, CHPA-R3-01) and
+runs at the named builder (`_build_population_manifest`), persisted-record strict
+loading, and live re-verification — never in a direct dataclass `__post_init__`.
 
 Required tampering tests (each must fail even when both checksums were recomputed
 over the altered record): `n_english_files`, `n_spanish_files`, `n_total_files`,
@@ -1438,12 +1984,14 @@ Count reconciliation (§11.6) is an **independent** check that runs at **every**
 the counts are handled:
 
 ```text
-- manifest construction        (Checkpoint A: pure, over supplied entries)
-- manifest loading             (Checkpoint A: strict-load validation)
-- summary construction         (Checkpoint A: in-memory aggregate summary, §19)
+- _build_population_manifest   (Checkpoint A named builder: pure, over supplied entries)
+- _load_population_manifest    (Checkpoint A strict loader: Phase-2 aggregate acceptance)
+- build_population_census_summary (Checkpoint A named builder: in-memory aggregate summary, §19)
 - live re-verification         (Checkpoint B: verify_frozen_callhome_population, §11.4)
 ```
 
+Count reconciliation is an AGGREGATE / CROSS-RECORD check (§16.7, CHPA-R3-01): it is
+owned by these named builders / loaders, never by a direct dataclass constructor.
 Reconciliation is independent of the four checksums. Therefore **recomputing
 `population_identity_sha256` and `manifest_file_sha256` around tampered counts does
 NOT make the manifest acceptable**: the recomputed-checksum count-tampering tests
@@ -1591,9 +2139,13 @@ precedence (also §4.4, §9.1):
 
 ### 13.5 Exact language-crossover definition
 
-Crossover is evaluated **after** the §13.4 collision checks and **before** ordinary
-inventory mismatch (§9.1). For each observed entry under expected language `L`,
-define its exact **member key**:
+Crossover is owned by `_build_population_manifest` (§16.9 stage 18, CHPA-R3-01), which
+derives the approved inventories from `source_approval.english.members` /
+`source_approval.spanish.members`. It is evaluated **after** the §13.4 collision checks
+(stage 17) and **before** ordinary approved-inventory membership mismatch (§10.3,
+stage 19). A persisted-manifest-only strict loader without the approved source record
+cannot evaluate crossover and skips it (§16.9). For each observed entry under expected
+language `L`, define its exact **member key**:
 
 ```text
 member_key = (relative_path, size_bytes, sha256)
@@ -1662,12 +2214,23 @@ manifest_file_sha256        : SHA-256 over the canonical serialization of the
 These checksums are recomputed at two distinct boundaries with **different outcome
 semantics** (CHC-P2-08; agrees with §11.4, §16.4, §16.7, §16.8, §18.2, §20.2):
 
-**Strict acceptance loading (§16.4).** The strict manifest loader recomputes and
-**requires equality** for all required manifest checksums, stable identities, counts,
-and record invariants. A mismatch at this acceptance boundary **raises** the
-appropriate fixed content-free error (`manifest_mismatch` / `source_identity_mismatch`
-/ `authorization_error` / `serialization_error` / `schema_error` as appropriate) and
-**returns no accepted manifest**.
+**Strict acceptance loading (§16.4).** The strict manifest loader
+(`_load_population_manifest`, §8.9) recomputes and **requires equality** for the manifest
+checksum, stable identity, counts, and self-contained record invariants it can evaluate
+from supplied canonical bytes. A mismatch at this acceptance boundary **raises** the fixed
+content-free category assigned to that specific self-contained predicate by §8.9 / §16.9
+— for the manifest loader, `manifest_mismatch` (snapshot `n_members` reconciliation, count
+reconciliation, stable-identity recomputation, manifest-file checksum recomputation),
+`duplicate_identity` (collision), `ordering_error` (ordering/ordinals), `schema_error`
+(intrinsic), or `serialization_error` (canonicality) — and **returns no accepted
+manifest**. Context-free loading does **not** authenticate source approval or
+authorization: the manifest loader raises **no** `source_identity_mismatch` (from
+approval-to-manifest binding or ordinary approved-inventory mismatch) and **no**
+`authorization_error`. Those contextual categories belong only to boundaries that receive
+and authenticate the required context (`_build_population_manifest` with a supplied
+`source_approval`; the Checkpoint B `_grant_capability` boundary; the live verification
+inspector, §11.4/§16.8). Each strict loader follows its exact §8.9 per-loader inventory;
+there is no collective "all loaders raise the full set" rule.
 
 **Live Checkpoint B verification (§11.4, §16.8).** Authorization validity and
 structural validity are **prerequisites**. Authorization, bootstrap, malformed-record,
@@ -1712,16 +2275,28 @@ ensure_ascii=False
 exactly one final LF ("\n")
 ```
 
-**Strict loading** performs, in order:
+**Strict loading is two-phase** (§16.9, CHPA-R2-03): it validates and canonicalizes over
+the RAW parsed mapping **before** it constructs any invariant-enforcing typed record, so
+a later-stage category can never preempt a serialization/canonicality failure.
 
 ```text
-1. parse and validate (types, predicates §8.8, enums, schema/version, duplicate-key
-   rejection, BOM/NaN/Infinity/lone-surrogate rejection);
-2. construct the exact typed record (JSON arrays → immutable tuples only after
-   validation);
-3. reserialize canonically (§14.1);
-4. require BYTE-FOR-BYTE equality with the persisted input.
+Phase 1 — structural raw-mapping acceptance (NO typed records constructed):
+  1. validate input type; reject BOM; decode strict UTF-8; parse JSON with duplicate-key
+     and NaN/Infinity/lone-surrogate rejection; require a top-level object; validate the
+     exact nested field sets and the primitive container/scalar grammar (§8.8) over the
+     RAW mapping, using raw-mapping validators;
+  2. reconstruct canonical bytes DIRECTLY from the validated RAW mapping (§14.1);
+  3. require BYTE-FOR-BYTE equality with the persisted input.
+Phase 2 — ordered semantic construction (only after Phase 1 succeeds):
+  4. construct the exact typed records via the §8.9 `_mapping_to_<record>` converters
+     (JSON arrays → immutable tuples), each constructor enforcing only its
+     intrinsic/local invariants, then the ordered aggregate / binding / reconciliation /
+     ordering / collision / crossover / identity / checksum checks (§16.9 Phase 2).
 ```
+
+No invariant-enforcing typed record is constructed before the Phase-1 canonical byte
+comparison, so a Phase-2 category can never preempt a Phase-1 `serialization_error` /
+`schema_error` (§16.9).
 
 Noncanonical persisted input (unsorted keys, wrong separators, BOM, trailing bytes,
 missing/extra final LF, noncanonical member order §10.8) is **rejected**
@@ -1729,8 +2304,10 @@ missing/extra final LF, noncanonical member order §10.8) is **rejected**
 binds the canonical form) — **never silently repaired**.
 
 **Explicit mapping functions.** Every record and every nested value has an explicit
-mapping function (record → canonical mapping, and mapping → validated record). The
-mapping is the canonical identity/checksum surface. Normatively:
+**typed bidirectional** converter pair; the single authoritative, exactly-named
+converter inventory is the one pinned in **§8.9** (CHPA-R2-01) — this section defines
+**no second converter rule** and points to §8.9 for names and types. The mapping is the
+canonical identity/checksum surface. Normatively:
 
 ```text
 dataclasses.asdict is NEVER the canonical identity or checksum contract.
@@ -1876,14 +2453,27 @@ wrong type             → reject (schema_error)
 invalid enum value     → reject (schema_error)
 unsupported schema id  → reject (schema_error)
 unsupported schema_version → reject (schema_error)
-invalid checksum       → reject (source_identity_mismatch / manifest_mismatch /
-                         authorization_error as appropriate)
-non-canonical bytes where a checksum binds the canonical form (source_approval.json,
-  census_authorization.json, the manifest) → reject (serialization_error /
-  manifest_mismatch)
+non-canonical persisted bytes → reject (serialization_error at the Phase-1 canonical
+                         comparison, §16.9 stage 11; the manifest loader never reaches a
+                         checksum stage for noncanonical input)
 ```
 
-Manifest loading additionally runs the §11.6 counts reconciliation.
+**Per-loader categories, not a collective set (P2-03).** Beyond the shared schema_error /
+serialization_error rules above, each loader raises **only** the categories in its exact
+§8.9 per-loader inventory, realizable from the stages its API context can evaluate
+(§16.9). A self-contained checksum/reconciliation mismatch in the manifest loader is
+`manifest_mismatch` (snapshot `n_members`, count reconciliation, stable identity, and
+manifest-file checksum — the §11.6/§11.1/§11.3 self-contained predicates); collision is
+`duplicate_identity`; ordering is `ordering_error`. **Context-free loaders do not
+authenticate source approval or authorization**, so they raise **no**
+`source_identity_mismatch` from approval binding or approved-inventory mismatch and **no**
+`authorization_error`; those contextual categories arise only at boundaries that receive
+and authenticate that context (`_build_population_manifest`, `_grant_capability`, the live
+verification inspector). Skipping an unevaluable contextual stage is not approval,
+authorization, source matching, or live verification (§16.7, §16.9).
+
+Manifest loading additionally runs the §11.6 counts reconciliation (a self-contained
+`manifest_mismatch` predicate).
 
 ### 16.1 `candidate_source_snapshot.json` (gate 8; LOCAL ONLY)
 
@@ -1945,12 +2535,96 @@ the checksum inputs, and the schema tables in this section are identical.
 
 ### 16.7 Record-level invariants (normative)
 
-Enforced at **every applicable construction and strict-load boundary** (in addition
-to the per-field predicates of §8.8). A violation fails closed (`schema_error` unless
-a stricter category applies). Records/checks over supplied values are Checkpoint A;
-the verification record is Checkpoint B.
+**Validation-ownership rule (CHPA-R3-01, authoritative — applied consistently in §8.9,
+§14.3, §16.9, §20.1).** Record validation is owned by three distinct layers, and only
+the third establishes aggregate acceptance:
 
-**Source snapshots** (`CallhomeSourceSnapshot`, both English and Spanish):
+```text
+Direct Checkpoint A dataclass constructors (__init__ / __post_init__):
+  - enforce exact field types; scalar grammar; the fixed schema, version, namespace,
+    provider, language, and policy constants that belong to the individual record;
+  - enforce local relationships among fields contained entirely within that record
+    where the check needs NO population-wide ordering, comparison, reconciliation,
+    recomputation, or approved external context (e.g. a summary's own local arithmetic;
+    a snapshot's own members-array canonical order §10.8; n_members == len(members));
+  - convert JSON arrays to immutable tuples where applicable;
+  - NEVER establish aggregate persisted-record acceptance merely because construction
+    succeeds.
+
+Private _mapping_to_<record> converters:
+  - validate exact mapping field sets and primitive/container types;
+  - invoke the corresponding direct constructor;
+  - enforce ONLY the same intrinsic scalar and local-field contract as that constructor;
+  - NEVER enforce aggregate or cross-record acceptance rules; NEVER bypass or weaken
+    constructor validation.
+
+Named ordered builders and strict loaders (_build_population_manifest,
+build_population_census_summary, _load_<record>, §8.9):
+  - EXCLUSIVELY own aggregate and cross-record acceptance;
+  - enforce source-approval / snapshot binding; snapshot n_members reconciliation;
+    population ordering and ordinals; global and language-scoped collision rules;
+    language crossover; approved-inventory membership where applicable; derive and
+    reconcile population counts; recompute and validate stable population identity;
+    recompute and validate manifest-file checksum;
+  - return a fully accepted aggregate OR raise; NEVER return a partially accepted aggregate.
+```
+
+**Successful direct construction proves only intrinsic and local validity.** Successful
+direct construction of `CallhomePopulationManifest`, `CallhomePopulationCensusSummary`,
+or any other record proves ONLY its intrinsic and local validity. It does **not** prove
+aggregate acceptance, persisted-file acceptance, authorization, source approval,
+population reconciliation, canonical persistence, or live verification. An aggregate is
+accepted through the supported module boundary **only** when it is returned by the
+appropriate named builder or strict loader. There is **no** undocumented constructor
+bypass, **no** factory-only hidden mode, and **no** validation-disable flag.
+
+**Boundary terminology for the invariants below.** Each invariant is one of:
+
+```text
+INTRINSIC / LOCAL          — enforced by direct constructors and _mapping_to_<record>
+                             converters; a violation is schema_error (unless §18.7 applies).
+AGGREGATE / CROSS-RECORD   — enforced ONLY by the named ordered builder or strict loader;
+                             NEVER assigned to a direct dataclass __post_init__; evaluated
+                             during Phase 2 in the exact §16.9 order. Exactly these:
+    approval-to-manifest snapshot binding; snapshot n_members versus language-specific
+    entries; English-before-Spanish ordering; within-language bytewise ordering; ordinal
+    sequence; global duplicate SHA-256; conversation-ID collision; NFC / NFD / case-fold
+    collisions; language crossover; approved-inventory comparison; counts derived from
+    entries; population-identity recomputation; manifest-file checksum recomputation.
+```
+
+Each per-record group below is enforced at its applicable boundary: **intrinsic / local**
+items at direct construction and `_mapping_to_<record>` conversion; **aggregate /
+cross-record** items ONLY at the named builder or strict loader (§16.9 Phase 2). At the
+persisted-manifest strict loader the aggregate / cross-record invariants are the Phase-2
+checks (§16.9, CHPA-R2-03): they run only after Phase-1 raw-mapping structural validation
+and byte-for-byte canonical acceptance, so a Phase-1 serialization/canonicality failure
+preempts them (§14.3, §16.9). The verification record is Checkpoint B.
+
+**Applicability of the aggregate boundaries (CHPA-R3-01).** "Named aggregate-acceptance
+boundaries exclusively own applicable checks" does **not** mean every strict loader
+performs every aggregate check: a boundary performs a check only where its API actually
+receives the required authenticated context. Concretely:
+
+```text
+_build_population_manifest — receives source_approval, so it OWNS language crossover
+    (§13.5) AND ordinary approved-inventory membership comparison (§10.3) for construction
+    from an approved source record, deriving the inventories from
+    source_approval.english.members / source_approval.spanish.members, in addition to the
+    self-contained checks.
+_load_population_manifest — owns the self-contained manifest acceptance checks but does
+    NOT fabricate an unavailable approved inventory; crossover and inventory membership
+    are not evaluable from manifest bytes alone and are skipped (§16.9). Skipping an
+    unevaluable contextual check is NOT acceptance of a real source population.
+Checkpoint B census core — PREPARES inputs and INVOKES _build_population_manifest; it is
+    NOT a separate unnamed aggregate-acceptance boundary (§9.1).
+```
+
+Direct constructors and `_mapping_to_<record>` converters remain intrinsic/local only and
+own **none** of these aggregate checks (approved-inventory comparison and language
+crossover included).
+
+**Source snapshots** — INTRINSIC / LOCAL (`CallhomeSourceSnapshot`, both English and Spanish):
 
 ```text
 each snapshot has at least one member (len(members) >= 1);
@@ -1960,7 +2634,7 @@ the identity view (CallhomeSourceSnapshotId) is DERIVED from the snapshot and is
   never accepted as an independent, contradictory description.
 ```
 
-**Candidate snapshot and source approval**
+**Candidate snapshot and source approval** — INTRINSIC / LOCAL
 (`CallhomeCandidateSourceSnapshotRecord`, `CallhomeSourceApproval`):
 
 ```text
@@ -1972,8 +2646,9 @@ the english and spanish records satisfy their assigned language and provider
   each snapshot provider == PROVIDER).
 ```
 
-**Source-approval contract version (CHC-P2-04).** At every `CallhomeSourceApproval`
-construction and strict-load boundary, require **exactly**:
+**Source-approval contract version (CHC-P2-04)** — INTRINSIC / LOCAL. At every
+`CallhomeSourceApproval` construction and `_mapping_to_source_approval` boundary,
+require **exactly**:
 
 ```text
 schema == SOURCE_APPROVAL_SCHEMA;
@@ -1986,15 +2661,64 @@ distribution_format == DISTRIBUTION_FORMAT;
 The existing English/Spanish source-snapshot language, provider, ordering (§10.8),
 member, extraction-policy (§8.8), and canonicalization (§14.3) requirements are
 retained unchanged. A source approval carrying **any other** `contract_version` is
-**rejected** with the established fixed content-free `schema_error` (or
-`source_identity_mismatch` where a checksum binds the mismatch) category — there is
-**no** silent upgrading, **no** fallback to another contract version, **no**
+**rejected** at direct construction / conversion with the established fixed content-free
+`schema_error` (INTRINSIC / LOCAL: `contract_version == POPULATION_CONTRACT_VERSION` is a
+local scalar-constant check). The `source_identity_mismatch` variant arises **only** at
+the pure aggregate builder `_build_population_manifest`, which is supplied both the
+`source_approval` value and the `source_approval_sha256` parameter and performs the
+supplied-approval checksum, contract-version, source, and approved-inventory binding
+checks assigned to it by §8.9 and §16.9; it does **not** arise at direct dataclass
+construction, it is **not** raised by `_load_source_approval`, and it is **not** raised
+by `_grant_capability` (see the boundary split below).
+There is **no** silent upgrading, **no** fallback to another contract version, **no**
 normalization of the value, and **no** caller-selected contract version. Because
 `source_approval_sha256` is computed over the **complete** canonical source-approval
 mapping (§14.2), the exact approved `contract_version` string is included in that
 mapping and any change to it changes `source_approval_sha256`.
 
-**Census authorization** (`CallhomeCensusAuthorizationRecord`):
+**Boundary-specific ownership of approval-related categories (P2-03-R1-R2, authoritative).**
+The word "approval" appears in several distinct operations; they are separate boundaries
+with distinct, **non-substitutable** error categories. No boundary emits another's
+category, and there is no shared "approval-loading" category:
+
+```text
+_load_source_approval (context-free strict record loader, §8.9):
+  - validates ONLY the intrinsic/local content of a supplied CallhomeSourceApproval
+    mapping (structure, field types, fixed constants, archive_filename basename/grammar,
+    canonical serialization);
+  - receives NO expected checksum, NO authorization record, NO authenticated capability,
+    NO population manifest, and NO live source state, so it performs NO expected-checksum
+    comparison and NO authenticated source binding;
+  - raises ONLY schema_error or serialization_error;
+  - NEVER raises source_identity_mismatch and NEVER raises authorization_error.
+
+_build_population_manifest (pure Checkpoint A aggregate-acceptance builder, §8.9/§16.9):
+  - is SUPPLIED source_approval and source_approval_sha256 (plus candidate entries and
+    explicit metadata/checksums);
+  - performs the pure supplied-approval checksum, contract-version, derived-source, and
+    approved-inventory binding checks;
+  - raises source_identity_mismatch where assigned by §8.9 and the §16.9 order (in
+    addition to language_crossover, manifest_mismatch, duplicate_identity, ordering_error,
+    schema_error as already assigned);
+  - NEVER raises authorization_error.
+
+_grant_capability (Checkpoint B authorization/authentication/trusted-bootstrap and
+capability-binding boundary, §17.1):
+  - authenticates the census-authorization record and its own source_approval_sha256
+    against the frozen approval, checks versions, trusted-bootstrap and capability-issuance
+    conditions;
+  - EVERY failure raises authorization_error (content-free) under §17.1;
+  - NEVER raises source_identity_mismatch.
+```
+
+`source_approval_sha256` is checked at two different boundaries with two different
+categories: the pure builder verifies the **supplied** `source_approval_sha256` against
+`_source_approval_sha256(source_approval)` → `source_identity_mismatch`; `_grant_capability`
+authenticates the **authorization record's** `source_approval_sha256` against the frozen
+approval at Checkpoint B → `authorization_error`. These are distinct operations and are
+never assigned to a shared owner.
+
+**Census authorization** — INTRINSIC / LOCAL (`CallhomeCensusAuthorizationRecord`):
 
 ```text
 schema and schema_version equal their fixed constants (§8.7);
@@ -2004,7 +2728,15 @@ approved_operation is exactly one supported value ("census" | "verify");
 source_approval_sha256 satisfies the exact SHA-256 grammar (§8.8).
 ```
 
-**Population manifest** (`CallhomePopulationManifest`):
+(The authorization record's `source_approval_sha256` binding to the actual frozen
+approval is AGGREGATE / CROSS-RECORD and is owned by `_grant_capability` — Checkpoint B —
+not by this direct constructor. Every failure at that authorization/authentication
+boundary is `authorization_error` under §17.1.)
+
+**Population manifest** (`CallhomePopulationManifest`). This record's invariants split
+across the two ownership layers:
+
+*INTRINSIC / LOCAL* (direct constructor + `_mapping_to_population_manifest`; `schema_error`):
 
 ```text
 schema == POPULATION_MANIFEST_SCHEMA;
@@ -2016,16 +2748,31 @@ logical_roots == (ENGLISH_LOGICAL_ROOT, SPANISH_LOGICAL_ROOT);
 ordering_contract_id == ORDERING_CONTRACT_ID;
 tool_version == TOOL_VERSION;
 execution_status == EXECUTION_STATUS;
-entries are nonempty AND contain at least one English and at least one Spanish
-  entry;
-ordinals, ordering, collision checks, identities, and counts all reconcile
-  (§4.3, §11.1, §11.6, §13.4–§13.5).
+entries are nonempty AND contain at least one English and at least one Spanish entry
+  (a local existence check over the record's own entries tuple).
 ```
+
+*AGGREGATE / CROSS-RECORD* (owned by `_build_population_manifest` or the strict manifest
+loader `_load_population_manifest` only for the checks each boundary can evaluate,
+§16.9 Phase 2 — **never** by the direct dataclass `__post_init__`):
+
+```text
+ordinals, ordering, collision checks, snapshot identities, and counts all reconcile
+(§4.3, §11.1, §11.6, §13.4–§13.5); stable population identity and manifest-file
+checksum are recomputed and validated (§11.1, §11.3). Supplied-approval binding is
+contextual and belongs to `_build_population_manifest`; `_load_population_manifest`
+does not receive an approval and cannot perform that binding.
+```
+
+Successful direct construction of a `CallhomePopulationManifest` value proves the
+intrinsic / local group ONLY; aggregate acceptance is established solely by the builder
+or strict loader returning the record.
 
 **Manifest snapshot-ID predicates and reconciliation (CHC-P2-05).** The persisted
 snapshot identities are **self-contained and exact**.
 
-*Intrinsic scalar/namespace predicates* — for `english_snapshot_id`:
+*Intrinsic scalar/namespace predicates* — INTRINSIC / LOCAL (direct constructor +
+`_mapping_to_source_snapshot_id`; `schema_error`) — for `english_snapshot_id`:
 
 ```text
 provider == PROVIDER;
@@ -2038,8 +2785,10 @@ n_members is type int (not bool) and > 0.
 
 for `spanish_snapshot_id`: the same, except `language == "spa"`.
 
-*Entry-count reconciliation* (at manifest construction AND strict loading;
-**independent** of the general `counts` fields — both are required):
+*Entry-count reconciliation* — AGGREGATE / CROSS-RECORD (owned by
+`_build_population_manifest` and the strict manifest loader, **not** the direct
+dataclass constructor; **independent** of the general `counts` fields — both are
+required):
 
 ```text
 english_snapshot_id.n_members == count(entries where language == "eng");
@@ -2049,27 +2798,37 @@ counts.n_spanish_files      == count(entries where language == "spa").
 ```
 
 If either snapshot identity disagrees with the manifest entries, the manifest is
-rejected — independently of the `counts`-field reconciliation (§11.6).
+rejected at the builder / strict loader — independently of the `counts`-field
+reconciliation (§11.6).
 
-*Binding to the approved source snapshots* — at the Checkpoint B boundary where a
-manifest is constructed from an accepted `source_approval`:
+*Binding to the approved source snapshots (CHPA-R2-02)* — the pure builder
+`_build_population_manifest` (§8.9) is **supplied** the approved `CallhomeSourceApproval`
+as a value and **derives** the manifest snapshot IDs internally:
 
 ```text
-english_snapshot_id == source_approval.english.identity();
-spanish_snapshot_id == source_approval.spanish.identity().
+english_snapshot_id = source_approval.english.identity();
+spanish_snapshot_id = source_approval.spanish.identity();
+require source_approval.contract_version == POPULATION_CONTRACT_VERSION;
+require source_approval_sha256 == _source_approval_sha256(source_approval).
 ```
 
-The identity views are **derived** from the bound approved snapshots; they may not be
-independently supplied as contradictory values (manifest construction rejects
-snapshot IDs that differ from the supplied approved snapshot identities).
+The builder **never accepts caller-supplied English or Spanish snapshot IDs**: the IDs
+are derived, so there is no contradictory-ID case to compare or reject at construction.
+(A persisted manifest loaded later without the approval object is checked by the
+intrinsic snapshot-ID predicates and `n_members` reconciliation above; the
+persisted-versus-approved binding is re-evaluated at live re-verification, below.)
 
 *Enforcement boundaries* (CHC-P2-05, with CHC-P2-07 outcome semantics):
 
 ```text
-- manifest construction (Checkpoint A) — ACCEPTANCE boundary: intrinsic predicates +
-  entry-count reconciliation over supplied entries; and, where the manifest is built
-  from a supplied approval, the exact identity()-equality binding. A failure RAISES
-  the fixed content-free source_identity_mismatch (never returns a record).
+- manifest construction (Checkpoint A, _build_population_manifest, §8.9) — ACCEPTANCE
+  boundary: it is SUPPLIED the approved source_approval, DERIVES both snapshot IDs via
+  identity() (accepting NO caller-supplied IDs), requires
+  source_approval.contract_version == POPULATION_CONTRACT_VERSION and
+  source_approval_sha256 == the canonical approval checksum, and reconciles derived
+  n_members + entry counts over the supplied entries. A derivation / binding / checksum /
+  contract-version failure RAISES the fixed content-free source_identity_mismatch (never
+  returns a record).
 - persisted-manifest strict loading (Checkpoint A, §16.4) — ACCEPTANCE boundary,
   where the full approval object is not necessarily supplied: intrinsic snapshot-ID
   predicates, language/provider correctness, n_members reconciliation with the
@@ -2085,22 +2844,38 @@ snapshot IDs that differ from the supplied approved snapshot identities).
   CallhomePopulationVerification (§16.7 verification block, CHC-P2-07).
 ```
 
-At the **acceptance** boundaries (construction and strict loading) a snapshot-ID
-mismatch fails closed with the established content-free `source_identity_mismatch` /
-`manifest_mismatch` category and returns no record; the differing values are never
-exposed. At **live re-verification**, the same authenticated snapshot-ID comparison
-is a returned Boolean (`population_identity_matches == False`, `ok == False`), never a
-raise — this is the CHC-P2-07 resolution of the prior raise-versus-return conflict.
+At the named builder, a supplied-approval contract/checksum/source binding failure
+raises `source_identity_mismatch`; at the context-free strict manifest loader, a
+self-contained snapshot-identity / `n_members` reconciliation failure raises
+`manifest_mismatch`. Neither acceptance boundary is a direct dataclass `__post_init__`,
+and neither returns or exposes a differing value. At **live re-verification**, the
+authenticated persisted-versus-approved snapshot-ID comparison is a returned Boolean
+(`population_identity_matches == False`, `ok == False`), never a raise — this is the
+CHC-P2-07 resolution of the prior raise-versus-return conflict.
 
-**Summary** (`CallhomePopulationCensusSummary`):
+**Summary** (`CallhomePopulationCensusSummary`). This record's invariants split across
+the two ownership layers:
+
+*INTRINSIC / LOCAL* (direct constructor + `_mapping_to_population_census_summary`;
+`schema_error`) — validates only the supplied fields:
 
 ```text
 schema == CENSUS_SUMMARY_SCHEMA;
 schema_version == CENSUS_SUMMARY_SCHEMA_VERSION;
 provider == PROVIDER;
-all summary counts and population_identity_sha256 are DERIVED FROM and RECONCILED
-  WITH the accepted manifest (§11.6);
-all_identity_checks_passed is exactly True.
+all_identity_checks_passed is exactly True;
+local summary arithmetic contained entirely in the record
+  (n_total_files == n_english_files + n_spanish_files;
+   total_bytes == english_total_bytes + spanish_total_bytes).
+```
+
+*AGGREGATE / CROSS-RECORD* (owned ONLY by the named builder
+`build_population_census_summary(manifest)`, §8.9 — **not** the direct dataclass
+constructor):
+
+```text
+all summary counts and population_identity_sha256 are DERIVED FROM and RECONCILED WITH
+  the accepted manifest (§11.6). A mismatch raises manifest_mismatch at the builder.
 ```
 
 **Verification record — Checkpoint B** (`CallhomePopulationVerification`,
@@ -2206,6 +2981,170 @@ Normative constraints:
 - Do not add the inspection implementation or its API in Checkpoint A.
 ```
 
+### 16.9 Strict acceptance loader stage order and failure precedence (CHPA-P2-02)
+
+The strict acceptance loader of §16.4
+(`_load_population_manifest(data: str | bytes) -> CallhomePopulationManifest`, §8.9)
+runs **one total, deterministic** pipeline in **two phases** (CHPA-R2-03): **Phase 1**
+performs all structural raw-mapping validation and the canonical byte comparison over
+the RAW parsed mapping, **before** any invariant-enforcing typed record is constructed;
+**Phase 2** performs ordered semantic construction and acceptance. It accepts one
+supplied in-memory `str` or `bytes` value and either **returns one fully accepted
+`CallhomePopulationManifest`** or **raises exactly one fixed content-free
+`CallhomePopulationError`** (§18) — it **never** returns a partial, repaired, or invalid
+record. Each stage has **one fixed error category**; on failure the loader raises that
+category and **no later stage runs**, so **no later category is observable**. When
+several defects coexist, the **earliest stage wins**: the reported category is that of
+the earliest failing stage, never a later one.
+
+| Phase | # | Stage | Fixed category on failure | Later stages reachable? |
+|---|---|---|---|---|
+| 1 | 1 | input-type validation (`str` or `bytes` only) | `schema_error` | no |
+| 1 | 2 | UTF-8 BOM rejection | `serialization_error` | no |
+| 1 | 3 | strict UTF-8 decoding (`bytes` → `str`) | `serialization_error` | no |
+| 1 | 4 | JSON parsing (well-formed JSON) | `schema_error` | no |
+| 1 | 5 | duplicate-key rejection (every object depth) | `schema_error` | no |
+| 1 | 6 | non-finite-number rejection (NaN, Infinity, -Infinity) | `schema_error` | no |
+| 1 | 7 | top-level-object requirement (not array/scalar) | `schema_error` | no |
+| 1 | 8 | exact nested field-set validation over the RAW mapping (no missing, no unknown, at every depth) | `schema_error` | no |
+| 1 | 9 | primitive container + scalar-grammar validation over the RAW mapping (bool-as-int reject; JSON string/number/bool types; array shapes; enums; schema/version; SHA-256 / timestamp / commit grammar §8.8) | `schema_error` | no |
+| 1 | 10 | canonical byte reconstruction from the validated RAW mapping (re-encode per §14.1) | `serialization_error` | no |
+| 1 | 11 | byte-for-byte canonicality comparison (reserialized raw mapping == input) | `serialization_error` | no |
+| 2 | 12 | typed value/record construction via the §8.9 `_mapping_to_<record>` converters and the direct dataclass constructors (JSON arrays → immutable tuples; they enforce ONLY intrinsic/local scalar invariants per §16.7/CHPA-R3-01 — NO aggregate category is emitted here; aggregate/cross-record categories belong to stages 14–22) | `schema_error` | no |
+| 2 | 13 | intrinsic record invariants (§16.7: fixed-constant fields; ≥1 eng and ≥1 spa entry; snapshot-ID scalar/namespace predicates; `n_members` type & > 0; canonical member ordering §10.8 where a members array exists) | `schema_error` | no |
+| 2 | 14 | source-snapshot / manifest binding invariants — **conditional**: only where an approved source identity is available (builder: derive IDs from the supplied `source_approval` + verify `source_approval_sha256`/contract version; verification: authenticated compare) | `source_identity_mismatch` | no |
+| 2 | 15 | source-snapshot `n_members` reconciliation (`english/spanish_snapshot_id.n_members` == per-language manifest-entry counts) | `manifest_mismatch` | no |
+| 2 | 16 | population ordering + ordinal validation (§4.3: total eng-then-spa order; ordinals 0..N-1 consecutive, no gaps/dups) | `ordering_error` | no |
+| 2 | 17 | collision validation (§13.4 internal precedence: byte → conversation → NFC → NFD → case-fold) | `duplicate_identity` | no |
+| 2 | 18 | language-crossover validation — **conditional**: where the approved source inventory is available (builder: derived from `source_approval.english/spanish.members`; §13.5) | `language_crossover` | no |
+| 2 | 19 | ordinary approved-inventory membership comparison — **conditional**: where the approved source inventory is available (each candidate key present in its own-language approved inventory; §10.3) | `source_identity_mismatch` | no |
+| 2 | 20 | population-count reconciliation (§11.6: all eight count fields == derived-from-entries) | `manifest_mismatch` | no |
+| 2 | 21 | stable population-identity recomputation (§11.1) == persisted `population_identity_sha256` | `manifest_mismatch` | no |
+| 2 | 22 | manifest-file checksum recomputation (§11.3) == persisted `manifest_file_sha256` | `manifest_mismatch` | no |
+| 2 | 23 | final acceptance (return the manifest) | — (returns) | — |
+
+**Precedence properties (all guaranteed by the two-phase order above):**
+
+```text
+- Phase-1 structural or canonicality failure ALWAYS wins before ANY Phase-2 category.
+  No invariant-enforcing typed record is constructed in Phase 1, so no Phase-2 category
+  (construction schema_error, source_identity_mismatch, manifest_mismatch,
+  ordering_error, duplicate_identity, language_crossover) can preempt a Phase-1
+  serialization_error / schema_error. In particular, a noncanonical persisted manifest
+  fails at stage 11 (serialization_error) and NEVER reaches any Phase-2 stage — it is
+  never reported as manifest_mismatch. This removes the §14.3 "serialization_error OR
+  manifest_mismatch, implementer's choice" ambiguity for the manifest, deterministically.
+- Malformed or noncanonical serialization (stages 2, 3, 10, 11 → serialization_error)
+  therefore always precedes every checksum-acceptance stage (20–22 → manifest_mismatch).
+- Within Phase 2 the exact order remains authoritative: global duplicate-byte collision
+  precedes conversation and path collisions, path collisions ordered NFC → NFD →
+  case-fold, ALL inside stage 17 in the §13.4 internal precedence (byte → conversation →
+  NFC → NFD → case-fold); collision (stage 17) precedes language-crossover (stage 18);
+  language-crossover (stage 18) precedes ordinary approved-inventory membership mismatch
+  (stage 19, §10.3, source_identity_mismatch). Stages 18 and 19 are **owned by
+  `_build_population_manifest`** (which derives the approved inventories from
+  `source_approval.english/spanish.members`) and by any acceptance boundary that actually
+  receives the approved source context — they are **not** a separate unnamed
+  Checkpoint B census-pipeline comparison outside the builder. The loader's stage 14 is
+  the distinct structural snapshot-ID BINDING invariant (same category). Ordering and
+  ordinal failure have the single fixed position stage 16; count reconciliation, stable
+  identity, and manifest-file checksum keep the fixed relative order 20 → 21 → 22.
+```
+
+**Coexisting defects — earliest stage wins.** When multiple defects are present, the
+loader raises the earliest failing stage's category and no later category is
+observable. Examples: a manifest that is both noncanonical (stage 11) and carries a
+wrong `manifest_file_sha256` (stage 22) raises `serialization_error` and never
+constructs a typed record or evaluates stage 22; a manifest that both collides
+(stage 17) and crosses over (stage 18) raises `duplicate_identity`; a member that both
+crosses over (stage 18) and would otherwise be an own-inventory mismatch (stage 19)
+raises `language_crossover`; a manifest whose counts are tampered (stage 20) and whose
+stable identity was recomputed around the tamper (stage 21) raises `manifest_mismatch`
+at stage 20. This holds for every combination.
+
+**Builder versus strict loader (CHPA-R2-02 / CHPA-R3-01).** `_build_population_manifest`
+(§8.9) **constructs** a manifest from a SUPPLIED `CallhomeSourceApproval` + supplied
+entries + inert run metadata: it derives both snapshot IDs **and the approved
+English/Spanish inventories** from the approval, and runs the Phase-2
+construction/acceptance checks (stages 12–23) over the values it is handed — including
+crossover (18) and ordinary approved-inventory membership (19), which it CAN and MUST
+perform because it holds the approved inventories. It performs no Phase-1 byte parsing
+because it receives typed inputs, not persisted JSON. `_load_population_manifest` (§16.4)
+**accepts** a persisted manifest `str`/`bytes`, running Phase 1 then Phase 2, but its API
+receives **no** approved source record, so it evaluates only the **self-contained**
+manifest checks and skips the contextual stages 14, 18, and 19 (below). Both are
+Checkpoint A pure and never return a partial or invalid record.
+
+**Conditional stages 14, 18, and 19.** These run only where the approved source
+identity / inventory is actually available to the boundary: `_build_population_manifest`
+is SUPPLIED the approval, DERIVES the snapshot IDs and the approved inventories, and
+therefore evaluates stage 14 (derivation + `source_approval_sha256`/contract-version
+binding → `source_identity_mismatch`), stage 18 (crossover → `language_crossover`), and
+stage 19 (ordinary own-inventory membership → `source_identity_mismatch`); a live
+verification path evaluates them against the authenticated approval. For a pure
+persisted-manifest-only load with **no** approved source context, stages 14, 18, and 19
+are **not evaluable** and are skipped; the intrinsic snapshot-ID predicates (stage 13,
+`schema_error`) and `n_members` reconciliation (stage 15, `manifest_mismatch`) still bind
+the persisted snapshot IDs to the manifest's own entries, and every self-contained check
+(collision 17, ordering 16, counts 20, identity 21, file checksum 22) still runs.
+**Skipping an unevaluable contextual comparison is NOT equivalent to accepting or
+approving a real source population** — it merely reflects that the loader's API lacks the
+required approved-inventory context. No stage is skipped for any other reason, and
+skipping a conditional stage never changes the category or position of any other stage.
+
+**Non-manifest record loaders.** The per-record strict loaders `_load_source_approval`,
+`_load_census_authorization`, `_load_candidate_source_snapshot`, and
+`_load_census_summary` (§8.9) run Phase 1 (stages 1–11) then the applicable Phase-2
+intrinsic construction and invariants (stages 12–13) for their own schema; they carry
+no population entries, so stages 16–22 do not apply. Canonical source-member ordering
+(§10.8; out-of-order or duplicate `relative_path`) is validated at stage 13 with
+`schema_error`. This subsection does not weaken §16.4, §16.6, or §16.7; it fixes their
+two-phase order and per-stage category.
+
+### 16.10 `CallhomePopulationVerification` checkpoint ownership (CHPA-P2-03)
+
+The ownership of `CallhomePopulationVerification` across the two checkpoints is
+**normative and unambiguous**:
+
+```text
+Checkpoint A:
+  - DEFINES the inert frozen value type CallhomePopulationVerification (§8.5 fields;
+    §8.10 inventory) and its privacy-safe representation contract (§18.5/§18.6:
+    frozen=True, slots=True, eq=True, field(repr=False), fixed __repr__ rendering
+    ClassName(<redacted>), generated hash).
+  - Does NOT construct live verification results.
+  - Exposes NO verification inspector and NO nullary verification production API.
+
+Checkpoint B OWNS:
+  - verify_frozen_callhome_population() (the nullary public API, §8.1);
+  - the private verification-specific inspector (§11.4, §16.8);
+  - filesystem / live recomputation (bootstrap, authorization, traversal, hashing,
+    archive verification);
+  - authorization and bootstrap;
+  - construction of CallhomePopulationVerification during live verification;
+  - the Checkpoint B behavioral tests for returned records and raise-without-record
+    outcomes (§20.2).
+```
+
+**Checkpoint A tests of the type may verify ONLY** its inert, in-memory properties:
+
+```text
+field order; field types; immutability (frozen); slots + absence of __dict__;
+hash behavior; equality behavior; redacted repr/str; constructor-level scalar
+invariants (the §8.8 field predicates the constructor enforces).
+```
+
+Checkpoint A **must not test or simulate live verification execution** — no synthetic
+manifest re-verification, no Boolean-outcome simulation, no inspector behavior. Those
+are Checkpoint B (§20.2 "Live re-verification" blocks).
+
+**Defining the inert type in Checkpoint A authorizes nothing else.** Declaring
+`CallhomePopulationVerification` in Checkpoint A does **not** authorize the Checkpoint B
+inspector, `verify_frozen_callhome_population()`, or any nullary production API, and it
+does not move any live-verification capability into Checkpoint A. The type is a value
+container; its live producer, its inspector, and their tests remain Checkpoint B
+(§11.4, §16.7, §16.8, §1.4).
+
 ---
 
 ## 17. Authorization control (detailed)
@@ -2301,11 +3240,17 @@ category names the failing **check**, never the offending item.
 ```text
 bootstrap marker validation → environment_error
 project_root/bootstrap mismatch → environment_error
-authorization/approval loading → authorization_error / schema_error /
-                                 source_identity_mismatch
+_load_source_approval loading (structural / serialization / intrinsic-local)
+                            → schema_error / serialization_error (NEVER source_identity_mismatch,
+                              NEVER authorization_error)
+_build_population_manifest supplied-approval contract / checksum / source / inventory binding
+                            → source_identity_mismatch (§8.9, §16.9; NEVER authorization_error)
+_grant_capability authorization / authentication / trusted-bootstrap / capability binding
+                            → authorization_error (§17.1; NEVER source_identity_mismatch)
 base enumeration            → root_error / unexpected_entry
-archive-dir purity / basename / identity → archive_verification_error /
-                                 source_identity_mismatch / schema_error
+archive-dir purity / filesystem identity → archive_verification_error (live Checkpoint B)
+archive_filename basename / field grammar → schema_error (intrinsic field defect §8.8/§10.7;
+                                 NOT source_identity_mismatch)
 archive hashing / verify    → archive_verification_error
 member hashing              → source_identity_mismatch; read failure →
                               environment_error/root_error (no path)
@@ -2325,6 +3270,15 @@ live verification (§11.4/§16.8) — two outcome classes (CHC-P2-07):
     RETURN a content-free CallhomePopulationVerification with the relevant Boolean
     False and ok == False (NOT a raise).
 ```
+
+**"Approval" is not one boundary (P2-03-R1-R2).** The three approval-related rows above
+are distinct boundaries with distinct, non-substitutable categories; there is **no**
+shared "authorization/approval loading" operation and **no** generic "approval loading"
+category. `_load_source_approval` performs no authentication and no expected-checksum
+comparison (→ `schema_error` / `serialization_error` only); among these three boundaries,
+only `_build_population_manifest` emits `source_identity_mismatch`, and only
+`_grant_capability` emits `authorization_error`. See §16.7 for the authoritative
+boundary split.
 
 The returned verification record remains **content-free** with respect to paths,
 filenames, archive members, per-file digests, conversation identifiers, and offending
@@ -2416,6 +3370,177 @@ constructed in Checkpoint A (in memory only), but its representation must be red
 exactly as above, and its **real publication remains deferred and
 governance-controlled** (LOCAL until G3, §19). Checkpoint A neither writes it nor
 resolves any path for it (§1.4, §6.1).
+
+### 18.6 Record dataclass mechanics and hash policy (CHPA-P2-04)
+
+This record-mechanics contract is **normative** and applies to **every** Checkpoint A
+record dataclass listed in §18.5 (the twelve record/value dataclasses, including
+`CallhomePopulationVerification` and the census summary). The
+error type `CallhomePopulationError` is an **exception, not a dataclass**, and is
+governed by §18.7; the authorization capability `_CensusCapability` (§8.2) is a
+Checkpoint B internal, out of this record-mechanics scope. This subsection fixes the
+decorator, equality, hashing, and representation mechanics so no implementer invents
+them.
+
+**Uniform declaration (every record dataclass):**
+
+```text
+@dataclass(frozen=True, slots=True)     # frozen AND slots on EVERY record
+eq=True                                  # dataclass-generated structural __eq__
+unsafe_hash=False                        # never; hashing comes from frozen+eq only
+repr suppression: field(repr=False) on EVERY field, PLUS an explicit fixed __repr__
+  (the explicit __repr__ is authoritative and returns exactly ClassName(<redacted>))
+__str__: NOT separately defined — str() delegates to the explicit __repr__, so
+  str(record) and repr(record) BOTH render exactly ClassName(<redacted>)
+__hash__: the normal dataclass-generated hash (present because frozen=True and
+  eq=True and unsafe_hash=False)
+```
+
+**Slots.** `slots=True` is required on every record; therefore **no record has a
+`__dict__`**, and setting an unknown attribute fails. No record field carries a default
+value, so `slots=True` composes cleanly. Tests assert `slots` presence and the
+**absence of `__dict__`** for every record (§20.1).
+
+**Hash policy (exact):**
+
+```text
+- Use the normal dataclass-generated hash ONLY; introduce NO custom semantic hash.
+- The generated hash is available for a record only when ALL its fields are
+  transitively hashable. Every Checkpoint A record field is a str, an int, a bool, a
+  nested frozen record, or an IMMUTABLE TUPLE of such values (e.g.
+  tuple[CallhomeSourceMember, ...], tuple[CallhomePopulationEntry, ...],
+  tuple[str, str]). No record contains a list, dict, set, or any other unhashable
+  field. Therefore EVERY public record — including records holding immutable tuples —
+  is hashable, and hash(record) SUCCEEDS for every record type. No field type would
+  make the generated hash unavailable, so no per-record "hash unavailable" policy or
+  exception exists to specify.
+- Record hashing NEVER replaces cryptographic identity or checksum functions: the
+  Python object hash is unrelated to population_identity_sha256, manifest_file_sha256,
+  source_approval_sha256, and census_authorization_sha256 (§11, §14.2) and must never
+  be used where a cryptographic digest is required.
+- Tests PIN, for every public record, that hash(record) succeeds (no record raises
+  TypeError on hashing) (§20.1).
+```
+
+**Representation (reaffirming §18.5, now with slots):**
+
+```text
+- field(repr=False) on every field; explicit fixed __repr__ returning
+  ClassName(<redacted>); str() delegates to it.
+- repr(record) and str(record) each render exactly ClassName(<redacted>) and expose
+  no field value (path, filename, digest, timestamp, count, byte total, identity,
+  approver, commit) — the §18.5 sentinel tests apply to every record type.
+```
+
+This contract changes no field, type, or checksum (§8.5, §14.2); it only fixes the
+dataclass mechanics. The §8.5 declarations show `@dataclass(frozen=True, slots=True)`
+consistently with this subsection.
+
+### 18.7 `CallhomePopulationError` construction contract (CHPA-P2-05)
+
+`CallhomePopulationError` is constructed as:
+
+```python
+CallhomePopulationError(category)
+```
+
+and accepts **exactly one** argument: a single **supported category string** drawn
+**only** from the closed content-free taxonomy of §18.1 (the exact set):
+
+```text
+environment_error            root_error                 unexpected_entry
+source_identity_mismatch     manifest_mismatch          empty_population
+language_crossover           duplicate_identity         ordering_error
+serialization_error          output_error               authorization_error
+privacy_error                schema_error               frozen_output_exists
+archive_verification_error   publication_verification_required
+```
+
+**Supported category (a member of the set above).** Two guarantee scopes are
+distinguished (CHPA-R2-04): properties the error type controls itself, and properties
+guaranteed only at project-controlled supported boundaries.
+
+*Controlled by `CallhomePopulationError` itself* — for supported construction, always:
+
+```text
+args == (category,)
+str(error) == category
+repr(error) contains ONLY the class name and the supported category
+             (e.g. CallhomePopulationError('schema_error')) and no other value
+the constructor performs NO explicit exception chaining
+             (never `raise ... from ...`; never sets __cause__)
+```
+
+*Guaranteed at project-controlled supported boundaries* — every project call site that
+raises or converts these errors **leaves the active exception handler first** and
+raises the fixed error **outside** any handler (§18.4), so at the supported API
+boundary:
+
+```text
+error.__cause__ is None
+error.__context__ is None
+```
+
+Python may **automatically** attach an active exception to a newly raised exception's
+`__context__`. `CallhomePopulationError` therefore does **not** claim that arbitrary
+caller code constructing it **inside an active exception handler** will have
+`__context__ is None` — that is outside the type's control. The `__context__ is None`
+guarantee holds at the project-controlled supported boundaries (which raise outside any
+handler), **not** for arbitrary third-party direct construction. Regardless of call
+site, the constructor still performs no explicit chaining and never echoes a rejected
+value (below).
+
+**Unsupported value** — any value that is **not** one of the exact supported strings,
+**including** a protected/sensitive string (e.g. a path, filename, digest, or member
+name), an empty string, a value of the wrong type (non-`str`), or an unknown category
+string — the constructor must:
+
+```text
+raise a fixed, NON-ECHOING ValueError with:
+    args == ("unsupported_error_category",)
+    str(exc) == "unsupported_error_category"
+```
+
+The rejected value must **not** appear in any of:
+
+```text
+the ValueError args, str, or repr;
+the ValueError __cause__ or __context__;
+any logging, or any other output.
+```
+
+**Additional constraints:**
+
+```text
+- Do NOT recursively construct another CallhomePopulationError for this
+  constructor-validation failure: rejection raises a PLAIN ValueError
+  ("unsupported_error_category"), never a CallhomePopulationError, and never recurses.
+- Ordinary Checkpoint A validation failures are UNAFFECTED: they still raise a VALID
+  CallhomePopulationError carrying one supported category (e.g. schema_error,
+  serialization_error, manifest_mismatch, duplicate_identity), exactly as specified
+  throughout §§9–18 and the §16.9 stage table.
+- Every project-controlled supported call site that raises or converts these errors
+  must LEAVE the active exception handler first, raise the fixed error OUTSIDE any
+  handler, and avoid explicit chaining — thereby ensuring __cause__ is None AND
+  __context__ is None at the supported API boundary. Sanitized conversion of caught
+  JSON / UTF-8 (and other) exceptions into a supported CallhomePopulationError category
+  must occur OUTSIDE the active exception handler (record a content-free category inside
+  the handler, exit the handler, THEN raise), so the supported error boundary has NO
+  leaked original exception through __cause__ or __context__ (§18.4). This applies to
+  the strict loaders (§16.9) and to every raising Checkpoint A helper.
+- The __context__ is None property is a SUPPORTED-BOUNDARY guarantee, NOT a claim about
+  arbitrary third-party construction inside an active exception handler (Python may
+  auto-populate __context__ there, from the caller's active exception, not from any
+  rejected value). Even in that case the constructor still never places a rejected or
+  caller-supplied value in its own args, str, repr, logging, output, or an explicit
+  __cause__ chain.
+- KeyboardInterrupt and SystemExit are NEVER caught and NEVER converted; they
+  propagate as the exact same object (§18.4).
+```
+
+This makes the supported-category surface **closed and non-echoing**: an unsupported or
+protected value can never be reflected back through the error type, and the
+constructor-validation failure is itself content-free.
 
 ---
 
@@ -2540,8 +3665,9 @@ english/spanish snapshot-ID language mismatch rejected (§16.7, CHC-P2-05)
 snapshot-ID n_members zero / negative / Boolean / wrong-type rejected (§16.7, CHC-P2-05)
 english snapshot-ID n_members vs English manifest-entry count mismatch rejected (§16.7)
 spanish snapshot-ID n_members vs Spanish manifest-entry count mismatch rejected (§16.7)
-manifest construction rejects snapshot IDs differing from supplied approved snapshot
-  identities (english/spanish == source_approval.<lang>.identity()) (§16.7, CHC-P2-05)
+manifest builder DERIVES snapshot IDs from the supplied source_approval and accepts NO
+  caller-supplied IDs; source_approval contract-version mismatch and source_approval_sha256
+  mismatch each rejected (§16.7, §8.9, CHPA-R2-02)
 empty population rejection (§4.1)
 one-language-empty rejection (§4.1)
 aggregate-summary construction (§19)
@@ -2550,7 +3676,170 @@ fixed content-free errors (§18)
 dependency guard against CHAT/parsing/condition modules (§6.1)
 import guard: imports ⊆ {hashlib, json, unicodedata, dataclasses}; no pathlib/os/
   Path/_census_population_core; no filesystem or archive activity (§6.1)
+
+--- Round-8 clarification coverage (CHPA-P2-01..05) ---
+every normative public API name present and importable from cslm.data.callhome_population,
+  with its §8.9 signature (§8.9, CHPA-P2-01)
+private-helper non-export expectations where enforceable: the public surface is the §8.9
+  PUB set; underscore helpers are module-internal; no path-accepting public helper (§6.1, §8.9)
+strict-loader exact stage precedence: stages 1–23 evaluated in the fixed order (§16.9)
+coexisting malformed / canonicality / checksum / count / identity defects select the
+  EARLIEST fixed category; no later category observable (§16.9)
+CallhomePopulationVerification inert-type ownership: field order / types / immutability /
+  slots / hash / equality / redacted repr / constructor invariants ONLY; NO live-
+  verification behavior simulated in Checkpoint A (§16.10)
+slots present and __dict__ ABSENT for EVERY record (§18.6)
+exact dataclass equality behavior for every record (§18.6)
+exact hash behavior for every record: hash(record) succeeds (§18.6)
+exact repr and str for every record == ClassName(<redacted>) (§18.5, §18.6)
+supported CallhomePopulationError category: args==(category,), str==category,
+  __cause__/__context__ None (§18.7)
+unsupported string category → ValueError("unsupported_error_category") (§18.7)
+protected sentinel as unsupported category → same ValueError; value NOT echoed (§18.7)
+empty category → ValueError("unsupported_error_category") (§18.7)
+wrong-type (non-str) category → ValueError("unsupported_error_category") (§18.7)
+unsupported-category failure contains ONLY "unsupported_error_category"; the rejected
+  value is absent from args, str, repr, __cause__, __context__, logs, and output (§18.7)
+
+--- Round-9 clarification coverage (CHPA-R2-01..04) ---
+every typed bidirectional converter pair present with its exact §8.9 name, parameter
+  type, and return type; no generic `_<record>_…` form remains (§8.9, CHPA-R2-01)
+round-trip per record: _mapping_to_X(_X_to_mapping(record)) == record, and
+  _X_to_mapping(_mapping_to_X(canonical_mapping)) == canonical_mapping (§8.9, §14.3)
+_mapping_to_<record> enforces intrinsic/local invariants only; aggregate/cross-record
+  invariants come from the ordered builder/loader, not the converter (§8.9, §16.9)
+inert-only verification converters do not persist and do not run live verification (§8.9, §16.10)
+_build_population_manifest takes source_approval and DERIVES both snapshot IDs; accepts
+  NO caller-supplied snapshot IDs (§8.9, §16.7, CHPA-R2-02)
+_build_population_manifest rejects source_approval.contract_version != POPULATION_CONTRACT_VERSION
+  and source_approval_sha256 != _source_approval_sha256(source_approval) (§8.9, §16.7)
+_build_population_manifest reconciles each derived snapshot-ID n_members against the
+  per-language entries (§16.7)
+created_utc and repository_commit validated for scalar grammar ONLY at the builder;
+  no live acquisition in Checkpoint A (§8.9, §8.8, CHPA-R2-02)
+two-phase strict loader: a noncanonical manifest fails at the Phase-1 byte comparison
+  (serialization_error) BEFORE any typed record is constructed and before any Phase-2
+  category (§16.9, CHPA-R2-03)
+noncanonical + wrong-checksum / bad-counts / collision manifest → serialization_error
+  (Phase 1 wins over every Phase-2 category) (§16.9)
+no invariant-enforcing typed record is constructed before the Phase-1 canonical
+  comparison (§16.9, §14.3)
+CallhomePopulationError supported construction: own state pinned (args/str/repr) and the
+  constructor performs no explicit chaining (§18.7, CHPA-R2-04)
+project-controlled supported boundary: __cause__ is None AND __context__ is None when
+  the fixed error is raised outside any active handler (§18.7, §18.4)
+tests do NOT require arbitrary external construction inside an active exception handler
+  to have __context__ is None (that is outside the type's control) (§18.7, CHPA-R2-04)
+
+--- Round-10 clarification coverage (CHPA-R3-01, three validation layers) ---
+DIRECT-CONSTRUCTOR tests (every record) — test ONLY: exact field order; exact field
+  types; fixed constants and namespaces; scalar grammar; local field relationships
+  (incl. summary local arithmetic; snapshot own members canonical order §10.8;
+  n_members==len(members)); tuple immutability; frozen/slots/equality/hash/repr;
+  intrinsic/local constructor failures → schema_error (§8.9, §16.7)
+DIRECT-CONSTRUCTOR tests do NOT expect direct constructors to reject aggregate
+  population defects requiring cross-record comparison or recomputation (§16.7)
+CONVERTER tests (_mapping_to_<record>) — test: exact field-set validation; primitive/
+  container-type validation; nested + tuple conversion; intrinsic/local validation;
+  typed round trips; NO aggregate acceptance performed by a converter (§8.9, §16.7)
+BUILDER/STRICT-LOADER tests own ALL of: approval binding; n_members reconciliation;
+  ordering and ordinals; collisions; crossover; inventory matching; count reconciliation;
+  stable identity; manifest checksum; coexisting-defect precedence; accepted-aggregate
+  vs raise-without-result behavior (§16.7, §16.9)
+CONTRACT-ALLOCATION test: an intrinsically valid direct CallhomePopulationManifest
+  dataclass value can EXIST before aggregate acceptance; ONLY _build_population_manifest
+  or the strict manifest loader establishes accepted aggregate status through the
+  supported module contract (no partially accepted object is ever returned; not a
+  license to expose or persist an invalid aggregate) (§16.7, §16.9, CHPA-R3-01)
+
+--- Round-11 crossover & approved-inventory ownership (CHPA-R3-01 follow-up) ---
+_build_population_manifest OWNS crossover + approved-inventory matching (derives the
+  approved inventories from source_approval.english/spanish.members):
+  - candidate entry key present in its OWN approved inventory → membership passes
+  - candidate key absent from own but EXACTLY present in opposite inventory → language_crossover
+  - candidate key absent from BOTH inventories → source_identity_mismatch
+  - filename-only / stem-only / path-only / digest-only / partial matches do NOT become
+    crossover (crossover needs the full (relative_path,size_bytes,sha256) key, §13.5)
+  - collision (stage 17) precedence remains earlier than crossover (stage 18); crossover
+    earlier than ordinary own-inventory mismatch (stage 19) (§16.9)
+  - builder cannot trust a claimed prevalidated Checkpoint B input — it re-evaluates
+  - builder returns NO manifest when any of these checks fails (§8.9)
+STRICT-LOADER tests: all self-contained aggregate checks run; approval-context stages
+  14/18/19 are explicitly SKIPPED when the loader API lacks approved-source context, and
+  such skipping is NOT a claim that a real source population was approved (§16.9)
+CHECKPOINT-B CENSUS-CORE tests: the census core passes prepared entries + source_approval
+  to _build_population_manifest; propagates builder success/failure; publishes ONLY the
+  accepted builder result; never substitutes an independent acceptance decision (§9.1)
+
+--- Round-12 checkpoint-boundary & per-loader error truthfulness (P2-01..03) ---
+§1.4 boundary: pure approved-inventory membership + language-crossover comparison over
+  SUPPLIED values are Checkpoint A (assert the pure functions perform them with no
+  filesystem/archive/env/Git/clock/bootstrap/live-source access); live enumeration,
+  authentication, candidate-entry creation, invocation, and publication are Checkpoint B (P2-01)
+§9.1 / builder precedence: _build_population_manifest applicable order is ordering/ordinals
+  → collision → crossover → ordinary inventory → counts → identity → manifest-file checksum;
+  a coexisting ordering + collision defect yields ordering_error (ordering wins); §16.9 is the
+  sole precedence contract; no §9.1 step lists ordering after collision/crossover/inventory (P2-02)
+per-loader EXACT error inventory matches only the loader's evaluable stages (P2-03, §8.9):
+  - _load_candidate_source_snapshot → {schema_error, serialization_error} only
+  - _load_source_approval → {schema_error, serialization_error} only; an invalid
+      archive_filename basename/field grammar → schema_error (intrinsic, §8.8/§10.7), NOT
+      source_identity_mismatch; NO approval-to-manifest binding / inventory comparison
+  - _load_census_authorization → {schema_error, serialization_error} only
+  - _load_population_manifest → {schema_error, serialization_error, duplicate_identity,
+      ordering_error, manifest_mismatch} ONLY
+  - _load_census_summary → {schema_error, serialization_error} only
+_load_population_manifest CANNOT emit language_crossover or contextual source_identity_mismatch
+  from bytes lacking approved-source context: feed a canonical manifest whose entries would
+  cross over / mismatch an approved inventory NOT supplied to the loader → the loader accepts
+  (self-contained stages pass) or raises only a self-contained category; it NEVER raises
+  language_crossover or a binding/inventory source_identity_mismatch (§16.9 stages 14/18/19 skipped)
+loader contextual-skip is non-approving: skipping stages 14/18/19 is asserted NOT to imply
+  approval, matched-to-approved-source evidence, authorization, or live verification (§16.9, §16.7)
+
+--- Round-13 residual precedence & loader-error truthfulness (P2-02-R1, P2-03-R1..R2) ---
+§25 (and every summary) states aggregate precedence beginning with ordering/ordinals, then
+  collision → crossover → ordinary inventory → counts → identity → manifest-file checksum;
+  no complete precedence summary begins with collision (P2-02-R1, §§9.1/16.9)
+_load_source_approval: invalid archive_filename basename / field grammar → schema_error
+  (P2-03-R1, §8.8/§10.7); it does NOT emit source_identity_mismatch for an intrinsic field defect
+_load_population_manifest CANNOT emit authorization_error from context-free str|bytes
+  (feed valid canonical manifest bytes with no authorization context → never authorization_error) (P2-03-R2)
+_load_population_manifest STILL emits manifest_mismatch for the exact self-contained
+  predicates: snapshot n_members reconciliation, count reconciliation, stable-identity
+  recomputation, manifest-file checksum recomputation (P2-03-R2, §8.9/§16.9)
+§14.2 and the general §16 loading prose defer to the exact §8.9 per-loader inventories; no
+  collective contextual category set is applied to context-free loaders (P2-03-R2)
+
+--- Round-14 boundary-specific approval error ownership (P2-03-R1-R2) ---
+three approval-related operations are distinct boundaries carrying distinct, non-substitutable
+  categories; assert each boundary raises ONLY its own category and NEVER another's:
+_load_source_approval (pure Checkpoint A):
+  - malformed archive_filename basename / grammar → schema_error
+  - malformed mapping / wrong field type / invalid fixed constant / nested intrinsic field
+    defect → schema_error
+  - noncanonical serialized bytes → serialization_error
+  - NEVER source_identity_mismatch and NEVER authorization_error (it authenticates nothing and
+    compares no expected checksum) (§8.9, §16.7, §18.2)
+_build_population_manifest (pure Checkpoint A): a supplied source_approval / source_approval_sha256
+  contract, checksum, source, or approved-inventory mismatch → source_identity_mismatch; NEVER
+  authorization_error (§8.9, §16.7, §16.9)
+_grant_capability (Checkpoint B; behavioral test in §20.2/§17.4): every authorization,
+  authentication, trusted-bootstrap, or capability-binding failure — including expected-checksum
+  authentication of the authorization record's own source_approval_sha256 — → authorization_error;
+  NEVER source_identity_mismatch (§17.1, §18.2). §20.1 pins the category taxonomy and the two
+  pure-core boundaries; the filesystem-dependent _grant_capability behavior is exercised in §20.2
+category non-substitution: assert _load_source_approval, _build_population_manifest, and
+  _grant_capability cannot stand in for one another's error category — there is no shared
+  "authorization/approval loading" category (§18.1, §18.2)
 ```
+
+**Planning target (CHPA-P3-01, non-normative).** The preflight's estimate of
+**approximately 170–220 collected test cases** is retained as a **planning target
+only**, not a Definition-of-Done count. What is normative is **behavioral coverage** —
+every normative rule of §§8–20 exercised, including the Round-8 items above — **not** a
+specific collected-case count. No specific number is required or asserted; CHPA-P3-01
+is carried as non-blocking planning guidance.
 
 Deferred to **Checkpoint B** (do not attempt at Checkpoint A): synthetic filesystem
 trees, archives, symlinks, hard links, publication state-machine, trusted bootstrap,
@@ -2593,10 +3882,11 @@ Snapshot workflow (§10) — Checkpoint B (pure record/checksum validation: A, �
   - changed extraction-procedure identity → fail
   - eng vs spa extraction-procedure contract mismatch → fail (§8.5)
   - replayed authorization bound to a different source_approval_sha256 → fail
-  - manifest CONSTRUCTION from a supplied approval with a snapshot ID differing from
-    source_approval.<lang>.identity() → RAISE source_identity_mismatch (acceptance
-    boundary, §16.7); (the LIVE-verification snapshot-ID comparison is a RETURNED
-    result — see the Live re-verification block, CHC-P2-07)
+  - manifest CONSTRUCTION derives snapshot IDs from the supplied source_approval (no
+    caller-supplied IDs); a source_approval with contract_version != POPULATION_CONTRACT_VERSION,
+    or source_approval_sha256 != its canonical checksum, → RAISE source_identity_mismatch
+    (acceptance boundary, §16.7, CHPA-R2-02); (the LIVE-verification snapshot-ID comparison
+    is a RETURNED result — see the Live re-verification block, CHC-P2-07)
 
 Enumeration / rejection (§4/§9) — Checkpoint B (pure empty/one-language rejection: A, §20.1)
   - correct census → verified manifest, correct counts, ordinals 0..N-1
@@ -2620,7 +3910,8 @@ Determinism / identity (§4.3/§11/§12) — Checkpoint A (re-resolution/verific
 
 Counts reconciliation (§11.6/§11.7) — Checkpoint A (re-verification point: B)
   - tamper each of the 8 count fields (with both checksums recomputed) → manifest_mismatch
-  - reconciliation occurs at construction, loading, and re-verification
+  - reconciliation occurs at builder construction (_build_population_manifest), strict
+    loading, and re-verification — never in a direct dataclass __post_init__ (§16.7, CHPA-R3-01)
 
 Conversation identity (§10.5) — Checkpoint A
   - single-dot / multi-dot / Unicode name / equal eng-spa stems / name ending in
@@ -2634,9 +3925,14 @@ Collisions / crossover / zero-byte (§13) — Checkpoint A (zero-byte enumeratio
   - duplicate byte content / duplicate conversation id / NFC / NFD / case-fold →
     duplicate_identity (§13.4)
   - collision internal precedence: byte → conversation → NFC → NFD → case-fold (§13.4)
-  - exact language crossover: opposite-language member key present AND own absent →
-    language_crossover; equal filenames/stems across languages are NOT crossover (§13.5)
-  - failure precedence: collision → crossover → inventory mismatch → ordering (§9.1)
+  - exact language crossover (owned by _build_population_manifest, §13.5/§16.9 stage 18):
+    opposite-language member key present AND own absent → language_crossover; equal
+    filenames/stems across languages are NOT crossover (§13.5)
+  - ordinary approved-inventory membership (_build_population_manifest, §10.3/§16.9 stage 19):
+    candidate key absent from both inventories → source_identity_mismatch
+  - failure precedence among these builder checks: collision (stage 17) → crossover
+    (stage 18) → ordinary inventory mismatch (stage 19); ordering has its own fixed
+    stage 16 (§16.9, §13.4, §13.5)
   - one zero-byte .cha retained as a member (counted)
   - two zero-byte .cha → duplicate_identity (empty-input SHA-256)
   - NO test references the removed "duplicate normalized path identity" class (§13.1)
@@ -2835,7 +4131,7 @@ normative field predicates (every field)      — §8.8
 canonical source-member ordering              — §10.8
 five exact collision classes + precedence     — §13.4
 exact language-crossover definition           — §13.5
-failure precedence (collision→crossover→…)    — §9.1
+failure precedence (ordering/ordinals → collision → crossover → ordinary approved-inventory mismatch → counts → stable identity → manifest-file checksum) — §§9.1, 16.9
 privacy-safe record + error representations    — §18.5
 strict JSON persistence boundary              — §14.3
 identity/reconciliation closure                — §11.7
@@ -2851,6 +4147,26 @@ manifest snapshot-ID predicates + binding       — §16.7, §11.4 (CHC-P2-05)
 population_identity_matches + four-term ok      — §8.5, §16.7, §11.4, §11.7 (CHC-P2-06)
 strict acceptance loader vs verification inspector — §16.4, §16.8 (CHC-P2-07)
 verification raise-vs-return outcome model      — §11.4, §16.7, §18.2 (CHC-P2-07)
+Checkpoint A API table (names/signatures/visibility) — §8.9 (CHPA-P2-01)
+Checkpoint A type/record inventory               — §8.10 (CHPA-P2-01)
+Rule-A type-syntax (four-module import set kept)  — §8.9 (CHPA-P2-01)
+strict acceptance loader 23-stage precedence      — §16.9 (CHPA-P2-02; stage 19 added Round 11)
+CallhomePopulationVerification A-defines/B-uses    — §16.10 (CHPA-P2-03)
+record dataclass slots/eq/hash/repr mechanics     — §18.6 (CHPA-P2-04)
+CallhomePopulationError unsupported-category rule  — §18.7 (CHPA-P2-05)
+complete typed bidirectional converter inventory   — §8.9, §14.3 (CHPA-R2-01)
+source_approval-bearing manifest builder (derives IDs) — §8.9, §16.7 (CHPA-R2-02)
+two-phase strict loader (raw canonicality then construction) — §16.9, §14.3 (CHPA-R2-03)
+__context__ guarantee scoped to supported boundaries — §18.7 (CHPA-R2-04)
+validation-ownership: constructors/converters intrinsic-local, builders/loaders aggregate — §16.7, §8.9, §16.9, §11.7, §20.1 (CHPA-R3-01)
+crossover + approved-inventory owned by _build_population_manifest; census delegates; loader skips when context absent — §8.9, §9.1, §16.7, §16.9 stages 18/19, §10.3, §13.5, §20.1 (CHPA-R3-01 / Round 11)
+pure approved-inventory + crossover comparison is Checkpoint A over supplied values; Checkpoint B = live acquisition/auth/invoke/publish — §1.4 (P2-01 / Round 12)
+§9.1 builder order = §16.9 (ordering before collision/crossover/inventory); single precedence contract — §9.1, §16.9 (P2-02 / Round 12)
+exact per-loader error inventories; _load_population_manifest emits no contextual crossover/inventory — §8.9, §20.1 (P2-03 / Round 12)
+aggregate precedence summaries are ordering-first everywhere — §25, §0, §§9.1/16.9 (P2-02-R1 / Round 13)
+invalid source-approval archive_filename → schema_error (intrinsic); _load_source_approval raises no source_identity_mismatch — §8.9, §10.7, §18.2 (P2-03-R1 / Round 13)
+§14.2/§16 defer to per-loader §8.9; context-free manifest loader emits no authorization_error or contextual source_identity_mismatch — §14.2, §16, §8.9 (P2-03-R2 / Round 13)
+boundary-specific approval error ownership: _load_source_approval → schema_error / serialization_error; _build_population_manifest supplied approval/source binding → source_identity_mismatch where assigned; _grant_capability failures → authorization_error — §§8.9, 16.7, 17.1, 18.2, 20.1 (P2-03-R1-R2 / Round 14)
 ```
 
 No real-data value appears anywhere in this document.
