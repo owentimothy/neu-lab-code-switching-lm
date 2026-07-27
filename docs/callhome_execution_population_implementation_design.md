@@ -1,10 +1,33 @@
 # CALLHOME Execution-Population Census — Implementation Design
 
-**Status:** Design only. No implementation, no tests, no script, no `.gitignore`
-change, no real corpus access, no private-directory inspection, no census, no
-hashing of real files, no strict-reader execution, no dataset construction. This
-document is an implementation-ready contract for a **later, separately reviewed**
-synthetic-only implementation gate.
+> [!IMPORTANT]
+> **Status: deferred, non-authoritative design — NOT the first-pilot contract.**
+>
+> This document records the **generalized** Checkpoint A/B population-census
+> architecture, preserved for possible later scaling, reusable tooling,
+> multi-operator execution, publication workflows, or broader corpus support.
+>
+> For the first controlled experiment it is **deferred**, **non-authoritative**,
+> and **no longer on the first-pilot critical path** to the principal
+> `CsCont − MonoCont` comparison. The first pilot will instead be governed by a
+> separate, **minimum-defensible census contract** designed and reviewed in a
+> later gate (see §1.0).
+>
+> Nothing in this document currently authorizes implementation, corpus access,
+> source approval, real census execution, strict-reader population execution,
+> condition construction, corpus freezing, tokenizer training, or model training.
+>
+> The full accumulated generalized clarification (through Round 14) is preserved
+> **outside `main`** on branch `callhome-checkpoint-a-contract-clarification`,
+> commit `0949f5355bc948f92998866f86032d940bb96b24`. The version on `main` is the
+> earlier snapshot recorded below and is retained deliberately.
+
+**Preserved generalized-design status:** Design only. No implementation, no tests,
+no script, no `.gitignore` change, no real corpus access, no private-directory
+inspection, no census, no hashing of real files, no strict-reader execution, no
+dataset construction. This document is an implementation-ready contract for a
+**later, separately reviewed** synthetic-only implementation gate — **within the
+deferred generalized architecture only** (see §1.0).
 
 The eventual synthetic-only implementation is split into two normative checkpoints
 (§1.4): **Checkpoint A** (a pure, filesystem-free deterministic core) and
@@ -103,6 +126,65 @@ round superseded; those quotes are **historical and resolved**, not live rules.)
 ---
 
 ## 1. Status and scope
+
+### 1.0 Transition to a minimum first-pilot design
+
+This document remains an honest record of the accepted generalized design. Its
+**status** has changed — not its technical content — because that architecture is
+too broad for, and no longer on the critical path to, the first controlled
+experiment.
+
+Still valid and preserved here (as reference, not as first-pilot obligations):
+
+- prior design reasoning and threat analysis;
+- the generalized API, record, and loader proposals;
+- the Checkpoint A / Checkpoint B separation;
+- the privacy, publication, and governance concepts;
+- the review and finding-closure history.
+
+No longer authoritative for the first pilot:
+
+- the exact implementation file scope;
+- mandatory Checkpoint A/B sequencing;
+- the full record and loader family;
+- the capability / authorization-bootstrap architecture;
+- the global validation-stage precedence;
+- the per-boundary error inventories;
+- the generalized publication and verification machinery;
+- the nullary production APIs and reusable-CLI requirements.
+
+Words such as *normative*, *authoritative*, *must*, *implementation-ready
+contract*, *Checkpoint A*, *Checkpoint B*, and *next implementation gate*
+elsewhere in this document apply **only within the preserved, deferred generalized
+architecture**. They do not authorize or govern first-pilot work. A reader must
+not conclude that the full architecture is mandatory for the first pilot.
+
+The first pilot will be governed by a separately designed and independently
+reviewed **minimum-defensible census contract**. Where this document conflicts
+with that later contract, **the minimum-defensible contract controls the first
+pilot**.
+
+**Preserved record.** The complete accumulated generalized clarification —
+including the Rounds 8–14 finding and contract refinements not present in this
+`main` snapshot — is preserved outside `main`:
+
+```text
+Preserved branch:
+callhome-checkpoint-a-contract-clarification
+
+Preserved commit:
+0949f5355bc948f92998866f86032d940bb96b24
+```
+
+That branch/commit, not this `main` copy, holds the full refined generalized
+design. Nothing here or there authorizes first-pilot implementation, corpus
+access, or census execution; that authority comes only from the later
+minimum-defensible census contract.
+
+The scientific routing invariants are unchanged by this status transition:
+the principal comparison remains `CsCont − MonoCont`; CALLHOME feeds
+`EnglishMono`, `SpanishMono`, and the corresponding sides of `MonoCont` only, and
+**never** `CsCont`; Bangor Miami remains the `CsCont` source only.
 
 ### 1.1 What this layer is
 
