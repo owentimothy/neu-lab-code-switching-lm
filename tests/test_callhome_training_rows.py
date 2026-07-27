@@ -93,6 +93,47 @@ def test_cleaner_preserves_casing_accents_punctuation_and_repetition():
 
 
 @pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("before \x15media_100_200\x15 after", "before after"),
+        ("before <scoped spoken words> after", "before scoped spoken words after"),
+        ("spoken [= explanation] surface", "spoken surface"),
+        ("spoken [=! paralinguistic] surface", "spoken surface"),
+        ("produced [: replacement] surface", "produced surface"),
+        ("uncertain [?] surface", "uncertain surface"),
+        ("[- eng] spoken surface", "spoken surface"),
+        ("spoken surface [+ metadata]", "spoken surface"),
+        ("+, continuation survives", "continuation survives"),
+        ("before &+fragment after", "before after"),
+        ("before &~nonword after", "before after"),
+        ("&{l=laughs spoken material", "spoken material"),
+        ("spoken material &}l=laughs", "spoken material"),
+    ],
+)
+def test_cleaner_handles_observed_real_population_controls(text, expected):
+    assert clean_chat_surface(text) == expected
+
+
+def test_cleaner_handles_multiple_observed_controls_together():
+    text = (
+        "Start \x15media_100_200\x15 <spoken words> [= note] +, "
+        "&+fragment &~nonword &{l=laughs still spoken &}l=laughs end."
+    )
+    assert clean_chat_surface(text) == "Start spoken words still spoken end."
+
+
+def test_cleaner_preserves_spoken_surface_around_repairs_and_false_starts():
+    text = (
+        "Ándale I I REALLY can't re-enter &-uh first [/] repaired [//] "
+        "replacement false_start +/. final-word."
+    )
+    assert clean_chat_surface(text) == (
+        "Ándale I I REALLY can't re-enter uh first repaired replacement "
+        "false_start final-word."
+    )
+
+
+@pytest.mark.parametrize(
     "text",
     [
         ". ? !",
@@ -110,7 +151,14 @@ def test_nonlexical_rows_return_none(text):
         "word [unknown]",
         "word &unknown",
         "word +unknown",
-        "word \x15media_0_100\x15",
+        "word [=unknown]",
+        "word [:unknown]",
+        "word [!]",
+        "word <unclosed",
+        "word \x15unpaired",
+        "word &{",
+        "word &}",
+        "word &{x=unknown",
     ],
 )
 def test_unknown_control_residue_fails_closed(text):

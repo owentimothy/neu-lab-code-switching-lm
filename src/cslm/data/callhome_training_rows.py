@@ -45,6 +45,14 @@ _STANDALONE_CHAT_CONTROLS = frozenset({"[/]", "[//]", "[<]", "[>]"})
 _PAUSE_MARKER = re.compile(r"^\(\.{1,3}\)$")
 _FILLED_PAUSE = re.compile(r"^&-([\wÀ-ÖØ-öø-ÿ]+)$", flags=re.UNICODE)
 _LANGUAGE_TOKEN = re.compile(r"[A-Za-z]+")
+_TIMING_PAIR = re.compile("\x15[^\x15]*\x15")
+_ANGLE_SCOPE = re.compile(r"<([^<>]+)>")
+_BRACKET_CONTROL = re.compile(r"\[([^\[\]]+)\]")
+_BRACKET_ANNOTATION = re.compile(r"^=!?[ \t]+.+$")
+_BRACKET_REPLACEMENT = re.compile(r"^:[ \t]+.+$")
+_LANGUAGE_PRECODE = re.compile(r"^-[ \t]+.+$")
+_POSTCODE = re.compile(r"^\+[ \t]+.+$")
+_LONG_EVENT_BOUNDARY = re.compile(r"^&[{}][ln]=\S+$")
 
 
 class CallhomeTrainingRowsError(Exception):
@@ -106,6 +114,26 @@ def _has_unresolved_control(text: str) -> bool:
     return False
 
 
+def _remove_observed_bracket_control(match: re.Match[str]) -> str:
+    """Remove one explicitly supported CHAT bracket control, preserving others."""
+    if match.group(0) in _STANDALONE_CHAT_CONTROLS:
+        return " "
+    content = match.group(1).strip()
+    if content == "?":
+        return " "
+    if any(
+        pattern.fullmatch(content)
+        for pattern in (
+            _BRACKET_ANNOTATION,
+            _BRACKET_REPLACEMENT,
+            _LANGUAGE_PRECODE,
+            _POSTCODE,
+        )
+    ):
+        return " "
+    return match.group(0)
+
+
 def clean_chat_surface(text: str) -> str | None:
     """Return reviewed MLM surface text, ``None`` if no lexical material remains.
 
@@ -117,10 +145,20 @@ def clean_chat_surface(text: str) -> str | None:
     * one-to-three-dot pause markers;
     * ``&=...`` non-speech events;
     * ``&-word`` filled-pause/nonword forms, preserving ``word``.
+    * paired ``U+0015`` media/timing controls;
+    * angle-bracket scopes, preserving their enclosed spoken material;
+    * observed bracket annotations, replacements, uncertainty markers, language
+      precodes, and postcodes;
+    * the ``+,`` utterance-continuation marker;
+    * ``&+...`` phonological fragments and ``&~...`` nonwords;
+    * ``&{...`` / ``&}...`` long-event boundary markers.
 
     Any remaining CHAT-looking or Unicode control residue fails closed.
     """
     normalized = unicodedata.normalize("NFC", text)
+    normalized = _TIMING_PAIR.sub(" ", normalized)
+    normalized = _BRACKET_CONTROL.sub(_remove_observed_bracket_control, normalized)
+    normalized = _ANGLE_SCOPE.sub(r"\1", normalized)
     kept: list[str] = []
     for token in normalized.split():
         lowered = token.lower()
@@ -131,6 +169,15 @@ def clean_chat_surface(text: str) -> str | None:
         if _PAUSE_MARKER.fullmatch(token):
             continue
         if token.startswith("&="):
+            continue
+        if token == "+,":
+            continue
+        if (
+            (token.startswith("&+") or token.startswith("&~"))
+            and len(token) > 2
+        ):
+            continue
+        if _LONG_EVENT_BOUNDARY.fullmatch(token):
             continue
         filled_pause = _FILLED_PAUSE.fullmatch(token)
         if filled_pause:
