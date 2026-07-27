@@ -15,6 +15,7 @@ data/processed/bangor_sample/
 # synthetic .cha test fixtures elsewhere can still be committed.
 data/raw/callhome/
 data/raw/callhome_*/
+data/processed/callhome/
 
 # Local-only lexicon resources (full dictionaries + derived wordlists). Kept
 # local until license/notice and approval gates are satisfied; see
