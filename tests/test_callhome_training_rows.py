@@ -193,11 +193,77 @@ def test_language_source_conflict_stops(tmp_path):
         rows_from_transcript(transcript, source="callhome_eng")
 
 
-def test_multiple_declared_languages_stop(tmp_path):
-    path = _write_chat(tmp_path, "synthetic.cha", "eng, spa", ["Words ."])
+@pytest.mark.parametrize(
+    ("source", "language"),
+    [
+        ("callhome_eng", "eng, spa"),
+        ("callhome_eng", "eng, spa, fra"),
+        ("callhome_spa", "spa, eng"),
+        ("callhome_spa", "spa, eng, fra"),
+    ],
+)
+def test_expected_language_first_with_additional_metadata_is_accepted(
+    tmp_path,
+    source,
+    language,
+):
+    path = _write_chat(tmp_path, "synthetic.cha", language, ["Words ."])
+    population = build_population_rows([path], source=source)
+    assert len(population.rows) == 1
+    assert population.transcripts_with_additional_language_metadata == 1
+
+
+def test_unexpected_language_first_stops(tmp_path):
+    path = _write_chat(tmp_path, "synthetic.cha", "spa, eng", ["Words ."])
     transcript = read_chat_transcript(path)
     with pytest.raises(CallhomeTrainingRowsError, match=ERROR_LANGUAGE_CONFLICT):
         rows_from_transcript(transcript, source="callhome_eng")
+
+
+@pytest.mark.parametrize(
+    "language",
+    [
+        "",
+        "eng spa",
+        "eng,",
+        "eng,,spa",
+        "eng, eng",
+        "english, spa",
+    ],
+)
+def test_malformed_or_ambiguous_language_declaration_stops(tmp_path, language):
+    path = _write_chat(tmp_path, "synthetic.cha", language, ["Words ."])
+    transcript = read_chat_transcript(path)
+    with pytest.raises(CallhomeTrainingRowsError, match=ERROR_LANGUAGE_CONFLICT):
+        rows_from_transcript(transcript, source="callhome_eng")
+
+
+def test_repeated_language_declaration_header_stops(tmp_path):
+    path = _write_chat(tmp_path, "synthetic.cha", "eng, spa", ["Words ."])
+    transcript = read_chat_transcript(path)
+    transcript.headers["@Languages"].append("eng")
+    with pytest.raises(CallhomeTrainingRowsError, match=ERROR_LANGUAGE_CONFLICT):
+        rows_from_transcript(transcript, source="callhome_eng")
+
+
+def test_utterance_language_conflict_stops(tmp_path):
+    path = _write_chat(tmp_path, "synthetic.cha", "eng, spa", ["Words ."])
+    transcript = read_chat_transcript(path)
+    transcript.utterances[0].language = "spa"
+    with pytest.raises(CallhomeTrainingRowsError, match=ERROR_LANGUAGE_CONFLICT):
+        rows_from_transcript(transcript, source="callhome_eng")
+
+
+def test_additional_language_metadata_count_is_deterministic(tmp_path):
+    paths = [
+        _write_chat(tmp_path, "exact.cha", "eng", ["Exact ."]),
+        _write_chat(tmp_path, "one.cha", "eng, spa", ["One ."]),
+        _write_chat(tmp_path, "multiple.cha", "eng, spa, fra", ["Multiple ."]),
+    ]
+    first = build_population_rows(paths, source="callhome_eng")
+    second = build_population_rows(reversed(paths), source="callhome_eng")
+    assert first == second
+    assert first.transcripts_with_additional_language_metadata == 2
 
 
 def test_nonlexical_exclusion_has_fixed_reason(tmp_path):
@@ -265,9 +331,12 @@ def test_conversation_splits_are_stable_and_have_zero_leakage():
 
 
 def test_repeated_atomic_builds_are_byte_identical(tmp_path):
-    english = _population(
-        "callhome_eng",
-        [_row(conversation=f"eng_{index}") for index in range(20)],
+    english = replace(
+        _population(
+            "callhome_eng",
+            [_row(conversation=f"eng_{index}") for index in range(20)],
+        ),
+        transcripts_with_additional_language_metadata=7,
     )
     spanish = _population(
         "callhome_spa",
@@ -286,6 +355,19 @@ def test_repeated_atomic_builds_are_byte_identical(tmp_path):
     )
     for first_path in first.iterdir():
         assert first_path.read_bytes() == (second / first_path.name).read_bytes()
+    manifest = json.loads((first / "manifest.json").read_text(encoding="utf-8"))
+    assert (
+        manifest["sources"]["callhome_eng"][
+            "transcripts_with_additional_language_metadata"
+        ]
+        == 7
+    )
+    assert (
+        manifest["sources"]["callhome_spa"][
+            "transcripts_with_additional_language_metadata"
+        ]
+        == 0
+    )
 
 
 def test_failure_leaves_no_accepted_partial_output(tmp_path, monkeypatch):

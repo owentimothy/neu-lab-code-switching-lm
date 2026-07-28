@@ -45,6 +45,9 @@ _STANDALONE_CHAT_CONTROLS = frozenset({"[/]", "[//]", "[<]", "[>]"})
 _PAUSE_MARKER = re.compile(r"^\(\.{1,3}\)$")
 _FILLED_PAUSE = re.compile(r"^&-([\wÀ-ÖØ-öø-ÿ]+)$", flags=re.UNICODE)
 _LANGUAGE_TOKEN = re.compile(r"[A-Za-z]+")
+_LANGUAGE_DECLARATION = re.compile(
+    r"[A-Za-z]{3}(?:[ \t]*,[ \t]*[A-Za-z]{3})*"
+)
 _TIMING_PAIR = re.compile("\x15[^\x15]*\x15")
 _ANGLE_SCOPE = re.compile(r"<([^<>]+)>")
 _BRACKET_CONTROL = re.compile(r"\[([^\[\]]+)\]")
@@ -85,13 +88,14 @@ class CallhomeTrainingRow:
 
 @dataclass(frozen=True)
 class CallhomePopulationRows:
-    """Rows and aggregate-only exclusion counts for one source population."""
+    """Rows and aggregate-only diagnostics for one source population."""
 
     source: str
     files_read: int
     utterances_seen: int
     rows: tuple[CallhomeTrainingRow, ...]
     exclusions: dict[str, int]
+    transcripts_with_additional_language_metadata: int = 0
 
 
 def _opaque_ref(raw: str, *, domain: str, salt: str = "") -> str:
@@ -193,24 +197,38 @@ def clean_chat_surface(text: str) -> str | None:
     return cleaned
 
 
-def _declared_languages(transcript: CallhomeTranscript) -> tuple[str, ...]:
+def _declared_languages(
+    transcript: CallhomeTranscript,
+    *,
+    expected_language: str,
+) -> tuple[str, ...]:
     values = transcript.headers.get("@Languages", [])
-    if not values:
-        return ()
-    return tuple(token.lower() for token in _LANGUAGE_TOKEN.findall(values[0]))
+    if len(values) != 1:
+        raise CallhomeTrainingRowsError(ERROR_LANGUAGE_CONFLICT)
+    declaration = values[0].strip()
+    if not _LANGUAGE_DECLARATION.fullmatch(declaration):
+        raise CallhomeTrainingRowsError(ERROR_LANGUAGE_CONFLICT)
+    languages = tuple(
+        token.lower() for token in _LANGUAGE_TOKEN.findall(declaration)
+    )
+    if languages[0] != expected_language or len(languages) != len(set(languages)):
+        raise CallhomeTrainingRowsError(ERROR_LANGUAGE_CONFLICT)
+    return languages
 
 
-def rows_from_transcript(
+def _rows_from_transcript_with_metadata(
     transcript: CallhomeTranscript,
     *,
     source: str,
-) -> tuple[list[CallhomeTrainingRow], Counter[str]]:
-    """Project one strict-reader transcript into local training rows."""
+) -> tuple[list[CallhomeTrainingRow], Counter[str], bool]:
+    """Project one transcript and retain only aggregate declaration metadata."""
     expected_language = SOURCE_TO_LANGUAGE.get(source)
     if expected_language is None:
         raise CallhomeTrainingRowsError(ERROR_UNSUPPORTED_SOURCE)
-    if _declared_languages(transcript) != (expected_language,):
-        raise CallhomeTrainingRowsError(ERROR_LANGUAGE_CONFLICT)
+    declared_languages = _declared_languages(
+        transcript,
+        expected_language=expected_language,
+    )
 
     conversation_ref = _opaque_ref(transcript.source_file, domain="conv")
     rows: list[CallhomeTrainingRow] = []
@@ -243,6 +261,19 @@ def rows_from_transcript(
                 text=cleaned,
             )
         )
+    return rows, exclusions, len(declared_languages) > 1
+
+
+def rows_from_transcript(
+    transcript: CallhomeTranscript,
+    *,
+    source: str,
+) -> tuple[list[CallhomeTrainingRow], Counter[str]]:
+    """Project one strict-reader transcript into local training rows."""
+    rows, exclusions, _ = _rows_from_transcript_with_metadata(
+        transcript,
+        source=source,
+    )
     return rows, exclusions
 
 
@@ -259,16 +290,24 @@ def build_population_rows(
     exclusions: Counter[str] = Counter()
     files_read = 0
     utterances_seen = 0
+    transcripts_with_additional_language_metadata = 0
     for path in sorted(paths, key=lambda item: item.as_posix()):
         transcript = read_chat_transcript(path)
         files_read += 1
         utterances_seen += len(transcript.utterances)
-        transcript_rows, transcript_exclusions = rows_from_transcript(
+        (
+            transcript_rows,
+            transcript_exclusions,
+            has_additional_language_metadata,
+        ) = _rows_from_transcript_with_metadata(
             transcript,
             source=source,
         )
         rows.extend(transcript_rows)
         exclusions.update(transcript_exclusions)
+        transcripts_with_additional_language_metadata += int(
+            has_additional_language_metadata
+        )
 
     return CallhomePopulationRows(
         source=source,
@@ -276,6 +315,9 @@ def build_population_rows(
         utterances_seen=utterances_seen,
         rows=tuple(rows),
         exclusions=dict(sorted(exclusions.items())),
+        transcripts_with_additional_language_metadata=(
+            transcripts_with_additional_language_metadata
+        ),
     )
 
 
@@ -376,6 +418,9 @@ def _row_manifest(
                 "rows_included": rows_by_source[english.source],
                 "approximate_lexical_tokens": lexical_tokens_by_source[english.source],
                 "exclusions": english.exclusions,
+                "transcripts_with_additional_language_metadata": (
+                    english.transcripts_with_additional_language_metadata
+                ),
             },
             spanish.source: {
                 "files_read": spanish.files_read,
@@ -383,6 +428,9 @@ def _row_manifest(
                 "rows_included": rows_by_source[spanish.source],
                 "approximate_lexical_tokens": lexical_tokens_by_source[spanish.source],
                 "exclusions": spanish.exclusions,
+                "transcripts_with_additional_language_metadata": (
+                    spanish.transcripts_with_additional_language_metadata
+                ),
             },
         },
         "rows_by_split": {
