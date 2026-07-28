@@ -54,7 +54,21 @@ ERROR_ROUTING_INVARIANT = "CALLHOME condition-routing invariant violated"
 _ANY_LANGUAGE_PRECODE = re.compile(r"\[\s*-[^\[\]]*\]")
 _LANGUAGE_PRECODE = re.compile(r"\[-[ \t]+([^ \t\[\]][^\[\]]*?)\]")
 _LANGUAGE_LIST = re.compile(r"[A-Za-z]{3}(?:[ \t]*,[ \t]*[A-Za-z]{3})*")
-_KNOWN_LANGUAGE_CODES = frozenset({"eng", "spa", "mul", "und"})
+RECOGNIZED_LANGUAGE_CODES = frozenset(
+    {
+        "deu",
+        "eng",
+        "fra",
+        "grn",
+        "heb",
+        "jpn",
+        "mul",
+        "pol",
+        "spa",
+        "und",
+        "yid",
+    }
+)
 
 
 class CallhomeEligibilityError(Exception):
@@ -110,7 +124,10 @@ def _language_precode_payloads(text: str) -> tuple[tuple[str, ...] | str, ...]:
         )
         if len(languages) != len(set(languages)):
             raise CallhomeEligibilityError(ERROR_UNKNOWN_LANGUAGE_CONTROL)
-        if any(language not in _KNOWN_LANGUAGE_CODES for language in languages):
+        if any(
+            language not in RECOGNIZED_LANGUAGE_CODES
+            for language in languages
+        ):
             raise CallhomeEligibilityError(ERROR_UNKNOWN_LANGUAGE_CONTROL)
         parsed.append(languages)
     return tuple(parsed)
