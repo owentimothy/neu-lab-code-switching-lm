@@ -83,14 +83,17 @@ The following constraints remain active:
 CALLHOME English
 → potentially EnglishMono
 → potentially English portion of MonoCont
-→ never CsCont
+→ potentially future CsCont English monolingual filler, selected only from
+  MonoCont-English
 
 CALLHOME Spanish
 → separate Spanish resource pipeline
 → never affected by this artifact
 
 Bangor Miami
-→ CsCont only
+→ primary current source of genuine code-switched evidence for CsCont
+CALLHOME never receives generic CsCont candidacy or qualifies as genuine
+code-switched, mixed-language, or switching-quota evidence.
 The SCOWL artifact was generated independently of CALLHOME.
 CALLHOME-derived material did not influence:
 resource selection;

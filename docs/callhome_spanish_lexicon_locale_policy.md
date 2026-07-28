@@ -89,7 +89,9 @@ Non-negotiable constraints on how the locale may be chosen:
 - **No comparing candidate locales using CALLHOME aggregate yields.**
 - **No choosing or revising a locale based on CALLHOME validation rates or
   dry-run performance.**
-- **No CALLHOME routing to `CsCont`** (Bangor-sourced only).
+- **No generic `CsCont` or switching-evidence candidacy for CALLHOME.** Future
+  `CsCont-Spanish-Monolingual-Filler` must be selected only from
+  `MonoCont-Spanish`.
 - **False negatives are preferred over false positives.**
 
 A locale chosen because it *maximizes validation yield on CALLHOME*, or because it
@@ -396,7 +398,8 @@ Work must **stop** if:
 - dry-run wiring is introduced
 - clean promotion is proposed
 - condition JSONL or training is proposed
-- CALLHOME could route to `CsCont`
+- CALLHOME could receive generic `CsCont` or switching-evidence candidacy, or
+  future filler could be sampled outside `MonoCont-Spanish`
 
 ## Reviewer Checklist
 - [ ] the decision criteria are independent of CALLHOME content
@@ -409,7 +412,9 @@ Work must **stop** if:
 - [ ] no derived resource is created
 - [ ] no resource files are added
 - [ ] all operational approvals remain `NO / NOT APPROVED`
-- [ ] source-boundary rules remain intact (CALLHOME never shapes the lexicon; never feeds `CsCont`)
+- [ ] source-boundary rules remain intact (CALLHOME never shapes the lexicon;
+      never receives generic `CsCont` or switching-evidence candidacy; future
+      Spanish filler is a subset of `MonoCont-Spanish`)
 - [ ] real pipeline behavior is unchanged
 
 ## Next Approved Step

@@ -1,12 +1,13 @@
 # CALLHOME Projection Policy
 
 ## Status
-- **Docs-only policy note.** No projection code, no parser run on real files.
+- Projection policy for the synthetic-only scaffold in
+  `src/cslm/data/callhome_project.py`. No parser run on real files.
 - No transcript excerpts, header values, participant names, or speaker IDs
   appear here or are produced by this PR.
 - No condition JSONL, no tokenization, no training.
-- Defines how source-faithful CALLHOME parser objects will *eventually* be
-  projected into experiment-facing rows; the implementation is a later PR.
+- Defines how source-faithful CALLHOME parser objects are projected into the
+  current pre-tokenization row scaffold and constrains later projection work.
 - Permission state: **Decision B** (see `docs/callhome_ground_rules.md`,
   TalkBank/CABank response 2026-07-09) — aggregate-only, non-transcript
   summaries may be committed with citation/license notes; transcript-bearing
@@ -29,7 +30,7 @@ These are two distinct layers, kept separate (mirroring the Bangor
   speaker tiers, dependent tiers, nullable language, `media_id`, and parser
   warnings **verbatim**. It does **not** tokenize, clean, language-label tokens,
   project, or judge condition eligibility.
-- **Projection layer** (future, separate module): consumes parser objects and
+- **Projection layer** (`callhome_project.py`, synthetic-only): consumes parser objects and
   produces experiment-facing rows with derived fields, screening outcomes, and
   provenance. It performs no re-parsing.
 
@@ -107,21 +108,28 @@ section.
 Projection must attach or support the monolingual screening outcomes defined in
 `docs/callhome_monolingual_screening.md`:
 
-- **Clean CALLHOME English** rows may feed **`EnglishMono`** and the **English
-  side of `MonoCont`**.
-- **Clean CALLHOME Spanish** rows may feed **`SpanishMono`** and the **Spanish
-  side of `MonoCont`**.
+- **Clean CALLHOME English** rows may feed **`EnglishMono`**, the **English
+  side of `MonoCont`**, and may later serve as controlled **English
+  monolingual filler** in `CsCont`.
+- **Clean CALLHOME Spanish** rows may feed **`SpanishMono`**, the **Spanish
+  side of `MonoCont`**, and may later serve as controlled **Spanish
+  monolingual filler** in `CsCont`.
+- Any future CALLHOME filler row must be selected from the corresponding
+  `MonoCont-English` or `MonoCont-Spanish` material. Filler is not independently
+  sampled from the wider eligible CALLHOME inventory.
 - **Flagged** material (ambiguous borrowings, isolated foreign words,
   name-like insertions, quoted speech, metalinguistic mentions) carries a
   `needs_review` flag and is **neither auto-admitted nor auto-excluded**.
 - **Clear code-switching found incidentally in CALLHOME** is **excluded and
-  counted**, **not** redirected into `CsCont`.
+  counted**, not admitted as filler or code-switched evidence.
 
-**Sourcing invariant:** `CsCont` is **Bangor-sourced only**. Row-level language
-compatibility is not the same as final condition sourcing — a monolingual
-CALLHOME row is eligible for monolingual conditions by virtue of its
-**provenance + screening outcome**, and Bangor never feeds the monolingual
-conditions even when a Bangor row is `en_only`/`es_only`.
+**Evidence invariant:** CALLHOME is an annotation-screened monolingual source.
+Its explicit future `CsCont` roles represent monolingual filler only. CALLHOME
+cannot count toward the overall code-switched exposure quota, the
+intrasentential switching quota, or the intersentential switching quota.
+Genuine code-switched evidence comes from separately audited code-switching
+sources; Bangor remains the primary current source. The current CALLHOME pilot
+builder does not construct or emit `CsCont`.
 
 ## Safety constraints
 - Do **not** run the parser/projector on real CALLHOME files in this PR.
@@ -146,7 +154,8 @@ conditions even when a Bangor row is `en_only`/`es_only`.
 - Sampling proportions and train/dev/test splitting.
 - Building `EnglishMono` / `SpanishMono` / `MonoCont` datasets or condition
   JSONL.
-- Any Bangor / `CsCont` projection logic (already covered by the Bangor layer).
+- Any Bangor projection logic or future `CsCont` construction, budgeting, or
+  filler selection.
 
 ## Future implementation plan
 When implementation begins (a **separate** future PR):
@@ -164,6 +173,7 @@ When implementation begins (a **separate** future PR):
    per-condition-eligibility counts, exclusion/flag reasons) and commit only
    those, under Decision B with the required citation/license notes.
 
-This preserves the invariants that CALLHOME feeds only the monolingual
-conditions, Bangor feeds only `CsCont`, and only aggregate, non-transcript
+This preserves the invariants that CALLHOME supplies annotation-screened
+monolingual material (including explicit future filler candidacy), CALLHOME
+never supplies code-switched evidence, and only aggregate, non-transcript
 artifacts ever enter the repository.

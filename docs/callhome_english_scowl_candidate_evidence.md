@@ -384,22 +384,25 @@ The exact notice bundle **remains proposed, not operationally approved.**
 CALLHOME English
 → potentially EnglishMono
 → potentially the English portion of MonoCont
-→ never CsCont
+→ potentially future CsCont English monolingual filler, selected only from
+  MonoCont-English
 
 CALLHOME Spanish
 → potentially SpanishMono
 → potentially the Spanish portion of MonoCont
-→ never CsCont
+→ potentially future CsCont Spanish monolingual filler, selected only from
+  MonoCont-Spanish
 
 Bangor Miami
-→ CsCont only
+→ primary current source of genuine code-switched evidence for CsCont
 ```
 
 - **No CALLHOME content or CALLHOME-derived evidence was used.**
 - **No ESDB artifact was downloaded or saved.**
 - **No build or extraction command was executed.**
 - **No hash was computed.**
-- **Bangor remains the only final source for `CsCont`.**
+- **CALLHOME never receives generic `CsCont` candidacy and never qualifies as
+  genuine code-switched, mixed-language, or switching-quota evidence.**
 - **All 88,404 CALLHOME rows remain `not_validated`.**
 - **`validated`, `lexicon_exact_match`, `clean`, and every condition-candidate count
   remain zero.**

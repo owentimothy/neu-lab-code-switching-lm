@@ -370,16 +370,21 @@ blocked from all conditions: 88404
 CALLHOME English
 → potentially EnglishMono
 → potentially the English portion of MonoCont
-→ never CsCont
+→ potentially future CsCont English monolingual filler, selected only from
+  MonoCont-English
 
 CALLHOME Spanish
 → potentially SpanishMono
 → potentially the Spanish portion of MonoCont
-→ never CsCont
+→ potentially future CsCont Spanish monolingual filler, selected only from
+  MonoCont-Spanish
 
 Bangor Miami
-→ CsCont only
+→ primary current source of genuine code-switched evidence for CsCont
 ```
+
+CALLHOME never receives generic `CsCont` candidacy and never qualifies as
+genuine code-switched, mixed-language, or switching-quota evidence.
 
 - **No CALLHOME content or CALLHOME-derived evidence was inspected.**
 - **No source or resource was downloaded.**

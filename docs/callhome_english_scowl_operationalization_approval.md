@@ -39,7 +39,11 @@ Standing invariants (unchanged):
 - **No CALLHOME transcript content or CALLHOME-derived evidence was inspected or used.**
 - **CALLHOME-derived material must never shape, filter, expand, normalize, or otherwise
   influence the SCOWL artifact.**
-- **CALLHOME never feeds CsCont; Bangor Miami remains CsCont-only.**
+- **Eligible CALLHOME rows may later serve language-matched CsCont monolingual
+  filler selected only from the corresponding MonoCont material; they never
+  receive generic CsCont candidacy or qualify as genuine code-switched,
+  mixed-language, or switching-quota evidence. Bangor Miami remains the primary
+  current source of genuine code-switched evidence.**
 - **The real pipeline remains unchanged** (`default_source_validation` only; the
   validator/loader is not wired into `scripts/summarize_callhome_projection_local.py`).
   Every real CALLHOME row stays `not_validated`; `clean` stays zero.
@@ -1038,23 +1042,28 @@ blocked from all conditions: 88404
 CALLHOME English
 → potentially EnglishMono
 → potentially the English portion of MonoCont
-→ never CsCont
+→ potentially future CsCont English monolingual filler, selected only from
+  MonoCont-English
 
 CALLHOME Spanish
 → potentially SpanishMono
 → potentially the Spanish portion of MonoCont
-→ never CsCont
+→ potentially future CsCont Spanish monolingual filler, selected only from
+  MonoCont-Spanish
 
 Bangor Miami
-→ CsCont only
+→ primary current source of genuine code-switched evidence for CsCont
 ```
 
 - **No CALLHOME content was inspected or accessed.**
 - **CALLHOME-derived material must never shape, filter, expand, normalize, or influence
   the SCOWL artifact.**
-- **CALLHOME never feeds CsCont; Bangor Miami remains CsCont-only.**
-- **Only future clean English CALLHOME rows may eventually feed EnglishMono and MonoCont**
-  — routing that remains **separately gated and is not approved here**.
+- **CALLHOME never receives generic CsCont candidacy and never qualifies as genuine
+  code-switched, mixed-language, or switching-quota evidence.**
+- **Only future clean English CALLHOME rows may eventually feed EnglishMono,
+  MonoCont-English, and future CsCont English monolingual filler selected from
+  MonoCont-English** — routing that remains **separately gated and is not approved
+  here**.
 - **No SCOWL source was downloaded; no build was run; no artifact, notice, or hash was
   produced; no directory was created.**
 - **The real pipeline remains on conservative default validation; all rows remain blocked

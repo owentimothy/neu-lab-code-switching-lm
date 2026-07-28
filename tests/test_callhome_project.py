@@ -2,13 +2,21 @@
 
 All CHAT content is SYNTHETIC (fake ``AAA``/``BBB`` speaker codes, ``syn_*``
 tokens). No real CALLHOME files or transcript text are used. The projection
-must (a) never route CALLHOME rows to CsCont, (b) never silently admit non-clean
-rows, and (c) de-identify speaker/source references in its safe outputs.
+must (a) distinguish CsCont monolingual-filler candidacy from code-switched
+evidence, (b) never silently admit non-clean rows, and (c) de-identify
+speaker/source references in its safe outputs.
 """
 
 import pytest
 
 from cslm.data.callhome_chat import parse_chat_lines
+from cslm.data.callhome_monolingual_eligibility import (
+    CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES,
+    CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+    MONOCONT_ENGLISH_ROLE,
+    MONOCONT_SPANISH_ROLE,
+)
 from cslm.data.callhome_project import (
     CallhomeProjectedRow,
     callhome_condition_candidates,
@@ -46,21 +54,29 @@ def _all_strings(obj):
     return out
 
 
-def test_clean_english_row_eligible_for_englishmono_and_monocont():
+def test_clean_english_row_has_mono_and_future_filler_roles():
     utt = _synth_transcript().utterances[0]
     row = project_utterance(utt, language_label="eng", screening_outcome="clean")
     assert row.source == "callhome_eng"
-    assert row.condition_candidates == ["EnglishMono", "MonoCont"]
-    assert "CsCont" not in row.condition_candidates
+    assert row.condition_candidates == [
+        "EnglishMono",
+        MONOCONT_ENGLISH_ROLE,
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    ]
+    assert row.qualifies_as_genuine_code_switched_evidence is False
 
 
-def test_clean_spanish_row_eligible_for_spanishmono_and_monocont():
+def test_clean_spanish_row_has_mono_and_future_filler_roles():
     lines = [ln.replace("@Languages:\teng", "@Languages:\tspa") for ln in _SYNTH_LINES]
     utt = parse_chat_lines(lines, source_file="synth_es.cha").utterances[0]
     row = project_utterance(utt, language_label="spa", screening_outcome="clean")
     assert row.source == "callhome_spa"
-    assert row.condition_candidates == ["SpanishMono", "MonoCont"]
-    assert "CsCont" not in row.condition_candidates
+    assert row.condition_candidates == [
+        "SpanishMono",
+        MONOCONT_SPANISH_ROLE,
+        CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+    ]
+    assert row.qualifies_as_genuine_code_switched_evidence is False
 
 
 def test_non_clean_rows_are_not_silently_admitted():
@@ -81,15 +97,19 @@ def test_default_screening_outcome_admits_nothing():
     assert row.condition_candidates == []
 
 
-def test_callhome_never_assigns_cscont():
+def test_callhome_never_assigns_generic_cscont_or_evidence_role():
     for label in ("eng", "spa"):
         for outcome in ("clean", "needs_review", "excluded"):
             source = f"callhome_{label}"
-            assert "CsCont" not in callhome_condition_candidates(source, outcome)
+            candidates = callhome_condition_candidates(source, outcome)
+            assert not set(candidates) & CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES
 
 
-def test_constructing_row_with_cscont_raises():
-    with pytest.raises(ValueError):
+@pytest.mark.parametrize("forbidden_role", sorted(CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES))
+def test_constructing_row_with_generic_or_evidence_cscont_role_raises(
+    forbidden_role,
+):
+    with pytest.raises(ValueError, match="code-switched evidence"):
         CallhomeProjectedRow(
             source="callhome_eng",
             conversation_id="synth_00",
@@ -97,8 +117,65 @@ def test_constructing_row_with_cscont_raises():
             speaker_ref="spk_deadbeef",
             source_file_ref="file_deadbeef",
             screening_outcome="clean",
-            condition_candidates=["EnglishMono", "CsCont"],
+            condition_candidates=["EnglishMono", forbidden_role],
         )
+
+
+@pytest.mark.parametrize(
+    ("source", "filler_role"),
+    [
+        ("callhome_eng", CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE),
+        ("callhome_spa", CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE),
+    ],
+)
+def test_filler_role_without_matching_monocont_role_fails_closed(
+    source,
+    filler_role,
+):
+    with pytest.raises(ValueError, match="matching MonoCont"):
+        CallhomeProjectedRow(
+            source=source,
+            conversation_id="synth_00",
+            turn_index=0,
+            speaker_ref="spk_deadbeef",
+            source_file_ref="file_deadbeef",
+            screening_outcome="clean",
+            condition_candidates=[filler_role],
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "wrong_filler"),
+    [
+        ("callhome_eng", CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE),
+        ("callhome_spa", CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE),
+    ],
+)
+def test_wrong_language_filler_role_fails_closed(source, wrong_filler):
+    with pytest.raises(ValueError, match="wrong-language"):
+        CallhomeProjectedRow(
+            source=source,
+            conversation_id="synth_00",
+            turn_index=0,
+            speaker_ref="spk_deadbeef",
+            source_file_ref="file_deadbeef",
+            screening_outcome="clean",
+            condition_candidates=[wrong_filler],
+        )
+
+
+def test_legacy_monocont_role_remains_accepted_without_implying_filler():
+    row = CallhomeProjectedRow(
+        source="callhome_eng",
+        conversation_id="synth_00",
+        turn_index=0,
+        speaker_ref="spk_deadbeef",
+        source_file_ref="file_deadbeef",
+        screening_outcome="clean",
+        condition_candidates=["EnglishMono", "MonoCont"],
+    )
+    assert row.condition_candidates == ["EnglishMono", "MonoCont"]
+    assert CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE not in row.condition_candidates
 
 
 def test_speaker_and_source_refs_are_deidentified():
@@ -164,7 +241,11 @@ def test_project_transcript_preserves_order_and_screening_map():
     )
     assert [r.turn_index for r in rows] == [0, 1]
     assert rows[0].screening_outcome == "clean"
-    assert rows[0].condition_candidates == ["EnglishMono", "MonoCont"]
+    assert rows[0].condition_candidates == [
+        "EnglishMono",
+        MONOCONT_ENGLISH_ROLE,
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    ]
     assert rows[1].screening_outcome == "needs_review"
     assert rows[1].condition_candidates == []
     assert all(r.conversation_id == "synth_00" for r in rows)

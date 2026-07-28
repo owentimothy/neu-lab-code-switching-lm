@@ -14,10 +14,12 @@
 
 ## Purpose
 CALLHOME English and CALLHOME Spanish are the primary candidate monolingual
-corpora for the `EnglishMono`, `SpanishMono`, and `MonoCont` conditions. Before
-writing any screening code, we need an explicit, reviewable policy for deciding
-which CALLHOME rows are eligible for those conditions — so that eligibility
-decisions are principled and auditable rather than emergent from code.
+corpora for the `EnglishMono`, `SpanishMono`, and `MonoCont` conditions, and may
+also supply controlled monolingual filler to a future `CsCont` condition.
+Before writing any screening code, we need an explicit, reviewable policy for
+deciding which CALLHOME rows are annotation-clean monolingual material — so
+that eligibility decisions are principled and auditable rather than emergent
+from code.
 
 This note defines the **screening categories** and the **core rule** that keeps
 the monolingual conditions genuinely monolingual, while not over-pruning normal
@@ -27,19 +29,24 @@ spoken-conversation phenomena.
 The monolingual conditions must contain **monolingual material only**:
 
 - **CALLHOME English** clean rows may feed **`EnglishMono`** and the **English
-  side of `MonoCont`**.
+  side of `MonoCont`**, and may later serve as English monolingual filler in
+  `CsCont`.
 - **CALLHOME Spanish** clean rows may feed **`SpanishMono`** and the **Spanish
-  side of `MonoCont`**.
+  side of `MonoCont`**, and may later serve as Spanish monolingual filler in
+  `CsCont`.
 - **`MonoCont`** is English-monolingual + Spanish-monolingual material
   concatenated, with **no genuine code-switched utterances**.
+- CALLHOME rows are never genuine code-switched evidence and cannot satisfy
+  overall, intrasentential, or intersentential code-switched exposure quotas.
 
 **Sourcing is not the same as row-level language.** Bangor Miami `en_only` and
 `es_only` rows do **not** feed the monolingual conditions, because Bangor is
-**bilingual-interaction sourced** and belongs entirely to **`CsCont`** sourcing.
-A row being monolingual at the token level does not make it monolingual *in
-provenance*; monolingual conditions draw only from the dedicated monolingual
-corpora (CALLHOME), never from Bangor. Row-level language compatibility ≠ final
-condition sourcing.
+**bilingual-interaction sourced**. Bangor remains the primary current source of
+genuine code-switched evidence for `CsCont`; other separately audited
+code-switching sources may be considered later. A row being monolingual at the
+token level does not make it monolingual *in provenance*; the monolingual
+conditions draw only from the dedicated monolingual corpora (CALLHOME), never
+from Bangor. Row-level language compatibility ≠ final condition sourcing.
 
 ## Screening categories
 Each CALLHOME row will eventually be assigned to exactly one screening outcome.
@@ -50,7 +57,9 @@ with reasons in the (aggregate-only) diagnostics.
 A row whose linguistic content is unambiguously in a single target language
 (all English, or all Spanish), with no cross-language syntax.
 - **Disposition:** eligible for the matching monolingual condition
-  (`EnglishMono` / `SpanishMono`) and the matching side of `MonoCont`.
+  (`EnglishMono` / `SpanishMono`), the matching side of `MonoCont`, and
+  corresponding future `CsCont` monolingual-filler candidacy. Filler must be
+  drawn from material already selected for the matching `MonoCont` side.
 
 ### 2. Acceptable conversational material
 Normal spoken-conversation phenomena that do **not** compromise monolinguality
@@ -90,10 +99,9 @@ Material that would break the monolinguality of the target condition:
 - rows whose language cannot be reliably resolved to a single target language.
 
 - **Disposition:** excluded from `EnglishMono`, `SpanishMono`, and `MonoCont`.
-  (CALLHOME is a monolingual source; genuine code-switching found incidentally
-  in it is **not** redirected into `CsCont` — `CsCont` is Bangor-sourced — it is
-  simply excluded here and counted with a reason.) Excluded rows are counted,
-  never silently dropped.
+  Genuine code-switching found incidentally in CALLHOME is not admitted as
+  `CsCont` evidence or credited toward any switching quota; it is excluded here
+  and counted with a reason. Excluded rows are never silently dropped.
 
 ## Safety constraints
 - Do **not** run parsers/screeners on real CALLHOME files as part of this PR.
@@ -114,7 +122,7 @@ Material that would break the monolinguality of the target condition:
 - The final inclusion/exclusion policy for **category 3 (flagged)** rows.
 - Tokenizer choice, sampling proportions, and train/dev/test splitting.
 - Building `EnglishMono` / `SpanishMono` / `MonoCont` datasets.
-- Any Bangor / `CsCont` sourcing logic (covered elsewhere).
+- Detailed future `CsCont` composition, budgets, or filler selection.
 
 ## Next implementation step
 When implementation begins (a **separate** future PR), the first safe step is a
@@ -128,5 +136,6 @@ When implementation begins (a **separate** future PR), the first safe step is a
   non-transcript summary under Decision B with citation/license notes.
 
 This preserves the invariant that monolingual conditions are sourced only from
-CALLHOME clean rows, that Bangor stays in `CsCont`, and that only aggregate,
-non-transcript artifacts ever enter the repository.
+CALLHOME clean rows, that CALLHOME never counts as genuine code-switched
+evidence, and that only aggregate, non-transcript artifacts ever enter the
+repository. The current CALLHOME pilot builder constructs no `CsCont` artifact.

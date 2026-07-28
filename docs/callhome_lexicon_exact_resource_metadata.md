@@ -532,7 +532,8 @@ Work must **stop** if:
 - **dry-run wiring** is introduced
 - **clean promotion** is proposed
 - **condition JSONL or training** is proposed
-- **CALLHOME could route to `CsCont`**
+- **CALLHOME could receive generic `CsCont` or switching-evidence candidacy, or
+  future filler could be sampled outside the matching `MonoCont` material**
 
 ## Reviewer Checklist
 - [ ] every exact fact cites an official upstream source or a repository doc, with a label

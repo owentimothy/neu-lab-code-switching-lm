@@ -145,9 +145,13 @@ Before clean promotion:
 - [ ] false-positive risk is assessed
 - [ ] source-language validation behavior is approved
 - [ ] explicit approval is recorded in a future PR
-- [ ] only then may **clean English** rows route to **`EnglishMono` + `MonoCont`**
-- [ ] only then may **clean Spanish** rows route to **`SpanishMono` + `MonoCont`**
-- [ ] **CALLHOME still never feeds `CsCont`**
+- [ ] only then may **clean English** rows serve `EnglishMono`,
+      `MonoCont-English`, and future `CsCont-English-Monolingual-Filler`
+      selected only from `MonoCont-English`
+- [ ] only then may **clean Spanish** rows serve `SpanishMono`,
+      `MonoCont-Spanish`, and future `CsCont-Spanish-Monolingual-Filler`
+      selected only from `MonoCont-Spanish`
+- [ ] **CALLHOME receives no generic `CsCont` or switching-evidence candidacy**
 
 ## Explicit non-goals
 - no real lexicon adoption
@@ -173,7 +177,8 @@ Resource use must **stop** if:
 - the local path is not ignored
 - the loader would require network access
 - a derived wordlist depends on CALLHOME tokens
-- validation would route CALLHOME into `CsCont`
+- validation would give CALLHOME generic `CsCont` or switching-evidence
+  candidacy, or imply filler outside the matching `MonoCont` material
 - the aggregate dry-run emits per-row or transcript-bearing output
 - clean promotion is enabled without explicit approval
 

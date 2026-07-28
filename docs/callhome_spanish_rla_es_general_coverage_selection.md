@@ -69,7 +69,7 @@ This reasoning uses only official corpus-level documentation and public upstream
 resource documentation. It does not use CALLHOME transcript content, tokens,
 unknown-token lists, participant geography, speaker metadata, validation yields,
 or coverage results. Bangor Miami did not influence the selection and remains
-`CsCont`-only.
+the primary current source of genuine code-switched evidence for `CsCont`.
 
 ## Upstream Evidence
 
@@ -194,7 +194,9 @@ Stop if any proposed next step would:
 - print lexical entries, corpus material, identifiers, private paths, hashes,
   notices, provenance values, or private logs;
 - mark a row `validated` or `clean`;
-- route CALLHOME into `CsCont` or Bangor into a monolingual condition;
+- give CALLHOME generic `CsCont` or switching-evidence candidacy, sample future
+  CALLHOME filler outside the matching `MonoCont` material, or route Bangor into
+  a monolingual condition;
 - construct datasets, tokenize, or train.
 
 ## Next Approved Step

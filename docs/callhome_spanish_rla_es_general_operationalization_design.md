@@ -335,7 +335,12 @@ corpus material, or self-hash.
 At every gate:
 
 - CALLHOME may not choose, filter, expand, or tune the Spanish resource;
-- Bangor may not influence the monolingual resource and remains `CsCont`-only;
+- Bangor may not influence the monolingual resource and remains the primary
+  current source of genuine code-switched evidence for `CsCont`;
+- CALLHOME may receive only language-matched future `CsCont` monolingual-filler
+  candidacy drawn only from the corresponding `MonoCont` material, never generic
+  `CsCont`, genuine code-switched, mixed-language, or switching-evidence
+  candidacy;
 - no transcript text, token, identifier, filename, example, or private log may
   leave the local environment;
 - no lexical entry, complete local hash, notice text, provenance value, or

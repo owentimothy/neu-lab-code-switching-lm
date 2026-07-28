@@ -84,9 +84,13 @@ Blocked from all conditions: 88404
 | Experimental probes | **CLOSED** | No probe logic exists or is enabled |
 | Git tracking of bundle contents | **CLOSED** | Bundle stays local and Git-ignored |
 
-**CALLHOME never feeds `CsCont`; Bangor Miami remains the only `CsCont` source.**
-A future positive validation could only ever route clean English rows toward
-`EnglishMono` and the English portion of `MonoCont` — and that routing is closed.
+This loader constructs or emits no `CsCont`. A future positive validation may
+permit clean English rows to serve `EnglishMono`, `MonoCont-English`, and future
+`CsCont-English-Monolingual-Filler` selected only from `MonoCont-English` — and
+that routing remains closed here. CALLHOME never receives generic `CsCont`
+candidacy or qualifies as genuine code-switched, mixed-language, or
+switching-quota evidence; Bangor Miami remains the primary current source of
+genuine code-switched evidence.
 
 ## 4. Approved bundle contract
 

@@ -10,6 +10,13 @@ in any output.
 import pytest
 
 from cslm.data.callhome_chat import parse_chat_lines
+from cslm.data.callhome_monolingual_eligibility import (
+    CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES,
+    CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+    MONOCONT_ENGLISH_ROLE,
+    MONOCONT_SPANISH_ROLE,
+)
 from cslm.data.callhome_project import (
     CallhomeProjectedRow,
     project_transcript,
@@ -60,9 +67,25 @@ def _row(source, screening_outcome, candidates, *, needs_review=False, raw_text=
 
 def _mixed_rows():
     return [
-        _row("callhome_eng", "clean", ["EnglishMono", "MonoCont"]),
+        _row(
+            "callhome_eng",
+            "clean",
+            [
+                "EnglishMono",
+                MONOCONT_ENGLISH_ROLE,
+                CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+            ],
+        ),
         _row("callhome_eng", "needs_review", [], needs_review=True),
-        _row("callhome_spa", "clean", ["SpanishMono", "MonoCont"]),
+        _row(
+            "callhome_spa",
+            "clean",
+            [
+                "SpanishMono",
+                MONOCONT_SPANISH_ROLE,
+                CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+            ],
+        ),
         _row("callhome_spa", "excluded", []),
     ]
 
@@ -90,6 +113,12 @@ def test_by_condition_candidate_counts_overlap():
         "SpanishMono": 1,
         "MonoCont": 2,
     }
+    assert s.rows_by_cscont_monolingual_filler_candidate == {
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE: 1,
+        CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE: 1,
+    }
+    assert s.n_cscont_monolingual_filler_candidates == 2
+    assert s.n_callhome_rows_qualified_as_code_switched_evidence == 0
 
 
 def test_needs_review_and_blocked_counts():
@@ -108,14 +137,49 @@ def test_empty_input_is_all_zero_with_stable_keys():
         "SpanishMono": 0,
         "MonoCont": 0,
     }
+    assert s.rows_by_cscont_monolingual_filler_candidate == {
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE: 0,
+        CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE: 0,
+    }
+    assert s.n_callhome_rows_qualified_as_code_switched_evidence == 0
 
 
-def test_invariant_rejects_cscont_in_candidates():
-    # Bypass the row's own guard by mutating after construction, to prove the
-    # diagnostics layer independently enforces the no-CsCont invariant.
+@pytest.mark.parametrize("forbidden_role", sorted(CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES))
+def test_invariant_rejects_generic_cscont_and_evidence_roles(forbidden_role):
+    # Bypass the row's own guard by mutating after construction, proving the
+    # diagnostics layer independently enforces the evidence boundary.
     bad = _row("callhome_eng", "clean", ["EnglishMono"])
-    bad.condition_candidates.append("CsCont")
-    with pytest.raises(ValueError, match="CsCont"):
+    bad.condition_candidates.append(forbidden_role)
+    with pytest.raises(ValueError, match="code-switched evidence"):
+        summarize_projected_rows([bad])
+
+
+def test_diagnostics_accept_valid_filler_candidacy():
+    row = _row(
+        "callhome_eng",
+        "clean",
+        [
+            "EnglishMono",
+            MONOCONT_ENGLISH_ROLE,
+            CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+        ],
+    )
+    summary = summarize_projected_rows([row])
+    assert summary.n_cscont_monolingual_filler_candidates == 1
+    assert summary.n_callhome_rows_qualified_as_code_switched_evidence == 0
+
+
+def test_diagnostics_reject_filler_without_matching_monocont():
+    bad = _row("callhome_eng", "clean", ["EnglishMono"])
+    bad.condition_candidates.append(CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE)
+    with pytest.raises(ValueError, match="matching MonoCont"):
+        summarize_projected_rows([bad])
+
+
+def test_diagnostics_reject_wrong_language_filler():
+    bad = _row("callhome_eng", "clean", ["EnglishMono"])
+    bad.condition_candidates.append(CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE)
+    with pytest.raises(ValueError, match="wrong-language"):
         summarize_projected_rows([bad])
 
 
@@ -149,6 +213,8 @@ def test_flatten_is_scalar_int_only():
     assert flat["source__callhome_eng"] == 2
     assert flat["screening__clean"] == 2
     assert flat["condition__MonoCont"] == 2
+    assert flat["n_cscont_monolingual_filler_candidates"] == 2
+    assert flat["n_callhome_rows_qualified_as_code_switched_evidence"] == 0
     assert flat["n_blocked_from_all_conditions"] == 2
 
 
@@ -184,4 +250,7 @@ def test_summarizes_rows_from_synthetic_parser_projection():
     assert s.n_rows == 2
     assert s.rows_by_source == {"callhome_eng": 2, "callhome_spa": 0}
     assert s.rows_by_condition_candidate["EnglishMono"] == 1  # only turn 0 clean
+    assert s.rows_by_condition_candidate["MonoCont"] == 1
+    assert s.n_cscont_monolingual_filler_candidates == 1
+    assert s.n_callhome_rows_qualified_as_code_switched_evidence == 0
     assert s.n_blocked_from_all_conditions == 1  # turn 1 defaults needs_review

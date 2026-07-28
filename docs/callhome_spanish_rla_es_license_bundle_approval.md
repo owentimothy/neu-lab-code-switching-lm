@@ -417,8 +417,12 @@ This decision does not approve:
 - training a tokenizer or model; or
 - public redistribution of any original, extracted, or generated RLA-ES file.
 
-CALLHOME English and Spanish remain monolingual-source candidates only and must
-never feed `CsCont`. Bangor remains `CsCont`-only and cannot shape this resource.
+Eligible CALLHOME English and Spanish remain monolingual-source candidates and
+may later serve language-matched `CsCont` monolingual filler selected only from
+the corresponding `MonoCont` material. They never receive generic `CsCont`
+candidacy or qualify as genuine code-switched, mixed-language, or
+switching-quota evidence. Bangor remains the primary current source of genuine
+code-switched evidence and cannot shape this resource.
 
 ## Failure and Stop Conditions
 

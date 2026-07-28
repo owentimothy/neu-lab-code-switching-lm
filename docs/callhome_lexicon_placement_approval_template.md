@@ -252,7 +252,8 @@ The reviewer or implementer must **stop** if:
 - the validator would **run over real CALLHOME before separate dry-run approval**
 - **clean promotion is proposed in the same step**
 - **condition JSONL or training is proposed in the same step**
-- CALLHOME **could route to `CsCont`**
+- CALLHOME could receive generic `CsCont` or switching-evidence candidacy, or
+  future filler could be sampled outside the matching `MonoCont` material
 
 ## Safety Guardrails
 - Local resources must remain under `data/resources/local_lexicons/`, and that
@@ -266,11 +267,14 @@ The reviewer or implementer must **stop** if:
 - **CALLHOME-derived token lists must never be used to create, shape, expand,
   filter, normalize, or modify lexicons.**
 - **CALLHOME text or tokens must never influence lexicon construction.**
-- **CALLHOME must never feed `CsCont`** (Bangor-sourced only).
-- Future **clean English** CALLHOME rows may route **only** to `EnglishMono` and
-  `MonoCont`.
-- Future **clean Spanish** CALLHOME rows may route **only** to `SpanishMono` and
-  `MonoCont`.
+- Future **clean English** CALLHOME rows may serve `EnglishMono`,
+  `MonoCont-English`, and future `CsCont-English-Monolingual-Filler`, with filler
+  selected only from `MonoCont-English`.
+- Future **clean Spanish** CALLHOME rows may serve `SpanishMono`,
+  `MonoCont-Spanish`, and future `CsCont-Spanish-Monolingual-Filler`, with filler
+  selected only from `MonoCont-Spanish`.
+- **CALLHOME must never receive generic `CsCont` candidacy or qualify as genuine
+  code-switched, mixed-language, or switching-quota evidence.**
 - Those routing rules apply **only after** later explicit validation and
   clean-promotion approval.
 - **No condition JSONL** may be created in this step.

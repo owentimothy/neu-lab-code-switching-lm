@@ -136,10 +136,12 @@ source:
 - **Condition JSONL construction** — remains out of scope.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - **Model training** — remains out of scope.
-- Any Bangor / `CsCont` logic. **CALLHOME never feeds `CsCont`** (Bangor-sourced
-  only); a future positive lexicon validation would only route clean English rows
-  to `EnglishMono` + `MonoCont` and clean Spanish rows to `SpanishMono` +
-  `MonoCont`.
+- Any Bangor / `CsCont` construction logic. This license review creates no
+  condition output. A future positive lexicon validation may permit clean rows
+  to serve their language-matched baseline, matching `MonoCont` role, and future
+  language-matched `CsCont` monolingual-filler role selected only from that
+  `MonoCont` material. CALLHOME never qualifies as genuine code-switched,
+  mixed-language, or switching-quota evidence.
 
 ## Next steps
 1. For the chosen English and Spanish packages, gather items **1–7** of the

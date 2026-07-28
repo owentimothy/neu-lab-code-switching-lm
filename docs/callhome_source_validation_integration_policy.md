@@ -111,13 +111,21 @@ Consequences the combiner enforces:
 ## Condition eligibility implications
 Final outcomes map to conditions exactly as the projection policy specifies:
 
-- **Clean CALLHOME English** rows may eventually feed **`EnglishMono`** and
-  **`MonoCont`**.
-- **Clean CALLHOME Spanish** rows may eventually feed **`SpanishMono`** and
-  **`MonoCont`**.
-- **CALLHOME rows must never feed `CsCont`.** `CsCont` is **Bangor-sourced
-  only**; row-level language compatibility is not the same as final condition
-  sourcing.
+- **Clean CALLHOME English** rows may eventually feed **`EnglishMono`**,
+  **`MonoCont-English`**, and future
+  **`CsCont-English-Monolingual-Filler`**.
+- **Clean CALLHOME Spanish** rows may eventually feed **`SpanishMono`**,
+  **`MonoCont-Spanish`**, and future
+  **`CsCont-Spanish-Monolingual-Filler`**.
+- Future filler must satisfy
+  `CsCont-English-Monolingual-Filler ⊆ MonoCont-English` or
+  `CsCont-Spanish-Monolingual-Filler ⊆ MonoCont-Spanish`; a future builder must
+  not independently sample another CALLHOME filler inventory.
+- Source validation establishes annotation-clean monolingual eligibility only.
+  CALLHOME never qualifies as genuine code-switched or mixed-language evidence
+  and cannot satisfy overall, intrasentential, or intersentential switching
+  quotas. Bangor remains the primary current source of genuine code-switched
+  evidence.
 - `needs_review` and `excluded` rows are eligible for **no** condition.
 
 Because the default keeps `clean` at zero, all three monolingual conditions draw
@@ -145,7 +153,7 @@ Because the default keeps `clean` at zero, all three monolingual conditions draw
 - The resolution policy for `possible_code_switching` / borrowing rows.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - Building `EnglishMono` / `SpanishMono` / `MonoCont` datasets or condition JSONL.
-- Any Bangor / `CsCont` logic.
+- Actual `CsCont` construction, composition, or filler selection.
 
 ## Future implementation plan
 When integration begins (a **separate**, reviewed PR):
@@ -163,8 +171,9 @@ When integration begins (a **separate**, reviewed PR):
    - **reviewed** on its aggregate counts (how many rows would become `clean`,
      by source and reason) **before** any condition JSONL is created.
 3. Only after that review, and only if the counts look right, proceed to
-   condition-dataset construction under the existing sourcing invariants
-   (CALLHOME → monolingual conditions only; Bangor → `CsCont` only).
+   condition-dataset construction under the sourcing invariants above:
+   CALLHOME may provide controlled monolingual filler shared with MonoCont but
+   never code-switched evidence.
 
 Until step 2's review, positive validation stays disabled and the CALLHOME
 `clean` count stays zero.

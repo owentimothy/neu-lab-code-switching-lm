@@ -42,7 +42,7 @@ condition and still not be *sourced* into it.
 | `EnglishMono` | dedicated **English monolingual** corpus |
 | `SpanishMono` | dedicated **Spanish monolingual** corpus |
 | `MonoCont` | dedicated **English + Spanish monolingual** corpora (no within-utterance CS, no mixed-morpheme review rows) |
-| `CsCont` | **Bangor** bilingual interaction data |
+| `CsCont` | controlled CALLHOME monolingual filler shared with `MonoCont`, plus genuine code-switched evidence sourced primarily from **Bangor** |
 
 **Rationale.** Bangor is a bilingual interaction corpus, so even its
 monolingual-looking (`en_only` / `es_only`) utterances arise in a
@@ -51,20 +51,23 @@ code-switching context. Using them as the *final* `EnglishMono` / `SpanishMono`
 key interpretive contrast (`CsCont` vs `MonoCont`) stays clean only if the
 mono/no-CS conditions come from genuinely monolingual corpora.
 
-Consequently, **Bangor's role in the final experiment is CsCont contribution
-only** — its `en_only`, `es_only`, `cs_within_utterance`, and CsCont-only
-mixed-morpheme rows. The many Bangor `en_only`/`es_only` rows that are
-*eligible* for the mono conditions at the row level are deliberately **not**
-used as their final source.
+Consequently, **Bangor's role in the final experiment is genuine
+code-switched-evidence contribution**, including the separately audited
+language categories appropriate to that evidence. The many Bangor
+`en_only`/`es_only` rows that are *eligible* for the mono conditions at the row
+level are deliberately **not** used as their final source.
 
-## CsCont composition (from Bangor)
+## CsCont component roles
 
-`CsCont` = Bangor `en_only` + `es_only` + `cs_within_utterance` +
-CsCont-only mixed-morpheme review rows. `CsCont` is the **code-switching
-exposure** condition, not "CS-only rows": it includes monolingual utterances
-observed in the bilingual context, so the only training-corpus difference
-between `MonoCont` and `CsCont` is the *presence of code-switching exposure*
-(plus the monolingual-source vs bilingual-source distinction above).
+`CsCont` may include controlled CALLHOME monolingual filler plus a separately
+measured genuine code-switched component sourced primarily from Bangor.
+CALLHOME filler must satisfy
+`CsCont-English-Monolingual-Filler ⊆ MonoCont-English` and
+`CsCont-Spanish-Monolingual-Filler ⊆ MonoCont-Spanish`; it must not be sampled
+as an independent CALLHOME inventory. CALLHOME cannot count as genuine
+code-switched or mixed-language evidence and cannot satisfy overall,
+intrasentential, or intersentential switching quotas. Final component
+proportions and token budgets remain deferred.
 
 ## Exclusions
 
@@ -90,8 +93,8 @@ opted in later via an explicit inclusion policy, never silently).
 two-file projected sample. It reports:
 
 - row-level `condition_candidates` counts (eligibility);
-- the recommended Bangor **CsCont-only** final source role, with the CsCont
-  contribution broken down by language category;
+- the sample-specific Bangor code-switched-evidence contribution, broken down
+  by language category;
 - the count of Bangor rows *eligible* for the mono conditions but **not** used
   as their final source (making the eligibility/sourcing gap explicit);
 - realized proportions (naturalistic);

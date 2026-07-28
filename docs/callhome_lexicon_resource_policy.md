@@ -173,9 +173,12 @@ Until gate 5 clears, real lexicon validation stays disabled and the CALLHOME
 - **Condition JSONL construction** — remains out of scope.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - **Model training** — remains out of scope.
-- Any Bangor / `CsCont` logic. **CALLHOME never feeds `CsCont`** (Bangor-sourced
-  only); a positive lexicon validation only ever routes clean English rows to
-  `EnglishMono` + `MonoCont` and clean Spanish rows to `SpanishMono` + `MonoCont`.
+- Any Bangor / `CsCont` construction logic. This resource policy creates no
+  condition output. A positive lexicon validation may permit clean rows to serve
+  their language-matched baseline, matching `MonoCont` role, and future
+  language-matched `CsCont` monolingual-filler role selected only from that
+  `MonoCont` material. CALLHOME never qualifies as genuine code-switched,
+  mixed-language, or switching-quota evidence.
 
 ## Future implementation sequence
 When a real lexicon is eventually adopted (a **separate**, reviewed PR or PRs):
@@ -190,7 +193,9 @@ When a real lexicon is eventually adopted (a **separate**, reviewed PR or PRs):
 4. **Review the aggregate counts** (gate 4) and obtain **explicit approval**
    (gate 5) before enabling clean promotion.
 5. Only then proceed — under the existing sourcing invariants (CALLHOME →
-   monolingual conditions only; Bangor → `CsCont` only) — toward
+   language-matched baseline and `MonoCont` roles, plus future language-matched
+   `CsCont` monolingual filler drawn only from the corresponding `MonoCont`
+   material; Bangor → primary current genuine code-switched evidence) — toward
    condition-dataset construction, which remains out of scope here.
 
 Until this sequence completes and is approved, no real lexicon is loaded, every

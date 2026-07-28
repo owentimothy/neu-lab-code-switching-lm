@@ -177,10 +177,12 @@ Ordered gates that must clear before any clean promotion:
 - **Condition JSONL construction** — remains out of scope.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - **Model training** — remains out of scope.
-- Any Bangor / `CsCont` logic. **CALLHOME never feeds `CsCont`** (Bangor-sourced
-  only); a future positive lexicon validation would only route clean English rows
-  to `EnglishMono` + `MonoCont` and clean Spanish rows to `SpanishMono` +
-  `MonoCont`.
+- Any Bangor / `CsCont` construction logic. This resource manifest creates no
+  condition output. A future positive lexicon validation may permit clean rows
+  to serve their language-matched baseline, matching `MonoCont` role, and future
+  language-matched `CsCont` monolingual-filler role selected only from that
+  `MonoCont` material. CALLHOME never qualifies as genuine code-switched,
+  mixed-language, or switching-quota evidence.
 
 ## Next steps
 1. Finalize this manifest (confirm the English combined-license details and the
@@ -195,6 +197,6 @@ Ordered gates that must clear before any clean promotion:
 
 Guardrails that hold regardless: **CALLHOME text must never be uploaded
 externally**; **CALLHOME-derived token lists must never shape the lexicon**;
-**CALLHOME never feeds `CsCont`**; and until the gates clear, no real lexicon is
-loaded, every CALLHOME row stays `not_validated`, and the `clean` count stays
-zero.
+**CALLHOME never receives generic `CsCont` or switching-evidence candidacy**; and
+until the gates clear, no real lexicon is loaded, every CALLHOME row stays
+`not_validated`, and the `clean` count stays zero.

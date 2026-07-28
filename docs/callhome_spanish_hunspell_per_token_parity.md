@@ -712,8 +712,12 @@ implemented offline; the second and third remain closed:
 
 ## Standing boundaries
 
-Coverage remains descriptive evidence, not source-language validation. CALLHOME
-never feeds `CsCont`; Bangor Miami remains `CsCont`-only. No RLA-ES acquisition,
-loader use, real coverage run, validation, clean promotion, routing, dataset
-construction, tokenizer, model, probe, or public-redistribution decision is opened
-by this branch.
+Coverage remains descriptive evidence, not source-language validation. This
+protocol constructs or emits no `CsCont` content. Eligible CALLHOME rows may
+later serve language-matched `CsCont` monolingual filler selected only from the
+corresponding `MonoCont` material, but never generic `CsCont`, genuine
+code-switched, mixed-language, or switching-quota evidence. Bangor Miami remains
+the primary current source of genuine code-switched evidence. No RLA-ES
+acquisition, loader use, real coverage run, validation, clean promotion, routing,
+dataset construction, tokenizer, model, probe, or public-redistribution decision
+is opened by this branch.
