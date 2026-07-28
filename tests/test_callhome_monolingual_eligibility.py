@@ -17,8 +17,13 @@ from cslm.data.callhome_chat import (
     read_chat_transcript,
 )
 from cslm.data.callhome_monolingual_eligibility import (
+    CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES,
     CONFLICTING_LANGUAGE_ANNOTATION,
+    CSCONT_CODE_SWITCHED_EVIDENCE_ROLE,
+    CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
     ELIGIBLE_ANNOTATION_CLEAN,
+    ENGLISH_MONO_ROLE,
     ERROR_DUPLICATE_RECONCILIATION,
     ERROR_PROVENANCE_DISAGREEMENT,
     ERROR_RECONCILIATION,
@@ -29,13 +34,19 @@ from cslm.data.callhome_monolingual_eligibility import (
     EXPLICIT_LANGUAGE_AMBIGUITY,
     EXPLICIT_MIXED_LANGUAGE,
     EXPLICIT_NONEXPECTED_LANGUAGE,
+    GENERIC_CSCONT_ROLE,
+    MONOCONT_ENGLISH_ROLE,
+    MONOCONT_SPANISH_ROLE,
     RECOGNIZED_LANGUAGE_CODES,
+    SPANISH_MONO_ROLE,
     CallhomeEligibilityDecision,
     CallhomeEligibilityError,
     audit_callhome_monolingual_eligibility,
     condition_candidates,
     evaluate_utterance_annotation_eligibility,
+    qualifies_as_genuine_code_switched_evidence,
     reconcile_frozen_rows,
+    validate_permitted_roles,
 )
 from cslm.data.callhome_training_rows import (
     assign_conversation_splits,
@@ -426,30 +437,139 @@ def test_aggregate_results_are_deterministic(tmp_path):
 def test_english_inventory_is_shared_across_allowed_conditions():
     decision = CallhomeEligibilityDecision(ELIGIBLE_ANNOTATION_CLEAN)
     assert condition_candidates(source="callhome_eng", decision=decision) == (
-        "EnglishMono",
-        "MonoCont-English",
+        ENGLISH_MONO_ROLE,
+        MONOCONT_ENGLISH_ROLE,
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
     )
 
 
 def test_spanish_inventory_is_shared_across_allowed_conditions():
     decision = CallhomeEligibilityDecision(ELIGIBLE_ANNOTATION_CLEAN)
     assert condition_candidates(source="callhome_spa", decision=decision) == (
-        "SpanishMono",
-        "MonoCont-Spanish",
+        SPANISH_MONO_ROLE,
+        MONOCONT_SPANISH_ROLE,
+        CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
     )
 
 
-def test_callhome_routing_to_cscont_is_impossible():
+@pytest.mark.parametrize(
+    ("source", "roles"),
+    [
+        (
+            "callhome_eng",
+            (
+                ENGLISH_MONO_ROLE,
+                CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+            ),
+        ),
+        (
+            "callhome_spa",
+            (
+                SPANISH_MONO_ROLE,
+                CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+            ),
+        ),
+    ],
+)
+def test_cscont_filler_without_corresponding_monocont_role_fails(source, roles):
+    decision = CallhomeEligibilityDecision(ELIGIBLE_ANNOTATION_CLEAN)
+    with pytest.raises(CallhomeEligibilityError, match=ERROR_ROUTING_INVARIANT):
+        validate_permitted_roles(
+            source=source,
+            decision=decision,
+            roles=roles,
+        )
+
+
+@pytest.mark.parametrize(
+    ("source", "roles"),
+    [
+        (
+            "callhome_eng",
+            (
+                ENGLISH_MONO_ROLE,
+                MONOCONT_ENGLISH_ROLE,
+                CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+            ),
+        ),
+        (
+            "callhome_spa",
+            (
+                SPANISH_MONO_ROLE,
+                MONOCONT_SPANISH_ROLE,
+                GENERIC_CSCONT_ROLE,
+            ),
+        ),
+        (
+            "callhome_eng",
+            (
+                ENGLISH_MONO_ROLE,
+                MONOCONT_ENGLISH_ROLE,
+                CSCONT_CODE_SWITCHED_EVIDENCE_ROLE,
+            ),
+        ),
+        (
+            "callhome_spa",
+            (
+                SPANISH_MONO_ROLE,
+                MONOCONT_SPANISH_ROLE,
+                "Unknown-Future-Role",
+            ),
+        ),
+    ],
+)
+def test_wrong_language_unknown_or_cs_evidence_roles_fail_closed(source, roles):
+    decision = CallhomeEligibilityDecision(ELIGIBLE_ANNOTATION_CLEAN)
+    with pytest.raises(CallhomeEligibilityError, match=ERROR_ROUTING_INVARIANT):
+        validate_permitted_roles(
+            source=source,
+            decision=decision,
+            roles=roles,
+        )
+
+
+def test_callhome_filler_is_distinct_from_code_switched_evidence():
     eligible = CallhomeEligibilityDecision(ELIGIBLE_ANNOTATION_CLEAN)
     excluded = CallhomeEligibilityDecision(
         "excluded",
         EXPLICIT_NONEXPECTED_LANGUAGE,
     )
     for source in ("callhome_eng", "callhome_spa"):
-        assert "CsCont" not in condition_candidates(source=source, decision=eligible)
+        roles = condition_candidates(source=source, decision=eligible)
+        assert GENERIC_CSCONT_ROLE not in roles
+        assert not set(roles) & CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES
+        assert qualifies_as_genuine_code_switched_evidence(
+            source=source,
+            decision=eligible,
+        ) is False
+        assert qualifies_as_genuine_code_switched_evidence(
+            source=source,
+            decision=excluded,
+        ) is False
         assert condition_candidates(source=source, decision=excluded) == ()
     with pytest.raises(CallhomeEligibilityError, match=ERROR_ROUTING_INVARIANT):
         condition_candidates(source="callhome_other", decision=eligible)
+
+
+def test_aggregate_distinguishes_filler_candidacy_from_cs_evidence(tmp_path):
+    transcripts, frozen = _fixture_population(tmp_path)
+    summary = audit_callhome_monolingual_eligibility(
+        transcripts,
+        frozen,
+        canonical_splits_by_row_id=_canonical_splits(frozen),
+    )
+    assert summary["cscont_monolingual_filler_candidate_rows"] == 2
+    assert summary["callhome_rows_qualified_as_code_switched_evidence"] == 0
+    for source in ("callhome_eng", "callhome_spa"):
+        for split in ("train", "validation", "test"):
+            bucket = summary["sources"][source][split]
+            assert (
+                bucket["annotation_clean_monolingual_rows"]
+                == bucket["eligible_rows"]
+                == bucket["cscont_monolingual_filler_candidate_rows"]
+            )
+            assert bucket["genuine_code_switched_evidence_rows"] == 0
+            assert bucket["genuine_code_switched_evidence_tokens"] == 0
 
 
 def test_no_accepted_output_is_produced_after_fail_closed_error(tmp_path):

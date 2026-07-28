@@ -39,6 +39,50 @@ EXCLUSION_REASON_ORDER: tuple[str, ...] = (
 SPLIT_ORDER: tuple[str, ...] = ("train", "validation", "test")
 SOURCE_ORDER: tuple[str, ...] = ("callhome_eng", "callhome_spa")
 
+ENGLISH_MONO_ROLE = "EnglishMono"
+SPANISH_MONO_ROLE = "SpanishMono"
+MONOCONT_ENGLISH_ROLE = "MonoCont-English"
+MONOCONT_SPANISH_ROLE = "MonoCont-Spanish"
+CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE = "CsCont-English-Monolingual-Filler"
+CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE = "CsCont-Spanish-Monolingual-Filler"
+
+GENERIC_CSCONT_ROLE = "CsCont"
+CSCONT_CODE_SWITCHED_EVIDENCE_ROLE = "CsCont-Code-Switched-Evidence"
+CSCONT_INTRASENTENTIAL_SWITCHING_EVIDENCE_ROLE = (
+    "CsCont-Intrasentential-Switching-Evidence"
+)
+CSCONT_INTERSENTENTIAL_SWITCHING_EVIDENCE_ROLE = (
+    "CsCont-Intersentential-Switching-Evidence"
+)
+CSCONT_MIXED_LANGUAGE_EVIDENCE_ROLE = "CsCont-Mixed-Language-Evidence"
+
+CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES: frozenset[str] = frozenset(
+    {
+        GENERIC_CSCONT_ROLE,
+        CSCONT_CODE_SWITCHED_EVIDENCE_ROLE,
+        CSCONT_INTRASENTENTIAL_SWITCHING_EVIDENCE_ROLE,
+        CSCONT_INTERSENTENTIAL_SWITCHING_EVIDENCE_ROLE,
+        CSCONT_MIXED_LANGUAGE_EVIDENCE_ROLE,
+    }
+)
+
+_PERMITTED_ROLES_BY_SOURCE: dict[str, tuple[str, ...]] = {
+    "callhome_eng": (
+        ENGLISH_MONO_ROLE,
+        MONOCONT_ENGLISH_ROLE,
+        CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE,
+    ),
+    "callhome_spa": (
+        SPANISH_MONO_ROLE,
+        MONOCONT_SPANISH_ROLE,
+        CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE,
+    ),
+}
+_FILLER_REQUIRES_MONOCONT: dict[str, str] = {
+    CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE: MONOCONT_ENGLISH_ROLE,
+    CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE: MONOCONT_SPANISH_ROLE,
+}
+
 ERROR_UNKNOWN_LANGUAGE_CONTROL = "unknown or malformed CHAT language control"
 ERROR_RECONCILIATION = "CALLHOME frozen-row reconciliation failed"
 ERROR_DUPLICATE_RECONCILIATION = "duplicate CALLHOME frozen-row reconciliation"
@@ -179,18 +223,56 @@ def condition_candidates(
     source: str,
     decision: CallhomeEligibilityDecision,
 ) -> tuple[str, ...]:
-    """Return the shared source inventory's allowed monolingual conditions."""
-    if source == "callhome_eng":
-        candidates = ("EnglishMono", "MonoCont-English")
-    elif source == "callhome_spa":
-        candidates = ("SpanishMono", "MonoCont-Spanish")
-    else:
+    """Return permitted roles, separating filler use from CS evidence."""
+    permitted = _PERMITTED_ROLES_BY_SOURCE.get(source)
+    if permitted is None:
         raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
     if not decision.is_eligible:
         return ()
-    if "CsCont" in candidates:
+    return validate_permitted_roles(
+        source=source,
+        decision=decision,
+        roles=permitted,
+    )
+
+
+def validate_permitted_roles(
+    *,
+    source: str,
+    decision: CallhomeEligibilityDecision,
+    roles: Iterable[str],
+) -> tuple[str, ...]:
+    """Validate one complete CALLHOME role assignment, failing closed."""
+    expected = _PERMITTED_ROLES_BY_SOURCE.get(source)
+    if expected is None:
         raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
-    return candidates
+    materialized = tuple(roles)
+    if len(materialized) != len(set(materialized)):
+        raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+    if not decision.is_eligible:
+        if materialized:
+            raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+        return ()
+    if set(materialized) != set(expected):
+        raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+    if set(materialized) & CALLHOME_CODE_SWITCHED_EVIDENCE_ROLES:
+        raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+    for filler_role, required_monocont_role in _FILLER_REQUIRES_MONOCONT.items():
+        if filler_role in materialized and required_monocont_role not in materialized:
+            raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+    return materialized
+
+
+def qualifies_as_genuine_code_switched_evidence(
+    *,
+    source: str,
+    decision: CallhomeEligibilityDecision,
+) -> bool:
+    """Return false for every CALLHOME row, eligible or excluded."""
+    if source not in _PERMITTED_ROLES_BY_SOURCE:
+        raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
+    del decision
+    return False
 
 
 def _expected_rows_and_decisions(
@@ -270,8 +352,11 @@ def reconcile_frozen_rows(
         ):
             raise CallhomeEligibilityError(ERROR_PROVENANCE_DISAGREEMENT)
         decision = decisions[row_id]
-        candidates = condition_candidates(source=frozen.source, decision=decision)
-        if "CsCont" in candidates:
+        condition_candidates(source=frozen.source, decision=decision)
+        if qualifies_as_genuine_code_switched_evidence(
+            source=frozen.source,
+            decision=decision,
+        ):
             raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
         reconciled.append(ReconciledEligibility(frozen, decision))
     return tuple(reconciled)
@@ -289,6 +374,12 @@ def _empty_bucket() -> dict[str, object]:
         "approximate_lexical_tokens": 0,
         "eligible_rows": 0,
         "eligible_tokens": 0,
+        "annotation_clean_monolingual_rows": 0,
+        "annotation_clean_monolingual_tokens": 0,
+        "cscont_monolingual_filler_candidate_rows": 0,
+        "cscont_monolingual_filler_candidate_tokens": 0,
+        "genuine_code_switched_evidence_rows": 0,
+        "genuine_code_switched_evidence_tokens": 0,
         "excluded_rows_by_reason": {
             reason: 0 for reason in EXCLUSION_REASON_ORDER
         },
@@ -325,8 +416,12 @@ def summarize_reconciled_eligibility(
             raise CallhomeEligibilityError(ERROR_SOURCE_DISAGREEMENT)
         if row.split not in SPLIT_ORDER:
             raise CallhomeEligibilityError(ERROR_SPLIT_DISAGREEMENT)
-        candidates = condition_candidates(source=row.source, decision=item.decision)
-        if "CsCont" in candidates:
+        roles = condition_candidates(source=row.source, decision=item.decision)
+        is_code_switched_evidence = qualifies_as_genuine_code_switched_evidence(
+            source=row.source,
+            decision=item.decision,
+        )
+        if is_code_switched_evidence:
             raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
 
         key = (row.source, row.split)
@@ -338,8 +433,27 @@ def summarize_reconciled_eligibility(
         )
         all_conversations[key].add(row.conversation_ref)
         if item.decision.is_eligible:
+            expected_filler_role = (
+                CSCONT_ENGLISH_MONOLINGUAL_FILLER_ROLE
+                if row.source == "callhome_eng"
+                else CSCONT_SPANISH_MONOLINGUAL_FILLER_ROLE
+            )
+            if expected_filler_role not in roles:
+                raise CallhomeEligibilityError(ERROR_ROUTING_INVARIANT)
             bucket["eligible_rows"] = int(bucket["eligible_rows"]) + 1
             bucket["eligible_tokens"] = int(bucket["eligible_tokens"]) + tokens
+            bucket["annotation_clean_monolingual_rows"] = (
+                int(bucket["annotation_clean_monolingual_rows"]) + 1
+            )
+            bucket["annotation_clean_monolingual_tokens"] = (
+                int(bucket["annotation_clean_monolingual_tokens"]) + tokens
+            )
+            bucket["cscont_monolingual_filler_candidate_rows"] = (
+                int(bucket["cscont_monolingual_filler_candidate_rows"]) + 1
+            )
+            bucket["cscont_monolingual_filler_candidate_tokens"] = (
+                int(bucket["cscont_monolingual_filler_candidate_tokens"]) + tokens
+            )
             eligible_conversation_tokens[
                 (row.source, row.split, row.conversation_ref)
             ] += tokens
@@ -406,7 +520,12 @@ def summarize_reconciled_eligibility(
             "duplicate_rows": 0,
         },
         "cross_split_leakage_count": 0,
-        "callhome_to_cscont_routing_count": 0,
+        "cscont_monolingual_filler_candidate_rows": sum(
+            int(buckets[(source, split)]["cscont_monolingual_filler_candidate_rows"])
+            for source in SOURCE_ORDER
+            for split in SPLIT_ORDER
+        ),
+        "callhome_rows_qualified_as_code_switched_evidence": 0,
     }
 
 

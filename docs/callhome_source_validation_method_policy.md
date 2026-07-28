@@ -112,12 +112,21 @@ labor is fixed:
 ## Interaction with condition eligibility
 Promotion maps to conditions exactly as the projection policy specifies:
 
-- **Validated clean CALLHOME English** rows may feed **`EnglishMono`** and
-  **`MonoCont`**.
-- **Validated clean CALLHOME Spanish** rows may feed **`SpanishMono`** and
-  **`MonoCont`**.
-- **CALLHOME rows never feed `CsCont`.** `CsCont` is **Bangor-sourced only**;
-  row-level language compatibility is not the same as final condition sourcing.
+- **Validated clean CALLHOME English** rows may feed **`EnglishMono`**,
+  **`MonoCont-English`**, and future
+  **`CsCont-English-Monolingual-Filler`**.
+- **Validated clean CALLHOME Spanish** rows may feed **`SpanishMono`**,
+  **`MonoCont-Spanish`**, and future
+  **`CsCont-Spanish-Monolingual-Filler`**.
+- Future filler must satisfy
+  `CsCont-English-Monolingual-Filler ⊆ MonoCont-English` or
+  `CsCont-Spanish-Monolingual-Filler ⊆ MonoCont-Spanish`; it must not come from
+  a separately sampled CALLHOME inventory.
+- Validation establishes annotation-clean monolingual eligibility, not
+  code-switched evidence. CALLHOME cannot satisfy overall, intrasentential, or
+  intersentential switching quotas and cannot be treated as mixed-language
+  evidence. Bangor remains the primary current source of genuine code-switched
+  evidence.
 - `needs_review` and `excluded` rows are eligible for **no** condition.
 
 ## Required diagnostics before enabling clean admission
@@ -163,7 +172,7 @@ Until gate 4 is cleared, positive validation stays disabled and the CALLHOME
 - **Condition JSONL construction** — remains out of scope.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - **Model training** — remains out of scope.
-- Any Bangor / `CsCont` logic.
+- Actual `CsCont` construction, composition, or filler selection.
 
 ## Future implementation sequence
 When a validator is eventually built (a **separate**, reviewed PR or PRs):
@@ -175,9 +184,9 @@ When a validator is eventually built (a **separate**, reviewed PR or PRs):
    validation diagnostics.
 4. **Review the aggregate counts** (gate 3) and obtain **explicit approval**
    (gate 4) before enabling clean promotion.
-5. Only then proceed — under the existing sourcing invariants (CALLHOME →
-   monolingual conditions only; Bangor → `CsCont` only) — toward condition-dataset
-   construction, which remains out of scope here.
+5. Only then proceed under the sourcing invariants above: CALLHOME may provide
+   controlled monolingual filler shared with MonoCont but never code-switched
+   evidence. Condition-dataset construction remains out of scope here.
 
 Until this sequence completes and is approved, every CALLHOME row stays
 `not_validated` and the `clean` count stays zero.

@@ -32,12 +32,16 @@ monolingual English?". Consequently it **cannot** and **does not**:
 - decide condition eligibility or route a row to any condition;
 - change, tune, expand, filter, or normalize the SCOWL lexicon using CALLHOME
   outcomes;
-- feed CALLHOME into `CsCont`.
+- construct or emit `CsCont`.
 
-CALLHOME never feeds `CsCont`. Bangor remains untouched and `CsCont`-only. English
-alone cannot safely claim monolinguality (with no Spanish lexicon, a Spanish word
-that is also an English word would slip through), so this run reports coverage and
-claims nothing about language identity. See
+This tool-local limitation does not prohibit later language-matched CALLHOME
+monolingual filler selected only from the corresponding `MonoCont` material.
+CALLHOME never receives generic `CsCont` candidacy or qualifies as genuine
+code-switched, mixed-language, or switching-quota evidence; Bangor remains
+untouched and is the primary current source of genuine code-switched evidence.
+English alone cannot safely claim monolinguality (with no Spanish lexicon, a
+Spanish word that is also an English word would slip through), so this run
+reports coverage and claims nothing about language identity. See
 `docs/english_scowl_coverage_contract.md`.
 
 ## Canonical English population
@@ -178,8 +182,8 @@ aggregate is ever emitted**.
   gated and require a new Decision B review.
 - Source-language validation, `clean` promotion, condition eligibility, condition
   routing, dataset construction, tokenizer training, model training, and probes
-  all remain **closed**. CALLHOME never feeds `CsCont`; Bangor remains untouched
-  and `CsCont`-only.
+  all remain **closed**. This tool constructs or emits no `CsCont`; Bangor remains
+  untouched.
 
 ## Testing
 

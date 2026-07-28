@@ -114,11 +114,14 @@ default, and screening+validation combination), `src/cslm/data/callhome_lexicon_
    `ambiguous_foreign_material` cannot be rescued by lexical validation and remains
    `needs_review`. This does not establish that screening detects every mixed or
    code-switched row.
-6. **Monolingual restriction.** CALLHOME English and Spanish remain restricted to
-   the **monolingual** conditions (`EnglishMono` / `SpanishMono`) and the matching
-   monolingual portion of `MonoCont`.
-7. **CALLHOME never feeds `CsCont`.**
-8. **Bangor Miami remains the only final source for `CsCont`.**
+6. **Monolingual-role restriction.** Eligible CALLHOME English and Spanish may
+   serve their language-matched monolingual baseline, matching portion of
+   `MonoCont`, and future language-matched `CsCont` monolingual filler selected
+   only from that `MonoCont` material.
+7. **CALLHOME never receives generic `CsCont` candidacy and never qualifies as
+   genuine code-switched, mixed-language, or switching-quota evidence.**
+8. **Bangor Miami remains the primary current source of genuine code-switched
+   evidence for `CsCont`.**
 
 Consequently, **residual proper names do not generally allow a foreign-language
 utterance to pass** unless **all** remaining lexical material *also* satisfies the
@@ -217,7 +220,7 @@ model training
 | All-token expected-language membership | `callhome_lexicon_validation.py`; `test_all_expected_language_tokens_validate`, `test_expected_language_only_tokens_validate` | A positive requires ≥1 lexical token and every token in the expected lexicon | a name-only row can still be all-expected-language | DIRECT |
 | Other-language overlap blocking | `callhome_lexicon_validation.py`; `test_token_in_other_language_lexicon_is_not_validated`, `test_ambiguous_token_in_both_lexicons_is_not_validated` | Any token in another (or both) lexicon blocks validation | a name listed in only one lexicon isn't blocked by overlap | DIRECT |
 | Unknown-token blocking | `callhome_lexicon_validation.py`; `test_unknown_token_is_not_validated`, `test_unknown_token_blocks_validation` | Any token unknown to the expected lexicon blocks validation | short rows offer fewer blocking chances | DIRECT |
-| Source routing | `callhome_source_validation.py` `combine_screening_and_validation`; CLAUDE.md sourcing invariants | CALLHOME → monolingual conditions only; clean only if eligible **and** validated; never `CsCont` | — | DIRECT |
+| Source routing | `callhome_source_validation.py` `combine_screening_and_validation`; CLAUDE.md sourcing invariants | CALLHOME → language-matched baseline + MonoCont role + future CsCont monolingual-filler role drawn only from that MonoCont material; clean only if eligible **and** validated; never generic `CsCont` or switching evidence | — | DIRECT |
 | Proper-name exclusion limitation | `docs/callhome_english_scowl_candidate_evidence.md` (upstream POS-CLASS warning) | Complete deterministic proper-name exclusion is not available at the proposed release | residual names remain in the lexicon | DIRECT |
 | Short-utterance risk | validator all-token logic; `test_residue_...`, `test_empty_or_no_retained_token_row_does_not_validate` | Rows with no retained lexical token never validate; short rows carry less evidence | a short name-dominated row could satisfy source-consistency validation despite limited independent language evidence | STRONG |
 | Privacy-safe aggregate diagnostics | `callhome_source_validation_diagnostics.py`; content-free decision tests | Decisions/diagnostics are content-free (counts, labels only) | aggregate design must avoid any content leakage | DIRECT |
@@ -262,15 +265,17 @@ blocked from all conditions: 88404
 CALLHOME English
 → potentially EnglishMono
 → potentially the English portion of MonoCont
-→ never CsCont
+→ potentially future CsCont English monolingual filler, selected only from
+  MonoCont-English
 
 CALLHOME Spanish
 → potentially SpanishMono
 → potentially the Spanish portion of MonoCont
-→ never CsCont
+→ potentially future CsCont Spanish monolingual filler, selected only from
+  MonoCont-Spanish
 
 Bangor Miami
-→ CsCont only
+→ primary current source of genuine code-switched evidence for CsCont
 ```
 
 ## Next Step

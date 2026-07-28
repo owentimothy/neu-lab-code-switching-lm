@@ -46,8 +46,11 @@ counts only — no transcript text, refs, or free notes.
 - Output contains **no** utterance text, tokens, header values, participant
   names, raw speaker ids, raw filenames, `speaker_ref`, or `source_file_ref` —
   only aggregate counts.
-- CALLHOME rows are **never** eligible for `CsCont` (Bangor-sourced only); the
-  diagnostics layer enforces this invariant.
+- Eligible CALLHOME rows may receive only their language-matched baseline,
+  matching `MonoCont`, and future language-matched `CsCont`
+  monolingual-filler candidacy; filler must come from the matching `MonoCont`
+  material. The diagnostics reject generic `CsCont` and genuine code-switched,
+  mixed-language, or switching-evidence roles.
 - Real CALLHOME files stay **local / gitignored** under `data/raw/callhome/`.
 - The script **writes no files** and takes no `--output` flag; its stdout is an
   aggregate, non-transcript summary. Do not redirect it into a tracked file, and

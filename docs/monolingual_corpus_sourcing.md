@@ -9,16 +9,18 @@
 
 ## Why this matters
 `MonoCont` and `CsCont` differ, by design, in **code-switching exposure** — that
-is the only difference we want the `CsCont` vs `MonoCont` contrast to reflect.
-`CsCont` is sourced from **Bangor Miami**, which is spontaneous, adult,
-turn-based bilingual **conversation**. If `MonoCont` (and the `EnglishMono` /
-`SpanishMono` anchors) were sourced from written news, Wikipedia, books, or web
-crawl, then any measured difference could reflect **genre / register / modality**
-(spoken vs written, spontaneous vs edited, conversational vs expository) rather
-than code-switching exposure. The monolingual corpora must therefore be matched
-to Bangor's register as closely as possible, and English and Spanish must be
-matched to **each other** in collection method so the two monolingual halves are
-comparable.
+is the primary difference we want the `CsCont` vs `MonoCont` contrast to
+reflect. CALLHOME supplies the monolingual material; controlled CALLHOME
+monolingual filler may also appear in future `CsCont`, while genuine
+code-switched evidence is sourced primarily from **Bangor Miami**, which is
+spontaneous, adult, turn-based bilingual **conversation**. If `MonoCont` (and
+the `EnglishMono` / `SpanishMono` anchors) were sourced from written news,
+Wikipedia, books, or web crawl, then any measured difference could reflect
+**genre / register / modality** (spoken vs written, spontaneous vs edited,
+conversational vs expository) rather than code-switching exposure. The
+monolingual corpora must therefore be matched to Bangor's register as closely
+as possible, and English and Spanish must be matched to **each other** in
+collection method so the two monolingual halves are comparable.
 
 ## Target register
 Desired properties for the English and Spanish monolingual sources:
@@ -77,7 +79,17 @@ conversational corpora).
   - `EnglishMono` = CALLHOME English
   - `SpanishMono` = CALLHOME Spanish
   - `MonoCont` = CALLHOME English + CALLHOME Spanish
-  - `CsCont` = Bangor Miami
+  - future `CsCont` monolingual filler may use CALLHOME material already
+    selected for the corresponding MonoCont component
+  - genuine code-switched evidence for `CsCont` is sourced primarily from
+    Bangor Miami
+
+The shared-material requirement is
+`CsCont-English-Monolingual-Filler ⊆ MonoCont-English` and
+`CsCont-Spanish-Monolingual-Filler ⊆ MonoCont-Spanish`; a future builder must
+not independently sample another CALLHOME filler inventory. CALLHOME never
+counts as genuine code-switched or mixed-language evidence and cannot satisfy
+overall, intrasentential, or intersentential switching quotas.
 
 ## Backup candidates
 

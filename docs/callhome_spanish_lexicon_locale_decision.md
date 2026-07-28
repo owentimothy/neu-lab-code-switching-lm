@@ -121,8 +121,10 @@ The decision weighed only these already-established kinds of evidence:
 - **derived-resource complexity** (union/intersection/common-core burden);
 - the **false-positive / false-negative asymmetry** (FP is the dangerous error);
 - **regional-bias implications** of a single-variant gate;
-- existing repository **source-boundary rules** (CALLHOME never shapes the lexicon;
-  CALLHOME never feeds `CsCont`).
+- existing repository **source-boundary rules** (CALLHOME never shapes the lexicon
+  and never receives generic `CsCont` or switching-evidence candidacy; future
+  language-matched monolingual filler must come from the corresponding
+  `MonoCont` material).
 
 No comparative lexical **coverage** was measured; availability and reproducibility
 facts are not the same as research fitness.
@@ -153,7 +155,9 @@ Because Spanish locale selection is deferred:
 - **Spanish CALLHOME rows remain `not_validated`.**
 - **`SpanishMono` candidates remain zero.**
 - **The Spanish contribution to `MonoCont` remains zero.**
-- **CALLHOME still never feeds `CsCont`** (Bangor-sourced only).
+- **No future `CsCont-Spanish-Monolingual-Filler` candidacy exists while
+  `MonoCont-Spanish` remains zero; CALLHOME never qualifies as genuine
+  code-switched, mixed-language, or switching-quota evidence.**
 
 This is **Spanish-specific**: it does **not** block unrelated English metadata or
 future English-policy work; it blocks **Spanish** resource use until a later
@@ -244,7 +248,8 @@ Work must **stop** if:
 - a **dry run** is enabled
 - **clean promotion** is proposed
 - **condition JSONL or training** is proposed
-- **CALLHOME could route to `CsCont`**
+- **CALLHOME could receive generic `CsCont` or switching-evidence candidacy, or
+  future filler could be sampled outside `MonoCont-Spanish`**
 
 ## Reviewer Checklist
 - [ ] the document records **deferral, not selection**
@@ -253,7 +258,9 @@ Work must **stop** if:
 - [ ] acceptable and unacceptable **future evidence** are explicit
 - [ ] Spanish operational gates remain **closed** (`NO / NOT APPROVED`)
 - [ ] the **English side is not accidentally blocked** by this Spanish-specific decision
-- [ ] source-boundary rules remain intact (CALLHOME never shapes the lexicon; never feeds `CsCont`)
+- [ ] source-boundary rules remain intact (CALLHOME never shapes the lexicon;
+      never receives generic `CsCont` or switching-evidence candidacy; future
+      Spanish filler is a subset of `MonoCont-Spanish`)
 - [ ] real pipeline behavior is unchanged
 
 ## Next Approved Step

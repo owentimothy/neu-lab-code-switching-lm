@@ -261,11 +261,14 @@ Independence rules:
 - **CALLHOME text must never be uploaded externally.**
 - **CALLHOME-derived token lists must never shape, filter, expand, or modify**
   lexicons or derived wordlists.
-- **CALLHOME never feeds `CsCont`** (Bangor-sourced only).
-- Clean **English** rows may route **only** to `EnglishMono` + `MonoCont`, and
-  only after explicit approval.
-- Clean **Spanish** rows may route **only** to `SpanishMono` + `MonoCont`, and
-  only after explicit approval.
+- Clean **English** rows may serve `EnglishMono`, `MonoCont-English`, and future
+  `CsCont-English-Monolingual-Filler`, with filler selected only from
+  `MonoCont-English`, and only after explicit approval.
+- Clean **Spanish** rows may serve `SpanishMono`, `MonoCont-Spanish`, and future
+  `CsCont-Spanish-Monolingual-Filler`, with filler selected only from
+  `MonoCont-Spanish`, and only after explicit approval.
+- **CALLHOME never receives generic `CsCont` candidacy or qualifies as genuine
+  code-switched, mixed-language, or switching-quota evidence.**
 - **No condition JSONL** is produced from this template.
 - **No model training** is triggered by this template.
 
@@ -280,7 +283,8 @@ Resource use must **stop** if:
 - any **CALLHOME transcript text** would be exposed
 - any **token strings from real data** would be committed
 - a **derived wordlist depends on CALLHOME tokens**
-- validation would route **CALLHOME to `CsCont`**
+- validation would give CALLHOME generic `CsCont` or switching-evidence
+  candidacy, or imply filler outside the matching `MonoCont` material
 - clean promotion is approved **implicitly instead of explicitly**
 
 ## Explicit non-goals

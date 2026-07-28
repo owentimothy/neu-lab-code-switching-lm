@@ -171,7 +171,11 @@ The authorized coverage run did **not**: modify the local projection script;
 run Bangor; produce a validation decision; promote a row to `validated` or
 `clean`; route a condition; select a Spanish lexicon or locale; or change
 tokenizer or training data. All CALLHOME rows stay `not_validated` and `clean`
-stays 0. `CsCont` remains Bangor-only.
+stays 0. This coverage tool constructs or emits no `CsCont` content; that
+tool-local limit does not prohibit later language-matched CALLHOME monolingual
+filler selected only from the corresponding `MonoCont` material. CALLHOME never
+qualifies as genuine code-switched, mixed-language, or switching-quota evidence,
+for which Bangor remains the primary current source.
 
 ## 9. Testing
 

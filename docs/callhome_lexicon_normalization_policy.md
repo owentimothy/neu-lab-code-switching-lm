@@ -180,10 +180,12 @@ run (fake lexicons / fake tokens only):
 - **Condition JSONL construction** — remains out of scope.
 - Sampling proportions, train/dev/test splitting, tokenizer choice.
 - **Model training** — remains out of scope.
-- Any Bangor / `CsCont` logic. **CALLHOME never feeds `CsCont`** (Bangor-sourced
-  only); a future positive lexicon validation would only route clean English rows
-  to `EnglishMono` + `MonoCont` and clean Spanish rows to `SpanishMono` +
-  `MonoCont`.
+- Any Bangor / `CsCont` construction logic. This normalization policy creates no
+  condition output. A future positive lexicon validation may permit clean rows
+  to serve their language-matched baseline, matching `MonoCont` role, and future
+  language-matched `CsCont` monolingual-filler role selected only from that
+  `MonoCont` material. CALLHOME never qualifies as genuine code-switched,
+  mixed-language, or switching-quota evidence.
 
 ## Next steps
 1. Resolve the open documented choices (internal apostrophe/hyphen treatment,
@@ -197,6 +199,7 @@ run (fake lexicons / fake tokens only):
 
 Guardrails that hold regardless: **CALLHOME text must never be uploaded
 externally**; **CALLHOME-derived token lists must never shape the lexicon or
-normalization rules**; **CALLHOME never feeds `CsCont`**; and until the gates
-clear, no real lexicon is loaded, every CALLHOME row stays `not_validated`, and
-the `clean` count stays zero.
+normalization rules**; **CALLHOME never receives generic `CsCont` or
+switching-evidence candidacy**; and until the gates clear, no real lexicon is
+loaded, every CALLHOME row stays `not_validated`, and the `clean` count stays
+zero.

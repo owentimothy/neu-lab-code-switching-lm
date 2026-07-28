@@ -97,9 +97,13 @@ Before the dry run may be run:
   rescued
 - `clean` can only become possible when **structural screening is eligible AND
   lexicon validation passes**
-- English clean candidates route **only** to `EnglishMono` + `MonoCont`
-- Spanish clean candidates route **only** to `SpanishMono` + `MonoCont`
-- **CALLHOME never routes to `CsCont`**
+- English clean candidates may serve `EnglishMono`, `MonoCont-English`, and
+  future `CsCont-English-Monolingual-Filler`, with filler selected only from
+  `MonoCont-English`
+- Spanish clean candidates may serve `SpanishMono`, `MonoCont-Spanish`, and
+  future `CsCont-Spanish-Monolingual-Filler`, with filler selected only from
+  `MonoCont-Spanish`
+- **CALLHOME never receives generic `CsCont` or switching-evidence candidacy**
 - the dry run may **compute candidate counts** but does **not** enable promotion
 
 ## Required aggregate outputs
@@ -148,7 +152,9 @@ Only aggregate counts, such as:
 - Are unknown / ambiguous / non-expected aggregate counts high enough to indicate
   normalization or resource-coverage problems?
 - Is there any sign that **code-switching rows** could be accidentally promoted?
-- Is there any path by which **CALLHOME could feed `CsCont`**?
+- Is there any path by which **CALLHOME could receive generic `CsCont` candidacy,
+  qualify as switching evidence, or supply filler outside the matching
+  `MonoCont` material**?
 - Does output remain **aggregate-only and non-transcript**?
 
 ## Failure / stop conditions
@@ -164,7 +170,8 @@ Stop if:
 - a derived wordlist depends on CALLHOME tokens
 - `possible_code_switching` rows are promoted
 - `parser_warning` rows are promoted
-- CALLHOME rows route to `CsCont`
+- CALLHOME rows receive generic `CsCont` or switching-evidence candidacy, or
+  future filler is sampled outside the matching `MonoCont` material
 - clean promotion happens automatically
 - condition JSONL is created
 - training inputs change
@@ -181,9 +188,12 @@ Stop if:
 - the dry run does **not** promote clean rows
 - the dry run **only estimates** possible clean candidates
 - clean promotion requires a **separate PR and explicit approval**
-- clean English rows can only route to `EnglishMono` + `MonoCont`
-- clean Spanish rows can only route to `SpanishMono` + `MonoCont`
-- **CALLHOME never feeds `CsCont`**
+- clean English rows may serve `EnglishMono`, `MonoCont-English`, and future
+  `CsCont-English-Monolingual-Filler` selected only from `MonoCont-English`
+- clean Spanish rows may serve `SpanishMono`, `MonoCont-Spanish`, and future
+  `CsCont-Spanish-Monolingual-Filler` selected only from `MonoCont-Spanish`
+- **CALLHOME never qualifies as genuine code-switched, mixed-language, or
+  switching-quota evidence**
 
 ## Relationship to condition JSONL
 - the dry run creates **no condition JSONL**
