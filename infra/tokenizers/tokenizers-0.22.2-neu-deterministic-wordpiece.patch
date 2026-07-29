@@ -1,0 +1,19 @@
+diff --git a/tokenizers/src/models/bpe/trainer.rs b/tokenizers/src/models/bpe/trainer.rs
+index cda6aea..f72dc21 100644
+--- a/tokenizers/src/models/bpe/trainer.rs
++++ b/tokenizers/src/models/bpe/trainer.rs
+@@ -335,7 +335,13 @@ impl BpeTrainer {
+         let mut words: Vec<Word> = Vec::with_capacity(wc.len());
+         let mut counts: Vec<u64> = Vec::with_capacity(wc.len());
+ 
+-        for (word, count) in wc {
++        // `AHashMap` intentionally randomizes its iteration order. Vocabulary IDs
++        // and merge tie-breaking must not depend on that order, so traverse the
++        // immutable word strings in a canonical order.
++        let mut ordered_word_counts = wc.iter().collect::<Vec<_>>();
++        ordered_word_counts.sort_unstable_by(|(word_a, _), (word_b, _)| word_a.cmp(word_b));
++
++        for (word, count) in ordered_word_counts {
+             let mut current_word = Word::new();
+             counts.push(*count);
+ 
