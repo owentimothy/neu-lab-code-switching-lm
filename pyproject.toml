@@ -7,8 +7,13 @@ name = "cslm"
 version = "0.1.0"
 description = "cs-lm-integrated-syntax"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = []
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    "numpy==1.26.4",
+    "tokenizers==0.22.2",
+    "torch==2.11.0",
+    "transformers==5.6.2",
+]
 
 [project.optional-dependencies]
 dev = [
