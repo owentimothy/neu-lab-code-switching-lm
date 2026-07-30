@@ -26,12 +26,14 @@ import sysconfig
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import MappingProxyType
+from types import FunctionType, MappingProxyType
 from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 import numpy as np
 
 from cslm.modeling.config import CONDITIONS, MAX_SEQUENCE_LENGTH, VOCAB_SIZE
+from cslm.modeling.contracts import APPROVED_BUDGET
+from cslm.modeling.exposure import ExposureAuditError, audit_exposure
 from cslm.modeling.initialization import SMALL_PILOT_SEED_PLANS, TINY_SMOKE_SEED_PLANS
 from cslm.modeling.masking import (
     ValidationMaskRecord,
@@ -42,9 +44,29 @@ from cslm.modeling.packing import PackedSequence, PackingResult, PackingRow, pac
 from cslm.tokenization.shared_wordpiece import (
     BACKEND_CORRECTION_ID,
     CONTINUATION_PREFIX,
-    SPECIAL_TOKEN_IDS,
     protocol_configuration,
 )
+
+for _stale_name, _stale_value in tuple(globals().items()):
+    if (
+        _stale_name != "FunctionType"
+        and getattr(_stale_value, "__module__", None) == __name__
+        and isinstance(_stale_value, FunctionType | type)
+    ):
+        del globals()[_stale_name]
+del _stale_name
+del _stale_value
+
+_APPROVED_SPECIAL_TOKEN_IDS = MappingProxyType(
+    {
+        "[PAD]": 0,
+        "[UNK]": 1,
+        "[CLS]": 2,
+        "[SEP]": 3,
+        "[MASK]": 4,
+    }
+)
+SPECIAL_TOKEN_IDS = _APPROVED_SPECIAL_TOKEN_IDS
 
 PREPARATION_PROTOCOL_VERSION = "neu_real_preparation_v1"
 SYNTHETIC_PREPARATION_PROTOCOL_VERSION = "neu_synthetic_preparation_v1"
@@ -118,9 +140,91 @@ _CSCONT_KEYS = (
     "source",
     "split",
 )
-_BANGOR_ROW_KEYS = ("conversation_id", "source_word_ids", "text", "tokens")
+_BANGOR_V1_ROW_KEYS = (
+    "borrowing_status",
+    "clean_text",
+    "condition_candidates",
+    "conversation_id",
+    "equivalence_heuristic",
+    "inter_sentential_switch_direction_from_previous",
+    "is_inter_sentential_switch_from_previous",
+    "language_category",
+    "matrix_language_heuristic",
+    "n_english_word_tokens",
+    "n_metadata_tokens",
+    "n_mixed_morpheme_word_tokens",
+    "n_neutral_bivalent_word_tokens",
+    "n_other_word_tokens",
+    "n_punctuation_tokens",
+    "n_spanish_word_tokens",
+    "n_tokens_including_punctuation",
+    "n_word_tokens_excluding_punctuation",
+    "needs_review_borrowing",
+    "needs_review_equivalence",
+    "needs_review_matrix_language",
+    "needs_review_mixed_morpheme",
+    "needs_review_unexpected_langid",
+    "normalization_profile",
+    "previous_language_category",
+    "previous_speaker_id",
+    "previous_utterance_id",
+    "raw_text",
+    "same_speaker_as_previous",
+    "source",
+    "source_header",
+    "source_line_numbers",
+    "source_optional_fields_present",
+    "source_path",
+    "source_token_language_labels",
+    "source_token_locations",
+    "source_utterance_id",
+    "source_word_ids",
+    "speaker_id",
+    "split",
+    "text",
+    "token_language_labels",
+    "tokens",
+    "utterance_id",
+    "utterance_index",
+)
+_BANGOR_V1_LANGUAGE_CATEGORIES = frozenset(
+    {
+        "en_only",
+        "es_only",
+        "cs_within_utterance",
+        "neutral_or_bivalent",
+        "punctuation_or_empty",
+        "mixed_or_uncertain",
+        "metadata_or_noise",
+    }
+)
+_BANGOR_V1_TOKEN_LABELS = frozenset(
+    {"eng", "spa", "eng&spa", "neutral", "punct", "other", "mixed_morpheme", "metadata"}
+)
+_BANGOR_V1_SOURCE_LANGIDS = frozenset(
+    {"eng", "spa", "eng&spa", "eng+spa", "spa+eng", "eng&spa+eng", "999", "www"}
+)
+_BANGOR_V1_REQUIRED_SOURCE_COLUMNS = frozenset(
+    {"word_id", "utterance_id", "location", "surface", "speaker", "langid", "filename"}
+)
+_BANGOR_V1_OPTIONAL_SOURCE_COLUMNS = frozenset(
+    {"auto", "fix", "eng", "com", "clause", "clauseno"}
+)
+_BANGOR_V1_CONDITION_CANDIDATES = MappingProxyType(
+    {
+        "en_only": ("EnglishMono", "MonoCont", "CsCont"),
+        "es_only": ("SpanishMono", "MonoCont", "CsCont"),
+        "cs_within_utterance": ("CsCont",),
+        "neutral_or_bivalent": (),
+        "punctuation_or_empty": (),
+        "mixed_or_uncertain": (),
+        "metadata_or_noise": (),
+    }
+)
 _LEXICAL_TOP_LEVEL_KEYS = frozenset({"text", "tokens", "row"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_BANGOR_V1_DOCUMENT_RE = re.compile(r"^bangor_span_[0-9a-f]{16}$")
+_BANGOR_V1_PUNCT_RE = re.compile(r"^[^\w\s]+$", re.UNICODE)
 
 
 class PreparationError(RuntimeError):
@@ -1034,6 +1138,7 @@ class DecodedPreparationRow:
     span_id: str | None = field(repr=False)
     split: Split
     row_order: int
+    source_row_order: int = field(repr=False)
     row_id: str = field(repr=False)
     lexical_token_count: int
     text: str = field(repr=False)
@@ -1061,6 +1166,8 @@ class DecodedPreparationRow:
         if (
             type(self.row_order) is not int
             or self.row_order < 0
+            or type(self.source_row_order) is not int
+            or self.source_row_order < 0
             or lexical_token_count(self.text) != self.lexical_token_count
         ):
             raise PreparationError("decoded row lexical count or ordering is invalid")
@@ -1128,6 +1235,7 @@ class PreparedPreparationRow:
     span_id: str | None = field(repr=False)
     split: Split
     row_order: int
+    source_row_order: int = field(repr=False)
     row_id: str = field(repr=False)
     lexical_token_count: int
     token_ids: tuple[int, ...] = field(repr=False)
@@ -1144,6 +1252,8 @@ class PreparedPreparationRow:
             or self.split not in {"train", "validation"}
             or type(self.row_order) is not int
             or self.row_order < 0
+            or type(self.source_row_order) is not int
+            or self.source_row_order < 0
             or type(self.lexical_token_count) is not int
             or self.lexical_token_count <= 0
             or not self.token_ids
@@ -1223,6 +1333,7 @@ def _tokenize_decoded_row(
         "component",
         "split",
         "row_order",
+        "source_row_order",
         "lexical_token_count",
         "language_shard",
         "input_role",
@@ -1344,6 +1455,7 @@ def _adapt_callhome_record(
         span_id=None,
         split=split,
         row_order=record["turn_index"],
+        source_row_order=record["turn_index"],
         row_id=record["row_id"],
         lexical_token_count=lexical_token_count(text),
         text=text,
@@ -1353,20 +1465,941 @@ def _adapt_callhome_record(
     )
 
 
-def adapt_cscont_record(record: Mapping[str, Any]) -> DecodedPreparationRow:
-    """Build a synthetic-only adapted CsCont row for tests."""
-    return _adapt_cscont_record(
-        record,
-        input_role="synthetic:CsCont",
-        input_ordinal=0,
+def _callhome_source_row_identity(source: str, conversation_id: str, turn_index: int) -> str:
+    payload = f"row\0{source}\0{conversation_id}\0{turn_index}".encode()
+    return "row_" + hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _callhome_document_identity(source: str, split: str, conversation_id: str) -> str:
+    payload = "\0".join(
+        ("1729", "callhome-document", source, split, conversation_id)
+    ).encode()
+    return "callhome_doc_" + hashlib.sha256(payload).hexdigest()[:16]
+
+
+def _stream_binding(binding_key: bytes, domain: str, *values: object) -> bytes:
+    return hmac.new(
+        binding_key,
+        canonical_json_bytes((domain, *values)),
+        hashlib.sha256,
+    ).digest()
+
+
+def _stream_record_binding(
+    binding_key: bytes,
+    outer: Mapping[str, Any],
+    row: Mapping[str, Any],
+) -> bytes:
+    component = outer["component"]
+    nested_identity = (
+        row["utterance_id"]
+        if component == "bangor_natural_span"
+        else row["row_id"]
+    )
+    nested_order = (
+        row["utterance_index"]
+        if component == "bangor_natural_span"
+        else row["turn_index"]
+    )
+    return _stream_binding(
+        binding_key,
+        "stream_record",
+        component,
+        outer["source"],
+        outer["conversation_id"],
+        outer["document_id"],
+        outer["document_row_index"],
+        outer["record_id"],
+        nested_identity,
+        nested_order,
     )
 
 
-def _adapt_cscont_record(
+def _derive_cscont_stream_order_impl(
+    authorized_records: Iterable[Mapping[str, Any]],
+    *,
+    binding_key: bytes,
+    expected_split: str,
+) -> tuple[bytes, ...]:
+    expected_bindings: list[bytes] = []
+    seen_record_ids: set[bytes] = set()
+    seen_documents: set[bytes] = set()
+    seen_conversations: set[bytes] = set()
+    active_component: str | None = None
+    active_source: str | None = None
+    active_document: bytes | None = None
+    active_conversation: bytes | None = None
+    next_document_row_index = 0
+    previous_public_document_order: tuple[str, str] | None = None
+    previous_callhome_turn_index: int | None = None
+    previous_bangor_utterance_index: int | None = None
+    record: Mapping[str, Any] = {}
+    nested: Mapping[str, Any] = {}
+    component = ""
+    source = ""
+    conversation_id = ""
+    document_id = ""
+    try:
+        for record in authorized_records:
+            if type(record) is not dict or tuple(record) != _CSCONT_KEYS:
+                raise PreparationError("CsCont stream plan schema is invalid")
+            outer_types = {
+                "artifact_format_version": int,
+                "component": str,
+                "condition": str,
+                "conversation_id": str,
+                "document_id": str,
+                "document_row_index": int,
+                "lexical_tokens": int,
+                "record_id": str,
+                "row": dict,
+                "source": str,
+                "split": str,
+            }
+            if (
+                any(
+                    type(record.get(name)) is not expected
+                    for name, expected in outer_types.items()
+                )
+                or record["artifact_format_version"] != CSCONT_ARTIFACT_FORMAT_VERSION
+                or record["condition"] != "CsCont"
+                or record["split"] != expected_split
+                or record["document_row_index"] < 0
+            ):
+                raise PreparationError("CsCont stream plan envelope is invalid")
+            component = record["component"]
+            source = record["source"]
+            conversation_id = record["conversation_id"]
+            document_id = record["document_id"]
+            nested = record["row"]
+            if component == "bangor_natural_span" and source == "bangor_cgwords":
+                if (
+                    tuple(nested) != _BANGOR_V1_ROW_KEYS
+                    or type(nested.get("utterance_id")) is not str
+                    or type(nested.get("utterance_index")) is not int
+                    or nested["utterance_index"] < 0
+                    or nested.get("conversation_id") != conversation_id
+                    or record["record_id"] != f"bangor:{nested['utterance_id']}"
+                ):
+                    raise PreparationError("CsCont Bangor stream plan is invalid")
+            elif (
+                component == "callhome_monolingual_filler"
+                and source in {"callhome_eng", "callhome_spa"}
+            ):
+                required_nested_types = {
+                    "conversation_ref": str,
+                    "row_id": str,
+                    "source": str,
+                    "speaker_ref": str,
+                    "split": str,
+                    "text": str,
+                    "turn_index": int,
+                }
+                if (
+                    tuple(nested) != _CALLHOME_KEYS
+                    or any(
+                        type(nested.get(name)) is not expected
+                        for name, expected in required_nested_types.items()
+                    )
+                    or nested["turn_index"] < 0
+                    or nested["source"] != source
+                    or nested["split"] != expected_split
+                    or nested["conversation_ref"] != conversation_id
+                    or nested["row_id"]
+                    != _callhome_source_row_identity(
+                        source,
+                        conversation_id,
+                        nested["turn_index"],
+                    )
+                    or record["record_id"] != f"{source}:{nested['row_id']}"
+                    or document_id
+                    != _callhome_document_identity(
+                        source,
+                        expected_split,
+                        conversation_id,
+                    )
+                ):
+                    raise PreparationError("CsCont CALLHOME stream plan is invalid")
+            else:
+                raise PreparationError("CsCont stream plan component is invalid")
+
+            document = _stream_binding(
+                binding_key,
+                "plan_document",
+                component,
+                source,
+                document_id,
+            )
+            conversation = _stream_binding(
+                binding_key,
+                "plan_conversation",
+                component,
+                source,
+                conversation_id,
+            )
+            source_row = _stream_binding(
+                binding_key,
+                "plan_source_row",
+                component,
+                source,
+                record["record_id"],
+            )
+            if source_row in seen_record_ids:
+                raise PreparationError("CsCont stream record identity is duplicated")
+            seen_record_ids.add(source_row)
+
+            new_document = active_document is None or document != active_document
+            if new_document:
+                public_document_order = (component, source)
+                if (
+                    record["document_row_index"] != 0
+                    or document in seen_documents
+                    or conversation in seen_conversations
+                    or (
+                        previous_public_document_order is not None
+                        and public_document_order < previous_public_document_order
+                    )
+                ):
+                    raise PreparationError("CsCont stream document boundary is invalid")
+                active_component = component
+                active_source = source
+                active_document = document
+                active_conversation = conversation
+                next_document_row_index = 0
+                previous_public_document_order = public_document_order
+                previous_callhome_turn_index = None
+                previous_bangor_utterance_index = None
+                seen_documents.add(document)
+                seen_conversations.add(conversation)
+            elif (
+                component != active_component
+                or source != active_source
+                or conversation != active_conversation
+                or record["document_row_index"] != next_document_row_index
+            ):
+                raise PreparationError("CsCont stream document continuity is invalid")
+
+            if component == "callhome_monolingual_filler":
+                if (
+                    not new_document
+                    and (
+                        previous_callhome_turn_index is None
+                        or nested["turn_index"] <= previous_callhome_turn_index
+                    )
+                ):
+                    raise PreparationError("CsCont CALLHOME stream order is invalid")
+                previous_callhome_turn_index = nested["turn_index"]
+            else:
+                if active_component != "bangor_natural_span":
+                    raise PreparationError("CsCont Bangor stream order is invalid")
+                if (
+                    not new_document
+                    and (
+                        previous_bangor_utterance_index is None
+                        or nested["utterance_index"]
+                        != previous_bangor_utterance_index + 1
+                    )
+                ):
+                    raise PreparationError("CsCont Bangor stream order is invalid")
+                previous_bangor_utterance_index = nested["utterance_index"]
+
+            expected_bindings.append(
+                _stream_record_binding(
+                    binding_key,
+                    record,
+                    nested,
+                )
+            )
+            next_document_row_index = record["document_row_index"] + 1
+            nested = {}
+            record = {}
+            conversation_id = ""
+            document_id = ""
+
+        if not expected_bindings:
+            raise PreparationError("CsCont stream plan is empty")
+        result = tuple(expected_bindings)
+    finally:
+        expected_bindings = []
+        seen_record_ids.clear()
+        seen_documents.clear()
+        seen_conversations.clear()
+        active_component = None
+        active_source = None
+        active_document = None
+        active_conversation = None
+        previous_public_document_order = None
+        previous_callhome_turn_index = None
+        previous_bangor_utterance_index = None
+        component = ""
+        source = ""
+        conversation_id = ""
+        document_id = ""
+        nested = {}
+        record = {}
+    return result
+
+
+def _derive_cscont_stream_order(
+    authorized_records: Iterable[Mapping[str, Any]],
+    *,
+    binding_key: bytes,
+    expected_split: str,
+) -> tuple[bytes, ...]:
+    result: tuple[bytes, ...] | None = None
+    failed = False
+    try:
+        result = _derive_cscont_stream_order_impl(
+            authorized_records,
+            binding_key=binding_key,
+            expected_split=expected_split,
+        )
+    except BaseException:
+        failed = True
+    authorized_records = ()
+    binding_key = b""
+    expected_split = ""
+    if failed or result is None:
+        _raise_fixed("CsCont stream plan derivation failed")
+    return result
+
+
+@dataclass(init=False)
+class _BangorV1StreamState:
+    """Minimum privacy-keyed state for one canonical CsCont membership file."""
+
+    _binding_key: bytes = field(repr=False)
+    _expected_record_bindings: tuple[bytes, ...] = field(repr=False)
+    input_role: str
+    expected_split: str
+    next_input_ordinal: int
+    _active_component: str | None
+    _active_source: str | None
+    _active_document: bytes | None = field(repr=False)
+    _active_conversation: bytes | None = field(repr=False)
+    _active_source_path: bytes | None = field(repr=False)
+    _next_document_row_index: int
+    _previous_callhome_turn_index: int | None
+    _previous_utterance_index: int | None
+    _previous_utterance_id: bytes | None = field(repr=False)
+    _previous_speaker_id: bytes | None = field(repr=False)
+    _previous_language_category: bytes | None = field(repr=False)
+    _word_identities: set[bytes] = field(repr=False)
+    _line_identities: set[bytes] = field(repr=False)
+    _seen_documents: set[bytes] = field(repr=False)
+    _seen_conversations: set[bytes] = field(repr=False)
+    _bangor_phase_closed: bool
+
+    def __new__(cls) -> _BangorV1StreamState:
+        raise PreparationError("Bangor stream state must be factory-derived")
+
+    def _binding(
+        self,
+        domain: str,
+        *values: object,
+    ) -> bytes:
+        return _stream_binding(self._binding_key, domain, *values)
+
+    def _reset_active(self) -> None:
+        self._active_component = None
+        self._active_source = None
+        self._active_document = None
+        self._active_conversation = None
+        self._active_source_path = None
+        self._next_document_row_index = 0
+        self._previous_callhome_turn_index = None
+        self._previous_utterance_index = None
+        self._previous_utterance_id = None
+        self._previous_speaker_id = None
+        self._previous_language_category = None
+        self._word_identities.clear()
+        self._line_identities.clear()
+
+    def clear(self) -> None:
+        self._reset_active()
+        self._seen_documents.clear()
+        self._seen_conversations.clear()
+        self._expected_record_bindings = ()
+        self._binding_key = b""
+        self.input_role = ""
+        self.expected_split = ""
+        self.next_input_ordinal = 0
+        self._bangor_phase_closed = True
+
+    def finalize(self) -> None:
+        if self.next_input_ordinal != len(self._expected_record_bindings):
+            raise PreparationError("CsCont streaming input is incomplete")
+
+    def _validate_envelope(
+        self,
+        row: Mapping[str, Any],
+        outer: Mapping[str, Any],
+        *,
+        input_role: str,
+        input_ordinal: int,
+    ) -> None:
+        if (
+            type(input_role) is not str
+            or input_role != self.input_role
+            or type(input_ordinal) is not int
+            or input_ordinal != self.next_input_ordinal
+            or outer["split"] != self.expected_split
+            or input_ordinal >= len(self._expected_record_bindings)
+            or _stream_record_binding(self._binding_key, outer, row)
+            != self._expected_record_bindings[input_ordinal]
+        ):
+            raise PreparationError("CsCont streaming input boundary is invalid")
+
+    def _observe_document(
+        self,
+        row: Mapping[str, Any],
+        outer: Mapping[str, Any],
+    ) -> bool:
+        component = outer["component"]
+        source = outer["source"]
+        document = self._binding(
+            "document",
+            component,
+            source,
+            outer["document_id"],
+        )
+        conversation = self._binding(
+            "conversation",
+            component,
+            source,
+            outer["conversation_id"],
+        )
+        new_document = self._active_document is None or document != self._active_document
+        if new_document:
+            if (
+                outer["document_row_index"] != 0
+                or document in self._seen_documents
+                or conversation in self._seen_conversations
+            ):
+                raise PreparationError("CsCont document boundary is invalid")
+            self._reset_active()
+            self._active_component = component
+            self._active_source = source
+            self._active_document = document
+            self._active_conversation = conversation
+            self._seen_documents.add(document)
+            self._seen_conversations.add(conversation)
+        elif (
+            component != self._active_component
+            or source != self._active_source
+            or conversation != self._active_conversation
+            or outer["document_row_index"] != self._next_document_row_index
+        ):
+            raise PreparationError("CsCont document continuity is invalid")
+        return new_document
+
+    def _finish_record(self, outer: Mapping[str, Any]) -> None:
+        self._next_document_row_index = outer["document_row_index"] + 1
+        self.next_input_ordinal += 1
+
+    def observe_callhome(
+        self,
+        row: Mapping[str, Any],
+        outer: Mapping[str, Any],
+        *,
+        input_role: str,
+        input_ordinal: int,
+    ) -> None:
+        self._validate_envelope(
+            row,
+            outer,
+            input_role=input_role,
+            input_ordinal=input_ordinal,
+        )
+        new_document = self._observe_document(row, outer)
+        if (
+            not new_document
+            and (
+                self._previous_callhome_turn_index is None
+                or row["turn_index"] <= self._previous_callhome_turn_index
+            )
+        ):
+            raise PreparationError("CsCont CALLHOME turn ordering is invalid")
+        self._previous_callhome_turn_index = row["turn_index"]
+        self._bangor_phase_closed = True
+        self._finish_record(outer)
+
+    def observe_bangor(
+        self,
+        row: Mapping[str, Any],
+        outer: Mapping[str, Any],
+        *,
+        input_role: str,
+        input_ordinal: int,
+    ) -> None:
+        self._validate_envelope(
+            row,
+            outer,
+            input_role=input_role,
+            input_ordinal=input_ordinal,
+        )
+        if self._bangor_phase_closed:
+            raise PreparationError("CsCont Bangor component ordering is invalid")
+
+        new_document = self._observe_document(row, outer)
+        source_path = self._binding("source_path", row["source_path"])
+        if new_document:
+            self._active_source_path = source_path
+        elif source_path != self._active_source_path:
+            raise PreparationError("CsCont Bangor source path continuity is invalid")
+
+        word_identities = {
+            self._binding("word", row["conversation_id"], word_id)
+            for word_id in row["source_word_ids"]
+        }
+        line_identities = {
+            self._binding("line", row["source_path"], line_number)
+            for line_number in row["source_line_numbers"]
+        }
+        if (
+            self._word_identities & word_identities
+            or self._line_identities & line_identities
+        ):
+            raise PreparationError("CsCont Bangor source identity is reused")
+
+        if not new_document:
+            if (
+                row["utterance_index"] != self._previous_utterance_index + 1
+                or self._binding("utterance", row["previous_utterance_id"])
+                != self._previous_utterance_id
+                or self._binding("speaker", row["previous_speaker_id"])
+                != self._previous_speaker_id
+                or self._binding(
+                    "language_category",
+                    row["previous_language_category"],
+                )
+                != self._previous_language_category
+            ):
+                raise PreparationError("CsCont Bangor utterance continuity is invalid")
+
+        self._word_identities.update(word_identities)
+        self._line_identities.update(line_identities)
+        self._previous_utterance_index = row["utterance_index"]
+        self._previous_utterance_id = self._binding("utterance", row["utterance_id"])
+        self._previous_speaker_id = self._binding("speaker", row["speaker_id"])
+        self._previous_language_category = self._binding(
+            "language_category",
+            row["language_category"],
+        )
+        self._finish_record(outer)
+
+
+def _derive_bangor_v1_stream_state(
+    *,
+    hmac_key: bytes,
+    input_role: str,
+    expected_split: str,
+    authorized_records: Iterable[Mapping[str, Any]],
+) -> _BangorV1StreamState:
+    _require_hmac_key(hmac_key)
+    if (
+        type(input_role) is not str
+        or not input_role
+        or expected_split not in {"train", "validation"}
+    ):
+        raise PreparationError("Bangor stream state boundary is invalid")
+    state = object.__new__(_BangorV1StreamState)
+    binding_key_hex = _pseudonym(
+        hmac_key,
+        "row_binding",
+        "bangor_v1_stream",
+        canonical_json_bytes((input_role, expected_split)).hex(),
+    )
+    if binding_key_hex is None:
+        raise PreparationError("Bangor stream state boundary is invalid")
+    binding_key = bytes.fromhex(binding_key_hex)
+    expected_record_bindings: tuple[bytes, ...] | None = None
+    failed = False
+    try:
+        expected_record_bindings = _derive_cscont_stream_order(
+            authorized_records,
+            binding_key=binding_key,
+            expected_split=expected_split,
+        )
+    except BaseException:
+        failed = True
+    authorized_records = ()
+    hmac_key = b""
+    binding_key_hex = None
+    if failed or expected_record_bindings is None:
+        binding_key = b""
+        _raise_fixed("Bangor stream state boundary is invalid")
+    object.__setattr__(state, "_binding_key", binding_key)
+    binding_key = b""
+    object.__setattr__(state, "_expected_record_bindings", expected_record_bindings)
+    object.__setattr__(state, "input_role", input_role)
+    object.__setattr__(state, "expected_split", expected_split)
+    object.__setattr__(state, "next_input_ordinal", 0)
+    object.__setattr__(state, "_active_component", None)
+    object.__setattr__(state, "_active_source", None)
+    object.__setattr__(state, "_active_document", None)
+    object.__setattr__(state, "_active_conversation", None)
+    object.__setattr__(state, "_active_source_path", None)
+    object.__setattr__(state, "_next_document_row_index", 0)
+    object.__setattr__(state, "_previous_callhome_turn_index", None)
+    object.__setattr__(state, "_previous_utterance_index", None)
+    object.__setattr__(state, "_previous_utterance_id", None)
+    object.__setattr__(state, "_previous_speaker_id", None)
+    object.__setattr__(state, "_previous_language_category", None)
+    object.__setattr__(state, "_word_identities", set())
+    object.__setattr__(state, "_line_identities", set())
+    object.__setattr__(state, "_seen_documents", set())
+    object.__setattr__(state, "_seen_conversations", set())
+    object.__setattr__(state, "_bangor_phase_closed", False)
+    return state
+
+
+def adapt_cscont_record(record: Mapping[str, Any]) -> DecodedPreparationRow:
+    """Build a synthetic-only adapted CsCont row for tests."""
+    result: DecodedPreparationRow | None = None
+    state: _BangorV1StreamState | None = None
+    failed = False
+    try:
+        state = _derive_bangor_v1_stream_state(
+            hmac_key=_SYNTHETIC_PRIVACY_RECONCILIATION_KEY,
+            input_role="synthetic:CsCont",
+            expected_split=str(record.get("split", "")),
+            authorized_records=(record,),
+        )
+        result = _adapt_cscont_record(
+            record,
+            input_role="synthetic:CsCont",
+            input_ordinal=0,
+            bangor_state=state,
+        )
+        state.finalize()
+    except BaseException:
+        failed = True
+    if state is not None:
+        state.clear()
+    state = None
+    record = {}
+    if failed or result is None:
+        _raise_fixed("CsCont record failed approved schema validation")
+    return result
+
+
+def _bangor_v1_source_token_label(surface: str, source_label: str) -> str:
+    if surface.strip().lower() == "www" or source_label == "www":
+        return "metadata"
+    if source_label in {"eng", "spa", "eng&spa"}:
+        return source_label
+    if source_label == "999":
+        return "punct" if _BANGOR_V1_PUNCT_RE.fullmatch(surface) else "other"
+    if source_label in {"eng+spa", "spa+eng", "eng&spa+eng"}:
+        return "mixed_morpheme"
+    return "other"
+
+
+def _bangor_v1_language_category(labels: Sequence[str]) -> str:
+    label_set = set(labels)
+    if "metadata" in label_set:
+        if all(label in {"metadata", "punct"} for label in labels):
+            return "metadata_or_noise"
+        return "mixed_or_uncertain"
+    non_punctuation = [label for label in labels if label != "punct"]
+    if not non_punctuation:
+        return "punctuation_or_empty"
+    if "eng" in label_set and "spa" in label_set:
+        return "cs_within_utterance"
+    if "eng" in label_set:
+        return "en_only"
+    if "spa" in label_set:
+        return "es_only"
+    if label_set & {"mixed_morpheme", "other"}:
+        return "mixed_or_uncertain"
+    return "neutral_or_bivalent"
+
+
+def _bangor_v1_inter_sentential_switch(
+    previous_category: str | None,
+    current_category: str,
+) -> tuple[bool | None, str | None]:
+    dominant = {"en_only": "eng", "es_only": "spa"}
+    previous_language = dominant.get(previous_category)
+    current_language = dominant.get(current_category)
+    if previous_language is None or current_language is None:
+        return None, None
+    if previous_language == current_language:
+        return False, None
+    if previous_language == "eng":
+        return True, "eng_to_spa"
+    return True, "spa_to_eng"
+
+
+def _validate_and_project_bangor_v1_row(
+    row: Mapping[str, Any],
+    outer: Mapping[str, Any],
+) -> dict[str, object]:
+    """Validate the accepted freeze-generator schema, then retain four fields."""
+    if type(row) is not dict or tuple(row) != _BANGOR_V1_ROW_KEYS:
+        raise PreparationError("CsCont Bangor v1 nested schema is invalid")
+
+    required_strings = (
+        "clean_text",
+        "conversation_id",
+        "language_category",
+        "normalization_profile",
+        "raw_text",
+        "source",
+        "source_path",
+        "speaker_id",
+        "split",
+        "text",
+        "utterance_id",
+    )
+    required_booleans = (
+        "needs_review_borrowing",
+        "needs_review_equivalence",
+        "needs_review_matrix_language",
+        "needs_review_mixed_morpheme",
+        "needs_review_unexpected_langid",
+    )
+    count_fields = (
+        "n_english_word_tokens",
+        "n_metadata_tokens",
+        "n_mixed_morpheme_word_tokens",
+        "n_neutral_bivalent_word_tokens",
+        "n_other_word_tokens",
+        "n_punctuation_tokens",
+        "n_spanish_word_tokens",
+        "n_tokens_including_punctuation",
+        "n_word_tokens_excluding_punctuation",
+    )
+    list_fields = (
+        "condition_candidates",
+        "source_header",
+        "source_line_numbers",
+        "source_optional_fields_present",
+        "source_token_language_labels",
+        "source_token_locations",
+        "source_word_ids",
+        "token_language_labels",
+        "tokens",
+    )
+    if (
+        any(type(row[key]) is not str or not row[key] for key in required_strings)
+        or any(type(row[key]) is not bool for key in required_booleans)
+        or any(type(row[key]) is not int or row[key] < 0 for key in count_fields)
+        or any(type(row[key]) is not list for key in list_fields)
+        or type(row["source_utterance_id"]) is not int
+        or row["source_utterance_id"] <= 0
+        or type(row["utterance_index"]) is not int
+        or row["utterance_index"] < 0
+        or row["borrowing_status"] is not None
+        or row["equivalence_heuristic"] is not None
+        or row["matrix_language_heuristic"] is not None
+    ):
+        raise PreparationError("CsCont Bangor v1 field type or nullability is invalid")
+
+    nullable_strings = (
+        "inter_sentential_switch_direction_from_previous",
+        "previous_language_category",
+        "previous_speaker_id",
+        "previous_utterance_id",
+    )
+    if (
+        any(row[key] is not None and type(row[key]) is not str for key in nullable_strings)
+        or (
+            row["is_inter_sentential_switch_from_previous"] is not None
+            and type(row["is_inter_sentential_switch_from_previous"]) is not bool
+        )
+        or (
+            row["same_speaker_as_previous"] is not None
+            and type(row["same_speaker_as_previous"]) is not bool
+        )
+    ):
+        raise PreparationError("CsCont Bangor v1 field type or nullability is invalid")
+
+    tokens = row["tokens"]
+    token_labels = row["token_language_labels"]
+    source_labels = row["source_token_language_labels"]
+    word_ids = row["source_word_ids"]
+    locations = row["source_token_locations"]
+    line_numbers = row["source_line_numbers"]
+    if (
+        not tokens
+        or any(type(token) is not str or not token for token in tokens)
+        or len(token_labels) != len(tokens)
+        or any(
+            type(label) is not str or label not in _BANGOR_V1_TOKEN_LABELS
+            for label in token_labels
+        )
+        or len(source_labels) != len(tokens)
+        or any(
+            type(label) is not str or label not in _BANGOR_V1_SOURCE_LANGIDS
+            for label in source_labels
+        )
+        or len(word_ids) != len(tokens)
+        or any(type(word_id) is not int or word_id <= 0 for word_id in word_ids)
+        or len(set(word_ids)) != len(word_ids)
+        or len(locations) != len(tokens)
+        or any(type(location) is not int or location <= 0 for location in locations)
+        or any(later <= earlier for earlier, later in zip(locations, locations[1:]))
+        or len(line_numbers) != len(tokens)
+        or any(type(line_number) is not int or line_number < 2 for line_number in line_numbers)
+        or len(set(line_numbers)) != len(line_numbers)
+    ):
+        raise PreparationError("CsCont Bangor v1 token structure is invalid")
+
+    source_header = row["source_header"]
+    optional_present = row["source_optional_fields_present"]
+    if (
+        not source_header
+        or any(type(name) is not str or not name for name in source_header)
+        or len(source_header) != len(set(source_header))
+        or not _BANGOR_V1_REQUIRED_SOURCE_COLUMNS <= set(source_header)
+        or any(type(name) is not str for name in optional_present)
+        or optional_present
+        != sorted(_BANGOR_V1_OPTIONAL_SOURCE_COLUMNS & set(source_header))
+    ):
+        raise PreparationError("CsCont Bangor v1 source-header structure is invalid")
+
+    expected_labels = [
+        _bangor_v1_source_token_label(surface, source_label)
+        for surface, source_label in zip(tokens, source_labels, strict=True)
+    ]
+    category = _bangor_v1_language_category(token_labels)
+    needs_mixed_review = "mixed_morpheme" in token_labels
+    expected_candidates = _BANGOR_V1_CONDITION_CANDIDATES[category]
+    if needs_mixed_review:
+        expected_candidates = tuple(
+            condition for condition in expected_candidates if condition == "CsCont"
+        )
+    if (
+        token_labels != expected_labels
+        or row["language_category"] != category
+        or tuple(row["condition_candidates"]) != expected_candidates
+        or any(type(condition) is not str for condition in row["condition_candidates"])
+        or row["needs_review_borrowing"] is not False
+        or row["needs_review_equivalence"] is not False
+        or row["needs_review_matrix_language"] is not False
+        or row["needs_review_mixed_morpheme"] is not needs_mixed_review
+        or row["needs_review_unexpected_langid"] is not False
+        or category in {"metadata_or_noise", "mixed_or_uncertain"}
+    ):
+        raise PreparationError("CsCont Bangor v1 language relationships are invalid")
+
+    expected_counts = {
+        "n_english_word_tokens": token_labels.count("eng"),
+        "n_spanish_word_tokens": token_labels.count("spa"),
+        "n_neutral_bivalent_word_tokens": (
+            token_labels.count("neutral") + token_labels.count("eng&spa")
+        ),
+        "n_other_word_tokens": token_labels.count("other"),
+        "n_mixed_morpheme_word_tokens": token_labels.count("mixed_morpheme"),
+        "n_punctuation_tokens": token_labels.count("punct"),
+        "n_metadata_tokens": token_labels.count("metadata"),
+    }
+    expected_counts["n_word_tokens_excluding_punctuation"] = sum(
+        expected_counts[key]
+        for key in (
+            "n_english_word_tokens",
+            "n_spanish_word_tokens",
+            "n_neutral_bivalent_word_tokens",
+            "n_other_word_tokens",
+            "n_mixed_morpheme_word_tokens",
+        )
+    )
+    expected_counts["n_tokens_including_punctuation"] = (
+        expected_counts["n_word_tokens_excluding_punctuation"]
+        + expected_counts["n_punctuation_tokens"]
+        + expected_counts["n_metadata_tokens"]
+    )
+    if (
+        any(row[key] != expected for key, expected in expected_counts.items())
+        or row["n_metadata_tokens"] != 0
+        or row["n_other_word_tokens"] != 0
+        or row["text"] != " ".join(tokens)
+        or row["raw_text"] != row["text"]
+        or row["clean_text"] != row["text"]
+        or row["normalization_profile"] != "source_faithful_audit"
+        or row["source"] != "bangor_cgwords"
+        or row["split"] not in {"train", "validation"}
+        or Path(row["source_path"]).stem.replace("_cgwords", "")
+        != row["conversation_id"]
+    ):
+        raise PreparationError("CsCont Bangor v1 projection relationships are invalid")
+
+    source_utterance_id = row["source_utterance_id"]
+    expected_utterance_id = f"{row['conversation_id']}_{source_utterance_id:06d}"
+    previous_category = row["previous_language_category"]
+    if previous_category is not None and previous_category not in _BANGOR_V1_LANGUAGE_CATEGORIES:
+        raise PreparationError("CsCont Bangor v1 ordered identity is invalid")
+    if row["utterance_index"] == 0:
+        previous_values_valid = all(
+            row[key] is None
+            for key in (
+                "previous_utterance_id",
+                "previous_speaker_id",
+                "previous_language_category",
+                "same_speaker_as_previous",
+                "is_inter_sentential_switch_from_previous",
+                "inter_sentential_switch_direction_from_previous",
+            )
+        )
+    else:
+        previous_utterance_match = re.fullmatch(
+            re.escape(row["conversation_id"]) + r"_([0-9]{6})",
+            row["previous_utterance_id"] or "",
+        )
+        previous_values_valid = (
+            type(row["previous_utterance_id"]) is str
+            and previous_utterance_match is not None
+            and int(previous_utterance_match.group(1)) > 0
+            and type(row["previous_speaker_id"]) is str
+            and bool(row["previous_speaker_id"])
+            and previous_category in _BANGOR_V1_LANGUAGE_CATEGORIES
+            and type(row["same_speaker_as_previous"]) is bool
+            and row["same_speaker_as_previous"]
+            is (row["speaker_id"] == row["previous_speaker_id"])
+        )
+    expected_switch = _bangor_v1_inter_sentential_switch(previous_category, category)
+    if (
+        not previous_values_valid
+        or row["utterance_id"] != expected_utterance_id
+        or tuple(
+            (
+                row["is_inter_sentential_switch_from_previous"],
+                row["inter_sentential_switch_direction_from_previous"],
+            )
+        )
+        != expected_switch
+    ):
+        raise PreparationError("CsCont Bangor v1 ordered identity is invalid")
+
+    if (
+        outer["component"] != "bangor_natural_span"
+        or outer["source"] != "bangor_cgwords"
+        or outer["condition"] != "CsCont"
+        or outer["conversation_id"] != row["conversation_id"]
+        or outer["record_id"] != f"bangor:{row['utterance_id']}"
+        or outer["split"] != row["split"]
+        or outer["lexical_tokens"] != row["n_word_tokens_excluding_punctuation"]
+        or not _BANGOR_V1_DOCUMENT_RE.fullmatch(outer["document_id"])
+        or lexical_token_count(row["text"]) != outer["lexical_tokens"]
+    ):
+        raise PreparationError("CsCont Bangor v1 inner and outer identities conflict")
+
+    return {
+        "conversation_id": row["conversation_id"],
+        "source_word_ids": tuple(word_ids),
+        "text": row["text"],
+        "tokens": tuple(tokens),
+    }
+
+
+def _adapt_cscont_record_impl(
     record: Mapping[str, Any],
     *,
     input_role: str,
     input_ordinal: int,
+    bangor_state: _BangorV1StreamState,
 ) -> DecodedPreparationRow:
     """Strictly adapt candidate CsCont Bangor-span or CALLHOME-filler rows."""
     if tuple(record) != _CSCONT_KEYS or record.get("artifact_format_version") != 1:
@@ -1399,7 +2432,7 @@ def _adapt_cscont_record(
             nested.get("source") != source
             or nested.get("split") != record["split"]
             or nested.get("conversation_ref") != record["conversation_id"]
-            or nested.get("row_id") != record["record_id"]
+            or record["record_id"] != f"{source}:{nested.get('row_id')}"
         ):
             raise PreparationError("CsCont CALLHOME filler routing is inconsistent")
         required_nested_types = {
@@ -1416,30 +2449,46 @@ def _adapt_cscont_record(
             for key, expected in required_nested_types.items()
         ):
             raise PreparationError("CsCont CALLHOME filler lexical field is invalid")
+        if (
+            nested["turn_index"] < 0
+            or nested["row_id"]
+            != _callhome_source_row_identity(
+                source,
+                record["conversation_id"],
+                nested["turn_index"],
+            )
+            or record["document_id"]
+            != _callhome_document_identity(
+                source,
+                record["split"],
+                record["conversation_id"],
+            )
+        ):
+            raise PreparationError("CsCont CALLHOME filler identity is inconsistent")
         text = nested["text"]
-        if record["document_row_index"] != nested["turn_index"]:
-            raise PreparationError("CsCont CALLHOME filler ordering is inconsistent")
+        bangor_state.observe_callhome(
+            nested,
+            record,
+            input_role=input_role,
+            input_ordinal=input_ordinal,
+        )
+        source_row_order = nested["turn_index"]
+        source_row_id = nested["row_id"]
         span_id = None
     elif component == "bangor_natural_span" and source == "bangor_cgwords":
-        if tuple(nested) != _BANGOR_ROW_KEYS:
-            raise PreparationError("CsCont Bangor nesting is not approved")
-        tokens = nested.get("tokens")
-        word_ids = nested.get("source_word_ids")
-        text = nested.get("text")
-        if not (
-            nested.get("conversation_id") == record["conversation_id"]
-            and isinstance(tokens, list)
-            and tokens
-            and all(isinstance(token, str) and token for token in tokens)
-            and isinstance(word_ids, list)
-            and len(tokens) == len(word_ids)
-            and len(set(word_ids)) == len(word_ids)
-            and all(type(word_id) is int and word_id >= 0 for word_id in word_ids)
-            and all(later > earlier for earlier, later in zip(word_ids, word_ids[1:]))
-            and isinstance(text, str)
-            and " ".join(tokens) == text
-        ):
-            raise PreparationError("CsCont Bangor lexical/provenance nesting is invalid")
+        projection = _validate_and_project_bangor_v1_row(nested, record)
+        bangor_state.observe_bangor(
+            nested,
+            record,
+            input_role=input_role,
+            input_ordinal=input_ordinal,
+        )
+        text = projection["text"]
+        conversation_id = projection["conversation_id"]
+        projection = {}
+        nested = {}
+        source_row_order = record["document_row_index"]
+        source_row_id = record["record_id"]
         span_id = record["document_id"]
     else:
         raise PreparationError("CsCont source and component combination is not approved")
@@ -1451,17 +2500,52 @@ def _adapt_cscont_record(
         source=source,
         component=component,
         document_id=record["document_id"],
-        conversation_id=record["conversation_id"],
+        conversation_id=(
+            conversation_id
+            if component == "bangor_natural_span"
+            else record["conversation_id"]
+        ),
         span_id=span_id,
         split=record["split"],
         row_order=record["document_row_index"],
-        row_id=record["record_id"],
+        source_row_order=source_row_order,
+        row_id=source_row_id,
         lexical_token_count=count,
         text=text,
         language_shard=None,
         input_role=input_role,
         input_ordinal=input_ordinal,
     )
+
+
+def _adapt_cscont_record(
+    record: Mapping[str, Any],
+    *,
+    input_role: str,
+    input_ordinal: int,
+    bangor_state: _BangorV1StreamState,
+) -> DecodedPreparationRow:
+    result: DecodedPreparationRow | None = None
+    failed = False
+    try:
+        if type(bangor_state) is not _BangorV1StreamState:
+            raise PreparationError("CsCont Bangor stream state is invalid")
+        result = _adapt_cscont_record_impl(
+            record,
+            input_role=input_role,
+            input_ordinal=input_ordinal,
+            bangor_state=bangor_state,
+        )
+    except BaseException:
+        failed = True
+    if failed:
+        bangor_state.clear()
+    record = {}
+    input_role = ""
+    input_ordinal = 0
+    if failed or result is None:
+        _raise_fixed("CsCont record failed approved schema validation")
+    return result
 
 
 @dataclass(frozen=True)
@@ -1911,7 +2995,10 @@ def _validate_tokenizer_json(payload: Mapping[str, Any]) -> None:
     vocabulary = model.get("vocab")
     if not isinstance(vocabulary, dict) or len(vocabulary) != VOCAB_SIZE:
         raise PreparationError("tokenizer vocabulary size differs from 8,000")
-    if {token: vocabulary.get(token) for token in SPECIAL_TOKEN_IDS} != SPECIAL_TOKEN_IDS:
+    if {
+        token: vocabulary.get(token)
+        for token in _APPROVED_SPECIAL_TOKEN_IDS
+    } != _APPROVED_SPECIAL_TOKEN_IDS:
         raise PreparationError("tokenizer special-token IDs differ from the frozen protocol")
     approved = protocol_configuration()
     if approved["normalization"] != {
@@ -1979,7 +3066,10 @@ def load_synthetic_exact_tokenizer(
         _raise_fixed("exact Tokenizers backend could not be loaded")
     if backend.get_vocab_size(with_added_tokens=True) != VOCAB_SIZE:
         raise PreparationError("loaded tokenizer vocabulary size differs from 8,000")
-    if {token: backend.token_to_id(token) for token in SPECIAL_TOKEN_IDS} != SPECIAL_TOKEN_IDS:
+    if {
+        token: backend.token_to_id(token)
+        for token in _APPROVED_SPECIAL_TOKEN_IDS
+    } != _APPROVED_SPECIAL_TOKEN_IDS:
         raise PreparationError("loaded tokenizer special-token IDs differ from the frozen protocol")
     if not parity_cases:
         raise PreparationError("synthetic tokenizer parity cases are required")
@@ -2269,7 +3359,7 @@ def _validate_cross_condition_reuse(
         baseline = baselines.get(key)
         if baseline is None or (
             baseline.conversation_id != row.conversation_id
-            or baseline.row_order != row.row_order
+            or baseline.source_row_order != row.source_row_order
             or content_identity(baseline) != content_identity(row)
             or baseline.lexical_token_count != row.lexical_token_count
         ):
@@ -2282,7 +3372,7 @@ def _validate_cross_condition_reuse(
         baseline = monocont.get((row.source, row.split, row.row_id))
         if baseline is None or (
             baseline.conversation_id != row.conversation_id
-            or baseline.row_order != row.row_order
+            or baseline.source_row_order != row.source_row_order
             or content_identity(baseline) != content_identity(row)
             or baseline.lexical_token_count != row.lexical_token_count
         ):
@@ -2339,8 +3429,6 @@ def _prepare_tokenized_rows(
     exposure_failure = False
     exposure_diagnostics: dict[str, object] | None = None
     try:
-        from cslm.modeling.exposure import ExposureAuditError, audit_exposure
-
         exposure = audit_exposure((packing,))
     except ExposureAuditError:
         exposure_diagnostics = _aggregate_exposure_diagnostics(packing)
@@ -2821,11 +3909,14 @@ def _prepare_production_inputs(
     record: Mapping[str, Any] | None = None
     raw_line = b""
     line_iterator: Iterator[bytes] | None = None
+    planning_iterator: Iterator[bytes] | None = None
+    planning_records: Iterator[Mapping[str, Any]] | None = None
     anchor: InputPopulationAnchor | None = None
     exact_tokenizer: ExactTokenizer | None = None
     key = b""
     roots: dict[str, _VerifiedFrozenRoot] = {}
     verified: _VerifiedFrozenRoot | None = None
+    bangor_state: _BangorV1StreamState | None = None
     failed = False
     exposure_diagnostics: dict[str, object] | None = None
     try:
@@ -2896,6 +3987,38 @@ def _prepare_production_inputs(
         for name in _CSCONT_MEMBERSHIP_FILES:
             role = f"cscont:{name}"
             expected_split = name.removesuffix("_rows.jsonl")
+            planning_iterator = _snapshot_relative_jsonl_lines(cscont, name)
+
+            def iter_planning_records() -> Iterator[Mapping[str, Any]]:
+                planning_raw_line = b""
+                planning_record: Mapping[str, Any] | None = None
+                try:
+                    for planning_raw_line in planning_iterator:
+                        planning_record = _decode_cscont_line(planning_raw_line)
+                        yield planning_record
+                        planning_record = None
+                        planning_raw_line = b""
+                finally:
+                    planning_record = None
+                    planning_raw_line = b""
+
+            planning_records = iter_planning_records()
+            try:
+                bangor_state = _derive_bangor_v1_stream_state(
+                    hmac_key=key,
+                    input_role=role,
+                    expected_split=expected_split,
+                    authorized_records=planning_records,
+                )
+            finally:
+                close = getattr(planning_records, "close", None)
+                if close is not None:
+                    close()
+                planning_records = None
+                close = getattr(planning_iterator, "close", None)
+                if close is not None:
+                    close()
+                planning_iterator = None
             line_iterator = _snapshot_relative_jsonl_lines(cscont, name)
             try:
                 for ordinal, raw_line in enumerate(line_iterator):
@@ -2909,15 +4032,19 @@ def _prepare_production_inputs(
                         record,
                         input_role=role,
                         input_ordinal=ordinal,
+                        bangor_state=bangor_state,
                     )
+                    record = None
+                    raw_line = b""
                     private_rows.append(
                         _tokenize_decoded_row(decoded_row, exact_tokenizer, key)
                     )
                     authorized_counts[role] += 1
                     decoded_row = None
-                    record = None
-                    raw_line = b""
+                bangor_state.finalize()
             finally:
+                bangor_state.clear()
+                bangor_state = None
                 close = getattr(line_iterator, "close", None)
                 if close is not None:
                     close()
@@ -2952,6 +4079,8 @@ def _prepare_production_inputs(
         failed = True
         result = None
     finally:
+        if bangor_state is not None:
+            bangor_state.clear()
         for verified in (callhome, cscont, tokenizer_root):
             if verified is not None:
                 os.close(verified.root_descriptor)
@@ -2960,11 +4089,14 @@ def _prepare_production_inputs(
         record = None
         raw_line = b""
         line_iterator = None
+        planning_iterator = None
+        planning_records = None
         anchor = None
         exact_tokenizer = None
         key = b""
         roots = {}
         verified = None
+        bangor_state = None
         callhome = None
         cscont = None
         tokenizer_root = None
@@ -3496,9 +4628,12 @@ def _reconcile_packed_row_token_content(
                     )
                 ),
             )
-            or int(input_row[0]) != SPECIAL_TOKEN_IDS["[CLS]"]
-            or int(input_row[attended - 1]) != SPECIAL_TOKEN_IDS["[SEP]"]
-            or np.any(input_row[attended:] != SPECIAL_TOKEN_IDS["[PAD]"])
+            or int(input_row[0]) != _APPROVED_SPECIAL_TOKEN_IDS["[CLS]"]
+            or int(input_row[attended - 1])
+            != _APPROVED_SPECIAL_TOKEN_IDS["[SEP]"]
+            or np.any(
+                input_row[attended:] != _APPROVED_SPECIAL_TOKEN_IDS["[PAD]"]
+            )
         ):
             raise PreparationError("packed sequence special tokens do not reconcile")
         packed_cursor = 1
@@ -3531,17 +4666,18 @@ def _reconcile_packed_row_token_content(
                 packed_start != packed_cursor
                 or packed_end - packed_start != source_end - source_start
                 or packed_end >= attended
-                or int(input_row[packed_end]) != SPECIAL_TOKEN_IDS["[SEP]"]
+                or int(input_row[packed_end])
+                != _APPROVED_SPECIAL_TOKEN_IDS["[SEP]"]
                 or source_end > item["source_row_token_count"]
             ):
                 raise PreparationError("packed provenance token positions do not reconcile")
             lexical_ids = tuple(int(value) for value in input_row[packed_start:packed_end])
             if any(
                 token_id in {
-                    SPECIAL_TOKEN_IDS["[PAD]"],
-                    SPECIAL_TOKEN_IDS["[CLS]"],
-                    SPECIAL_TOKEN_IDS["[SEP]"],
-                    SPECIAL_TOKEN_IDS["[MASK]"],
+                    _APPROVED_SPECIAL_TOKEN_IDS["[PAD]"],
+                    _APPROVED_SPECIAL_TOKEN_IDS["[CLS]"],
+                    _APPROVED_SPECIAL_TOKEN_IDS["[SEP]"],
+                    _APPROVED_SPECIAL_TOKEN_IDS["[MASK]"],
                 }
                 for token_id in lexical_ids
             ):
@@ -3778,8 +4914,6 @@ def _validate_bundle_for_publication(
         raise PreparationError("publisher packing membership does not reconcile")
     exposure_failed = False
     try:
-        from cslm.modeling.exposure import audit_exposure
-
         repeated_audit = audit_exposure((bundle.packing,))
     except Exception:
         repeated_audit = None
@@ -4721,7 +5855,589 @@ def _publish_preparation(
     return result
 
 
-def _create_closed_production_entrypoint() -> Callable[
+_PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
+    {
+        "_accepted_tokenizer_backend_lock",
+        "_actual_runtime_environment_controls",
+        "_adapt_callhome_record",
+        "_adapt_cscont_record",
+        "_adapt_cscont_record_impl",
+        "_aggregate_exposure_diagnostics",
+        "_aggregate_for_block",
+        "_aggregate_manifest_payload",
+        "_artifact_files",
+        "_atomic_rename_noreplace_at",
+        "_bangor_v1_inter_sentential_switch",
+        "_bangor_v1_language_category",
+        "_bangor_v1_source_token_label",
+        "_base_array_files",
+        "_callhome_document_identity",
+        "_callhome_source_row_identity",
+        "_candidate_checksum_payload",
+        "_canonical_json_object",
+        "_close_publication_descriptors",
+        "_commit_private_tree",
+        "_decode_cscont_line",
+        "_default_authorized_decoder",
+        "_derive_bangor_v1_stream_state",
+        "_derive_candidate_checksum_record",
+        "_derive_cscont_stream_order",
+        "_derive_cscont_stream_order_impl",
+        "_derive_decoded_row",
+        "_derive_exact_tokenizer",
+        "_derive_input_anchor",
+        "_derive_membership_plan",
+        "_derive_preparation_manifest",
+        "_directory_open_flags",
+        "_distribution_record_digest",
+        "_expected_aggregate_rows",
+        "_exposure_payload",
+        "_fixed_tokenizer_parity",
+        "_fsync_tree_descriptor",
+        "_historical_tokenizer_build_identity",
+        "_inside_git_repository",
+        "_iter_bounded_descriptor_lines",
+        "_json_object",
+        "_jsonable",
+        "_load_hmac_key",
+        "_load_npy",
+        "_load_preparation_candidate",
+        "_load_production_exact_tokenizer",
+        "_membership_identity",
+        "_npy_bytes",
+        "_open_directory_chain",
+        "_open_relative_directory",
+        "_packing_row",
+        "_paths_overlap",
+        "_pin_publication_parent",
+        "_prepare_production_inputs",
+        "_prepare_tokenized_rows",
+        "_provenance_payload",
+        "_pseudonym",
+        "_publication_name_identity_at",
+        "_publish_preparation",
+        "_raise_fixed",
+        "_read_descriptor_bounded",
+        "_recompute_membership_digest",
+        "_reconcile_packed_row_token_content",
+        "_regenerate_fixed_validation",
+        "_regular_open_flags",
+        "_relative_parent_descriptor",
+        "_remove_verified_stage_at",
+        "_require_hmac_key",
+        "_required_artifact_names",
+        "_required_directory_names",
+        "_resolved_without_symlinks",
+        "_safe_relative_name",
+        "_serialized_membership_payload",
+        "_sha256_bytes",
+        "_sha256_file",
+        "_snapshot_absolute_regular_file",
+        "_snapshot_relative_jsonl_lines",
+        "_snapshot_relative_regular_file",
+        "_source_row_token_content_binding",
+        "_stream_binding",
+        "_stream_hash_relative_file",
+        "_stream_record_binding",
+        "_strict_json_value",
+        "_tokenize_decoded_row",
+        "_unique_object",
+        "_validate_accepted_corrected_backend",
+        "_validate_accepted_tokenizer_freeze_manifest",
+        "_validate_and_project_bangor_v1_row",
+        "_validate_bundle_for_publication",
+        "_validate_cross_condition_reuse",
+        "_validate_exposure_record",
+        "_validate_historical_identity_record",
+        "_validate_runtime_record",
+        "_validate_tokenizer_json",
+        "_validation_record_from_payload",
+        "_validation_record_payload",
+        "_verify_frozen_root",
+        "_verify_named_parent",
+        "_verify_owner_mode",
+        "_walk_private_tree",
+        "_wheel_tags",
+        "_write_private_file_at",
+        "approved_block_order",
+        "approved_validation_seed_plans",
+        "canonical_json_bytes",
+        "collect_runtime_identity",
+        "lexical_token_count",
+        "load_hmac_key",
+        "materialize_fixed_validation",
+        "scan_sealed_callhome_split",
+        "validate_membership",
+    }
+)
+_PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_CLASSES = frozenset(
+    {
+        "CandidateChecksumRecord",
+        "CandidateValidationSnapshot",
+        "DecodedPreparationRow",
+        "ExactTokenizer",
+        "ExpectedMembershipBlock",
+        "ExposureAcceptanceError",
+        "InputPopulationAnchor",
+        "MembershipPlan",
+        "MembershipValidation",
+        "PreparationBundle",
+        "PreparationError",
+        "PreparationManifest",
+        "PreparationSnapshot",
+        "PreparedPreparationRow",
+        "ProductionPreparationPaths",
+        "PublicationCommittedError",
+        "PublicationOutcomeIndeterminateError",
+        "PublishedPreparationCandidate",
+        "ValidationMaterial",
+        "_BangorV1StreamState",
+        "_ByteJsonScanner",
+        "_PinnedPublicationParent",
+        "_StableFileSnapshot",
+        "_VerifiedFrozenRoot",
+    }
+)
+_PRODUCTION_LIFECYCLE_EXTERNAL_CALLABLE_ALLOWLIST = frozenset(
+    ()
+)
+_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS = MappingProxyType(
+    {
+        "cslm.modeling.exposure": frozenset(
+            {"audit_exposure"}
+        ),
+        "cslm.modeling.masking": frozenset(
+            {
+                "_canonical_json_bytes",
+                "_non_special_token_at_rank",
+                "_policy_payload",
+                "build_validation_mask_record",
+                "mask_packed_sequence",
+            }
+        ),
+        "cslm.modeling.packing": frozenset(
+            {
+                "_authorized_entity_keys",
+                "_canonical_json_bytes",
+                "_sequence_identity",
+                "pack_rows",
+            }
+        ),
+        "cslm.tokenization.shared_wordpiece": frozenset(
+            {"protocol_configuration"}
+        ),
+    }
+)
+_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_CLASSES = MappingProxyType(
+    {
+        "cslm.modeling.exposure": frozenset(
+            {
+                "ExposureAudit",
+                "ExposureAuditError",
+                "ExposureGroup",
+            }
+        ),
+        "cslm.modeling.masking": frozenset(
+            {
+                "MaskedExample",
+                "MaskingContractError",
+                "ValidationMaskRecord",
+                "_HashRandom",
+            }
+        ),
+        "cslm.modeling.packing": frozenset(
+            {
+                "PackedSequence",
+                "PackingContractError",
+                "PackingResult",
+                "PackingRow",
+                "SourceTokenRange",
+            }
+        ),
+        "cslm.tokenization.shared_wordpiece": frozenset(),
+    }
+)
+_PRODUCTION_REVIEWED_ORIGINAL_CLASS_ALLOWLIST = frozenset(
+    {
+        "CandidateChecksumRecord",
+        "ExposureAcceptanceError",
+        "PreparationError",
+        "PreparationManifest",
+        "ProductionPreparationPaths",
+        "PublicationCommittedError",
+        "PublicationOutcomeIndeterminateError",
+        "PublishedPreparationCandidate",
+    }
+)
+
+
+def _create_reviewed_production_graph() -> Mapping[str, object]:
+    """Capture application callables in a private, module-patch-proof namespace."""
+    module_globals = globals()
+    external_seeds = (
+        audit_exposure,
+        build_validation_mask_record,
+        pack_rows,
+        protocol_configuration,
+    )
+    source_globals = {__name__: module_globals}
+    source_globals.update(
+        {seed.__module__: seed.__globals__ for seed in external_seeds}
+    )
+    reviewed_namespaces = {
+        module_name: dict(namespace)
+        for module_name, namespace in source_globals.items()
+    }
+    reviewed_special_token_ids = MappingProxyType(
+        {
+            "[PAD]": 0,
+            "[UNK]": 1,
+            "[CLS]": 2,
+            "[SEP]": 3,
+            "[MASK]": 4,
+        }
+    )
+    reviewed_namespaces[__name__]["SPECIAL_TOKEN_IDS"] = (
+        reviewed_special_token_ids
+    )
+    reviewed_namespaces[__name__]["_APPROVED_SPECIAL_TOKEN_IDS"] = (
+        reviewed_special_token_ids
+    )
+    reviewed_namespaces["cslm.tokenization.shared_wordpiece"][
+        "SPECIAL_TOKEN_IDS"
+    ] = reviewed_special_token_ids
+    function_inventories = {
+        __name__: _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS,
+        **_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS,
+    }
+    class_inventories = {
+        __name__: _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_CLASSES,
+        **_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_CLASSES,
+    }
+    original_functions_by_module: dict[str, dict[str, FunctionType]] = {}
+    reviewed_functions_by_module: dict[str, dict[str, FunctionType]] = {}
+    original_classes_by_module: dict[str, dict[str, type[object]]] = {}
+    reviewed_classes_by_module: dict[str, dict[str, type[object]]] = {}
+
+    for module_name, namespace in source_globals.items():
+        required_functions = function_inventories[module_name]
+        if any(
+            name not in namespace
+            or not isinstance(namespace[name], FunctionType)
+            or namespace[name].__module__ != module_name
+            for name in required_functions
+        ):
+            raise RuntimeError("reviewed production lifecycle is incomplete")
+        original_functions = {
+            name: namespace[name] for name in required_functions
+        }
+        reviewed_functions: dict[str, FunctionType] = {}
+        for name, function in original_functions.items():
+            reviewed = FunctionType(
+                function.__code__,
+                reviewed_namespaces[module_name],
+                function.__name__,
+                function.__defaults__,
+                function.__closure__,
+            )
+            reviewed.__kwdefaults__ = dict(function.__kwdefaults__ or {})
+            reviewed.__annotations__ = dict(function.__annotations__)
+            reviewed.__doc__ = function.__doc__
+            reviewed.__module__ = function.__module__
+            reviewed.__qualname__ = function.__qualname__
+            reviewed_functions[name] = reviewed
+        original_functions_by_module[module_name] = original_functions
+        reviewed_functions_by_module[module_name] = reviewed_functions
+
+        required_classes = class_inventories[module_name]
+        if any(
+            name not in namespace
+            or not isinstance(namespace[name], type)
+            or namespace[name].__module__ != module_name
+            for name in required_classes
+        ):
+            raise RuntimeError("reviewed production lifecycle is incomplete")
+        original_classes = {
+            name: namespace[name] for name in required_classes
+        }
+        reviewed_classes: dict[str, type[object]] = {}
+        for name in class_inventories[module_name]:
+            class_type = original_classes[name]
+            if (
+                name in _PRODUCTION_REVIEWED_ORIGINAL_CLASS_ALLOWLIST
+                or issubclass(class_type, BaseException)
+            ):
+                continue
+            slot_names = set(getattr(class_type, "__slots__", ()))
+            attributes = {
+                attribute_name: attribute
+                for attribute_name, attribute in vars(class_type).items()
+                if attribute_name
+                not in {"__dict__", "__weakref__", *slot_names}
+            }
+            attributes["__module__"] = class_type.__module__
+            attributes["__qualname__"] = class_type.__qualname__
+            reviewed_classes[name] = type(
+                class_type.__name__,
+                class_type.__bases__,
+                attributes,
+            )
+        original_classes_by_module[module_name] = original_classes
+        reviewed_classes_by_module[module_name] = reviewed_classes
+
+    replacements: dict[int, object] = {}
+    for module_name in source_globals:
+        original_functions = original_functions_by_module[module_name]
+        replacements.update(
+            {
+                id(original_functions[name]): reviewed
+                for name, reviewed in reviewed_functions_by_module[
+                    module_name
+                ].items()
+            }
+        )
+        original_classes = original_classes_by_module[module_name]
+        replacements.update(
+            {
+                id(original_classes[name]): reviewed
+                for name, reviewed in reviewed_classes_by_module[
+                    module_name
+                ].items()
+            }
+        )
+
+    def remap(value: object) -> object:
+        replacement = replacements.get(id(value))
+        return value if replacement is None else replacement
+
+    def remapped_cell(value: object) -> object:
+        def capture() -> object:
+            return value
+
+        assert capture.__closure__ is not None
+        return capture.__closure__[0]
+
+    def finish_function(
+        original: FunctionType,
+        reviewed: FunctionType,
+        value_remapper: Callable[[object], object] = remap,
+    ) -> FunctionType:
+        reviewed.__defaults__ = tuple(
+            value_remapper(value) for value in (original.__defaults__ or ())
+        )
+        reviewed.__kwdefaults__ = {
+            name: value_remapper(value)
+            for name, value in (original.__kwdefaults__ or {}).items()
+        }
+        return reviewed
+
+    for module_name, reviewed_functions in reviewed_functions_by_module.items():
+        original_functions = original_functions_by_module[module_name]
+        for name, reviewed in reviewed_functions.items():
+            finish_function(original_functions[name], reviewed)
+
+    def reviewed_method(
+        function: FunctionType,
+        reviewed_globals: dict[str, object],
+        value_remapper: Callable[[object], object],
+    ) -> FunctionType:
+        reviewed = FunctionType(
+            function.__code__,
+            reviewed_globals,
+            function.__name__,
+            function.__defaults__,
+            (
+                tuple(
+                    remapped_cell(value_remapper(cell.cell_contents))
+                    for cell in function.__closure__
+                )
+                if function.__closure__ is not None
+                else None
+            ),
+        )
+        reviewed.__annotations__ = dict(function.__annotations__)
+        reviewed.__doc__ = function.__doc__
+        reviewed.__module__ = function.__module__
+        reviewed.__qualname__ = function.__qualname__
+        return finish_function(function, reviewed, value_remapper)
+
+    for module_name, reviewed_classes in reviewed_classes_by_module.items():
+        reviewed_globals = reviewed_namespaces[module_name]
+        original_classes = original_classes_by_module[module_name]
+        source_file = next(
+            function.__code__.co_filename
+            for function in original_functions_by_module[module_name].values()
+        )
+
+        for name in class_inventories[module_name]:
+            reviewed_class = reviewed_classes.get(
+                name,
+                original_classes[name],
+            )
+            original_class = original_classes[name]
+
+            def remap_class_value(value: object) -> object:
+                remapped = remap(value)
+                if remapped is not value:
+                    return remapped
+                if (
+                    isinstance(value, type)
+                    and value.__module__ == original_class.__module__
+                    and value.__qualname__ == original_class.__qualname__
+                ):
+                    return reviewed_class
+                return value
+
+            def generated_method_globals(
+                function: FunctionType,
+            ) -> dict[str, object] | None:
+                if function.__module__ != module_name:
+                    return None
+                if function.__code__.co_filename == source_file:
+                    return reviewed_globals
+                if function.__code__.co_filename == "<string>":
+                    return {
+                        global_name: remap_class_value(global_value)
+                        for global_name, global_value in function.__globals__.items()
+                    }
+                return None
+
+            for attribute_name, attribute in vars(original_class).items():
+                if isinstance(attribute, FunctionType) and (
+                    method_globals := generated_method_globals(attribute)
+                ) is not None:
+                    setattr(
+                        reviewed_class,
+                        attribute_name,
+                        reviewed_method(
+                            attribute,
+                            method_globals,
+                            remap_class_value,
+                        ),
+                    )
+                elif isinstance(attribute, staticmethod) and (
+                    method_globals := generated_method_globals(
+                        attribute.__func__
+                    )
+                ) is not None:
+                    setattr(
+                        reviewed_class,
+                        attribute_name,
+                        staticmethod(
+                            reviewed_method(
+                                attribute.__func__,
+                                method_globals,
+                                remap_class_value,
+                            )
+                        ),
+                    )
+                elif isinstance(attribute, classmethod) and (
+                    method_globals := generated_method_globals(
+                        attribute.__func__
+                    )
+                ) is not None:
+                    setattr(
+                        reviewed_class,
+                        attribute_name,
+                        classmethod(
+                            reviewed_method(
+                                attribute.__func__,
+                                method_globals,
+                                remap_class_value,
+                            )
+                        ),
+                    )
+                elif isinstance(attribute, property):
+                    setattr(
+                        reviewed_class,
+                        attribute_name,
+                        property(
+                            (
+                                reviewed_method(
+                                    attribute.fget,
+                                    method_globals,
+                                    remap_class_value,
+                                )
+                                if (
+                                    attribute.fget is not None
+                                    and (
+                                        method_globals := generated_method_globals(
+                                            attribute.fget
+                                        )
+                                    )
+                                    is not None
+                                )
+                                else attribute.fget
+                            ),
+                            (
+                                reviewed_method(
+                                    attribute.fset,
+                                    method_globals,
+                                    remap_class_value,
+                                )
+                                if (
+                                    attribute.fset is not None
+                                    and (
+                                        method_globals := generated_method_globals(
+                                            attribute.fset
+                                        )
+                                    )
+                                    is not None
+                                )
+                                else attribute.fset
+                            ),
+                            (
+                                reviewed_method(
+                                    attribute.fdel,
+                                    method_globals,
+                                    remap_class_value,
+                                )
+                                if (
+                                    attribute.fdel is not None
+                                    and (
+                                        method_globals := generated_method_globals(
+                                            attribute.fdel
+                                        )
+                                    )
+                                    is not None
+                                )
+                                else attribute.fdel
+                            ),
+                            attribute.__doc__,
+                        ),
+                    )
+
+    for module_name, reviewed_globals in reviewed_namespaces.items():
+        for name, value in tuple(reviewed_globals.items()):
+            reviewed_globals[name] = remap(value)
+        reviewed_globals.update(reviewed_functions_by_module[module_name])
+        reviewed_globals.update(reviewed_classes_by_module[module_name])
+
+    reviewed_functions = reviewed_functions_by_module[__name__]
+
+    return MappingProxyType(
+        {
+            "prepare": reviewed_functions["_prepare_production_inputs"],
+            "publish": reviewed_functions["_publish_preparation"],
+            "runtime_environment": reviewed_functions[
+                "_actual_runtime_environment_controls"
+            ],
+            "runtime_identity": reviewed_functions[
+                "collect_runtime_identity"
+            ],
+            "historical_identity_validator": reviewed_functions[
+                "_validate_historical_identity_record"
+            ],
+            "candidate_loader": reviewed_functions[
+                "_load_preparation_candidate"
+            ],
+        }
+    )
+
+
+def _create_closed_production_entrypoint(
+    reviewed_graph: Mapping[str, object],
+) -> Callable[
     [ProductionPreparationPaths, Path],
     PublishedPreparationCandidate,
 ]:
@@ -4738,45 +6454,67 @@ def _create_closed_production_entrypoint() -> Callable[
         ),
         "~/NEU_LAB_frozen_artifacts/model_ready/real_preparation_v1",
     )
+    reviewed_prepare_production_inputs = reviewed_graph["prepare"]
+    reviewed_publish_preparation = reviewed_graph["publish"]
+    reviewed_runtime_environment_controls = reviewed_graph[
+        "runtime_environment"
+    ]
+    reviewed_raise_fixed = reviewed_prepare_production_inputs.__globals__[
+        "_raise_fixed"
+    ]
+    reviewed_paths_type = ProductionPreparationPaths
+    reviewed_preparation_error = PreparationError
+    reviewed_committed_error = PublicationCommittedError
+    reviewed_indeterminate_error = PublicationOutcomeIndeterminateError
+    reviewed_path_type = Path
+    current_aggregates = tuple(
+        sorted(
+            (
+                name,
+                value.train_rows,
+                value.train_lexical_tokens,
+                value.validation_rows,
+                value.validation_lexical_tokens,
+            )
+            for name, value in APPROVED_REAL_AGGREGATES.items()
+        )
+    )
+    if (
+        APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256 != frozen_controls[0]
+        or APPROVED_CALLHOME_CHECKSUM_RECORD_SHA256 != frozen_controls[1]
+        or APPROVED_CSCONT_CHECKSUM_RECORD_SHA256 != frozen_controls[2]
+        or current_aggregates != frozen_controls[3]
+        or str(APPROVED_PRIVATE_OUTPUT_ROOT) != frozen_controls[4]
+    ):
+        raise RuntimeError("production scientific controls are invalid")
+    reviewed_approved_output = (
+        reviewed_path_type(frozen_controls[4]).expanduser().absolute()
+    )
+    reviewed_approved_path_type = type(reviewed_approved_output)
+    current_aggregates = ()
 
     def prepare_and_publish(
         paths: ProductionPreparationPaths,
         output_root: Path,
     ) -> PublishedPreparationCandidate:
-        current_aggregates = tuple(
-            sorted(
-                (
-                    name,
-                    value.train_rows,
-                    value.train_lexical_tokens,
-                    value.validation_rows,
-                    value.validation_lexical_tokens,
-                )
-                for name, value in APPROVED_REAL_AGGREGATES.items()
-            )
-        )
         if (
-            APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256 != frozen_controls[0]
-            or APPROVED_CALLHOME_CHECKSUM_RECORD_SHA256 != frozen_controls[1]
-            or APPROVED_CSCONT_CHECKSUM_RECORD_SHA256 != frozen_controls[2]
-            or current_aggregates != frozen_controls[3]
-            or str(APPROVED_PRIVATE_OUTPUT_ROOT) != frozen_controls[4]
+            type(output_root) is not reviewed_approved_path_type
+            or output_root.expanduser().absolute() != reviewed_approved_output
         ):
-            raise PreparationError("production scientific controls were altered")
-        approved_output = Path(frozen_controls[4]).expanduser().absolute()
-        if output_root.expanduser().absolute() != approved_output:
-            raise PreparationError("production output root is not the approved private root")
-        _actual_runtime_environment_controls()
+            raise reviewed_preparation_error(
+                "production output root is not the approved private root"
+            )
+        reviewed_runtime_environment_controls()
         bundle: PreparationBundle | None = None
         result: PublishedPreparationCandidate | None = None
         failed = False
         committed = False
         indeterminate = False
         try:
-            bundle = _prepare_production_inputs(paths)
-            result = _publish_preparation(
+            bundle = reviewed_prepare_production_inputs(paths)
+            result = reviewed_publish_preparation(
                 bundle,
-                output_root=approved_output,
+                output_root=reviewed_approved_output,
                 input_roots=(
                     paths.callhome_root,
                     paths.cscont_root,
@@ -4784,33 +6522,34 @@ def _create_closed_production_entrypoint() -> Callable[
                 ),
                 hmac_key_path=paths.hmac_key_path,
             )
-        except PublicationCommittedError:
+        except reviewed_committed_error:
             committed = True
-        except PublicationOutcomeIndeterminateError:
+        except reviewed_indeterminate_error:
             indeterminate = True
         except BaseException:
             failed = True
         finally:
             bundle = None
-            paths = ProductionPreparationPaths(Path(), Path(), Path(), Path())
-            output_root = Path()
+            paths = reviewed_paths_type(
+                reviewed_path_type(),
+                reviewed_path_type(),
+                reviewed_path_type(),
+                reviewed_path_type(),
+            )
+            output_root = reviewed_path_type()
         if committed:
-            raise PublicationCommittedError(
+            raise reviewed_committed_error(
                 "publication committed to the pinned parent; retry is forbidden"
             )
         if indeterminate:
-            raise PublicationOutcomeIndeterminateError(
+            raise reviewed_indeterminate_error(
                 "publication outcome is indeterminate; retry is forbidden"
             )
         if failed or result is None:
-            _raise_fixed("closed production prepare-and-publish failed")
+            reviewed_raise_fixed("closed production prepare-and-publish failed")
         return result
 
     return prepare_and_publish
-
-
-prepare_and_publish_production = _create_closed_production_entrypoint()
-del _create_closed_production_entrypoint
 
 
 _SYNTHETIC_CONTROL_FILES = frozenset(
@@ -5889,7 +7628,10 @@ def _load_preparation_candidate(
                 or not np.isin(attention, (0, 1)).all()
                 or not np.isin(token_types, (0, 1)).all()
                 or int(attention.size - attention.sum()) != aggregate["padding"]
-                or np.any(inputs[attention == 0] != SPECIAL_TOKEN_IDS["[PAD]"])
+                or np.any(
+                    inputs[attention == 0]
+                    != _APPROVED_SPECIAL_TOKEN_IDS["[PAD]"]
+                )
             ):
                 raise PreparationError("candidate packed arrays do not reconcile")
             packed_nonpadding[(condition, split)] = int(attention.sum())
@@ -6013,8 +7755,6 @@ def _load_preparation_candidate(
     groups = {
         (group["condition"], group["split"]): group for group in exposure["groups"]
     }
-    from cslm.modeling.contracts import APPROVED_BUDGET
-
     projected_expected: dict[str, float] = {}
     for condition in CONDITIONS:
         for split in ("train", "validation"):
@@ -6033,7 +7773,10 @@ def _load_preparation_candidate(
             eligible = int(
                 (
                     (attention_array == 1)
-                    & ~np.isin(input_array, tuple(SPECIAL_TOKEN_IDS.values()))
+                    & ~np.isin(
+                        input_array,
+                        tuple(_APPROVED_SPECIAL_TOKEN_IDS.values()),
+                    )
                 ).sum()
             )
             group = groups[(condition, split)]
@@ -6434,3 +8177,12 @@ def load_preparation_candidate(
     object.__setattr__(result, "_candidate_root", candidate_root)
     object.__setattr__(result, "_reconciliation_key_path", key_path)
     return result
+
+
+_reviewed_production_graph = _create_reviewed_production_graph()
+prepare_and_publish_production = _create_closed_production_entrypoint(
+    _reviewed_production_graph
+)
+del _reviewed_production_graph
+del _create_reviewed_production_graph
+del _create_closed_production_entrypoint
