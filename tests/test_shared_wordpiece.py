@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import pytest
+from synthetic_preparation_support import synthetic_bangor_record
 
 from cslm.tokenization.shared_wordpiece import (
     BACKEND_CORRECTION_ID,
@@ -65,24 +66,7 @@ def _cscont_callhome(row: dict[str, object]) -> dict[str, object]:
 
 
 def _cscont_bangor() -> dict[str, object]:
-    return {
-        "artifact_format_version": 1,
-        "component": "bangor_natural_span",
-        "condition": "CsCont",
-        "conversation_id": "bangor-conversation",
-        "document_id": "document-bangor",
-        "document_row_index": 1,
-        "lexical_tokens": 2,
-        "record_id": "bangor-record",
-        "row": {
-            "conversation_id": "bangor-conversation",
-            "source_word_ids": [10, 11],
-            "text": "hola friend",
-            "tokens": ["hola", "friend"],
-        },
-        "source": "bangor_cgwords",
-        "split": "train",
-    }
+    return synthetic_bangor_record(identity="shared-wordpiece", split="train")
 
 
 @pytest.fixture
@@ -123,7 +107,7 @@ def test_two_extractions_have_identical_order_and_hash(
         "same lexical text",
         "same lexical text",
         "texto español",
-        "hola friend",
+        "one two three",
     )
     assert first.ordered_input_sha256 == second.ordered_input_sha256
     assert first.manifest["ordered_identity_sha256"] == second.manifest["ordered_identity_sha256"]
