@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Iterable, Literal, Mapping
+from typing import TYPE_CHECKING, Literal
 
 from cslm.modeling.config import (
     CONDITIONS,
@@ -20,13 +20,10 @@ from cslm.modeling.initialization import (
     ReplicateSeedPlan,
     _derive_initialization_manifest,
 )
-from cslm.modeling.masking import (
-    APPROVED_MASKING_POLICY,
-    MaskingContractError,
-    ValidationMaskRecord,
-    build_validation_mask_record,
-)
-from cslm.modeling.packing import PackedSequence
+from cslm.modeling.masking import ValidationMaskRecord
+
+if TYPE_CHECKING:
+    from cslm.modeling.preparation import PreparationSnapshot
 
 Device = Literal["cpu", "mps"]
 
@@ -166,7 +163,13 @@ class RunManifest:
     mps_repeatability_passed: bool | None
     tokenizer_checksum_record_sha256: str
     corpus_checksum_record_sha256: str
+    expected_approved_preparation_checksum_record_sha256: str
+    verified_candidate_checksum_record_sha256: str
+    preparation_authorization_version: str
+    preparation_identity_matches: bool
+    preparation_manifest_sha256: str
     validation_mask_record: ValidationMaskRecord
+    validation_artifact_identities: tuple[tuple[str, str], ...]
     optimizer: OptimizerContract = APPROVED_OPTIMIZER
     budget: TrainingBudgetContract = APPROVED_BUDGET
     device_policy: DevicePolicyContract = APPROVED_DEVICE_POLICY
@@ -182,16 +185,29 @@ class RunManifest:
         self.initialization._validate()
         if self.device not in {"cpu", "mps"}:
             raise ManifestContractError("unsupported device")
-        if (
-            self.tokenizer_checksum_record_sha256
-            != APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256
-        ):
+        if self.tokenizer_checksum_record_sha256 != APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256:
             raise ManifestContractError("run manifest uses an unapproved tokenizer record")
-        if (
-            self.corpus_checksum_record_sha256
-            != APPROVED_CORPUS_CHECKSUM_RECORDS[self.condition]
-        ):
+        if self.corpus_checksum_record_sha256 != APPROVED_CORPUS_CHECKSUM_RECORDS[self.condition]:
             raise ManifestContractError("run manifest uses an unapproved corpus record")
+        for identity in (
+            self.expected_approved_preparation_checksum_record_sha256,
+            self.verified_candidate_checksum_record_sha256,
+            self.preparation_manifest_sha256,
+        ):
+            if len(identity) != 64 or any(
+                character not in "0123456789abcdef" for character in identity
+            ):
+                raise ManifestContractError("run manifest lacks a candidate checksum identity")
+        if (
+            not isinstance(self.preparation_authorization_version, str)
+            or not self.preparation_authorization_version.strip()
+            or self.preparation_identity_matches is not True
+            or self.expected_approved_preparation_checksum_record_sha256
+            != self.verified_candidate_checksum_record_sha256
+        ):
+            raise ManifestContractError(
+                "externally expected and internally verified preparation identities differ"
+            )
         if not isinstance(self.validation_mask_record, ValidationMaskRecord):
             raise ManifestContractError("run lacks a derived validation mask record")
         self.validation_mask_record._validate()
@@ -202,6 +218,19 @@ class RunManifest:
         ):
             raise ManifestContractError(
                 "validation mask record does not match the run condition and seed"
+            )
+        if (
+            len(self.validation_artifact_identities) != 6
+            or len({name for name, _ in self.validation_artifact_identities}) != 6
+            or any(
+                not name.startswith(f"validation/{self.condition}/")
+                or len(identity) != 64
+                or any(character not in "0123456789abcdef" for character in identity)
+                for name, identity in self.validation_artifact_identities
+            )
+        ):
+            raise ManifestContractError(
+                "run manifest lacks exact verified validation artifact identities"
             )
         if self.device == "mps" and self.model_size is ModelSize.SMALL:
             if self.mps_repeatability_passed is not True:
@@ -251,6 +280,11 @@ class PairedRunManifest:
             "device",
             "mps_repeatability_passed",
             "tokenizer_checksum_record_sha256",
+            "expected_approved_preparation_checksum_record_sha256",
+            "verified_candidate_checksum_record_sha256",
+            "preparation_authorization_version",
+            "preparation_identity_matches",
+            "preparation_manifest_sha256",
             "optimizer",
             "budget",
             "device_policy",
@@ -264,12 +298,52 @@ class PairedRunManifest:
 
 def create_paired_run_manifest(
     paired_initialization: PairedInitialization,
-    validation_sequences_by_condition: Mapping[str, Iterable[PackedSequence]],
     *,
+    preparation_snapshot: PreparationSnapshot,
+    expected_preparation_checksum_record_sha256: str,
+    preparation_authorization_version: str,
     device: Device,
     mps_repeatability_passed: bool | None,
 ) -> PairedRunManifest:
-    """Verify live models and validation material before deriving four run records."""
+    """Bind future runs to an externally supplied identity after internal verification."""
+    from cslm.modeling.preparation import (
+        PREPARATION_PROTOCOL_VERSION,
+        PreparationError,
+        PreparationSnapshot,
+        candidate_validation_for,
+        verify_preparation_snapshot,
+    )
+
+    if type(preparation_snapshot) is not PreparationSnapshot:
+        raise ManifestContractError("run construction requires an exact preparation snapshot")
+    snapshot_failed = False
+    try:
+        verify_preparation_snapshot(preparation_snapshot)
+    except PreparationError:
+        snapshot_failed = True
+    if snapshot_failed:
+        raise ManifestContractError("preparation candidate failed internal verification")
+    if (
+        preparation_snapshot.status != "candidate_unapproved"
+        or preparation_snapshot.protocol_version
+        != PREPARATION_PROTOCOL_VERSION
+    ):
+        raise ManifestContractError(
+            "run construction requires an unapproved production candidate snapshot"
+        )
+    if (
+        not isinstance(expected_preparation_checksum_record_sha256, str)
+        or expected_preparation_checksum_record_sha256
+        != preparation_snapshot.candidate_checksum_record_sha256
+    ):
+        raise ManifestContractError(
+            "expected preparation checksum identity does not match the verified candidate"
+        )
+    if (
+        not isinstance(preparation_authorization_version, str)
+        or not preparation_authorization_version.strip()
+    ):
+        raise ManifestContractError("preparation authorization version is required")
     if not isinstance(paired_initialization, PairedInitialization):
         raise ManifestContractError("run construction requires a paired initialization")
     if not isinstance(paired_initialization.manifest, InitializationManifest):
@@ -277,9 +351,7 @@ def create_paired_run_manifest(
 
     try:
         paired_initialization.manifest._validate()
-        specification = approved_model_specification(
-            paired_initialization.manifest.model_size
-        )
+        specification = approved_model_specification(paired_initialization.manifest.model_size)
         derived_initialization = _derive_initialization_manifest(
             paired_initialization.models,
             specification,
@@ -295,27 +367,22 @@ def create_paired_run_manifest(
             "paired initialization failed verification against its live models"
         ) from exc
     if derived_initialization != paired_initialization.manifest:
-        raise ManifestContractError(
-            "paired initialization manifest does not match its live models"
-        )
-
-    if set(validation_sequences_by_condition) != set(CONDITIONS):
-        raise ManifestContractError(
-            "run construction requires validation material for all four conditions"
-        )
+        raise ManifestContractError("paired initialization manifest does not match its live models")
 
     runs: list[RunManifest] = []
     for condition in CONDITIONS:
+        validation_failed = False
         try:
-            validation_record = build_validation_mask_record(
-                validation_sequences_by_condition[condition],
-                seed=derived_initialization.seed_plan.validation_mask_seed,
-                policy=APPROVED_MASKING_POLICY,
+            validation_snapshot = candidate_validation_for(
+                preparation_snapshot,
+                condition,
+                derived_initialization.seed_plan.validation_mask_seed,
             )
-        except (KeyError, MaskingContractError, TypeError) as exc:
-            raise ManifestContractError(
-                "validation material failed deterministic derivation"
-            ) from exc
+        except PreparationError:
+            validation_snapshot = None
+            validation_failed = True
+        if validation_failed or validation_snapshot is None:
+            raise ManifestContractError("verified validation snapshot is unavailable")
 
         run = object.__new__(RunManifest)
         values = {
@@ -323,13 +390,23 @@ def create_paired_run_manifest(
             "initialization": derived_initialization,
             "device": device,
             "mps_repeatability_passed": mps_repeatability_passed,
-            "tokenizer_checksum_record_sha256": (
-                APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256
+            "tokenizer_checksum_record_sha256": (APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256),
+            "corpus_checksum_record_sha256": APPROVED_CORPUS_CHECKSUM_RECORDS[condition],
+            "expected_approved_preparation_checksum_record_sha256": (
+                expected_preparation_checksum_record_sha256
             ),
-            "corpus_checksum_record_sha256": APPROVED_CORPUS_CHECKSUM_RECORDS[
-                condition
-            ],
-            "validation_mask_record": validation_record,
+            "verified_candidate_checksum_record_sha256": (
+                preparation_snapshot.candidate_checksum_record_sha256
+            ),
+            "preparation_authorization_version": preparation_authorization_version,
+            "preparation_identity_matches": True,
+            "preparation_manifest_sha256": (
+                preparation_snapshot.preparation_manifest_sha256
+            ),
+            "validation_mask_record": validation_snapshot.record,
+            "validation_artifact_identities": (
+                validation_snapshot.artifact_identities
+            ),
             "optimizer": APPROVED_OPTIMIZER,
             "budget": APPROVED_BUDGET,
             "device_policy": APPROVED_DEVICE_POLICY,
@@ -339,6 +416,15 @@ def create_paired_run_manifest(
         run._validate()
         runs.append(run)
 
+    final_snapshot_failed = False
+    try:
+        verify_preparation_snapshot(preparation_snapshot)
+    except PreparationError:
+        final_snapshot_failed = True
+    if final_snapshot_failed:
+        raise ManifestContractError(
+            "preparation candidate changed during run-manifest construction"
+        )
     paired = object.__new__(PairedRunManifest)
     object.__setattr__(paired, "runs", tuple(runs))
     paired._validate()
