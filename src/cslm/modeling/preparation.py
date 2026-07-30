@@ -2424,10 +2424,105 @@ def _decode_cscont_line(raw: bytes) -> Mapping[str, Any]:
     return value
 
 
-def _historical_tokenizer_build_identity(
-    tokenizer_root: _VerifiedFrozenRoot,
-) -> Mapping[str, Any]:
-    required_keys = {
+def _accepted_tokenizer_backend_lock() -> dict[str, Any]:
+    """Return the build lock cryptographically bound by the accepted manifest."""
+    return {
+        "backend_correction_id": "tokenizers_0_22_2_sorted_word_counts_v1",
+        "build": {
+            "cargo_locked": True,
+            "maturin": "1.9.6",
+            "rust": "1.89.0",
+        },
+        "format_version": 1,
+        "patch": "infra/tokenizers/tokenizers-0.22.2-neu-deterministic-wordpiece.patch",
+        "tokenizers": "0.22.2",
+        "upstream_commit": "f383101a26663708484cac0727792aad74f78234",
+        "upstream_repository": "https://github.com/huggingface/tokenizers.git",
+        "upstream_tag": "v0.22.2",
+    }
+
+
+def _validate_accepted_corrected_backend(record: Any) -> None:
+    expected = {
+        "backend_build_configuration_sha256": (
+            "addb9604439dab5c2a4b9b686f514624282180893196bcd2033ee5c9f44adb7a"
+        ),
+        "backend_build_manifest_sha256": (
+            "e719e7b9711045442a549063830ea27de7a9026df8aa2a3be4e8a3c24e30c293"
+        ),
+        "backend_correction_id": "tokenizers_0_22_2_sorted_word_counts_v1",
+        "maturin": "maturin 1.9.6",
+        "native_backend_sha256": (
+            "04abb6b68b30c7f6393d7bff7ee77400ae69f4010dae4c98a93e1665cbcc0954"
+        ),
+        "patch_sha256": "9cd04532dfcb5e788eadf170f642a27a27bce318f6b11f27afc839c7cd771280",
+        "rustc": "rustc 1.89.0 (29483883e 2025-08-04)",
+        "tokenizers_version": "0.22.2",
+        "upstream_commit": "f383101a26663708484cac0727792aad74f78234",
+    }
+    digest_keys = {
+        "backend_build_configuration_sha256",
+        "backend_build_manifest_sha256",
+        "native_backend_sha256",
+        "patch_sha256",
+    }
+    if (
+        not isinstance(record, Mapping)
+        or set(record) != set(expected)
+        or dict(record) != expected
+        or any(
+            not isinstance(record[key], str) or not _SHA256_RE.fullmatch(record[key])
+            for key in digest_keys
+        )
+        or not re.fullmatch(r"[0-9a-f]{40}", record["upstream_commit"])
+    ):
+        raise PreparationError("historical tokenizer-build record schema is not approved")
+
+
+def _validate_accepted_tokenizer_freeze_manifest(payload: Mapping[str, Any]) -> None:
+    expected_top_level = {
+        "audit",
+        "builder",
+        "configuration_sha256",
+        "corrected_backend",
+        "format_version",
+        "freeze_decision",
+        "freeze_declaration",
+        "frozen_inputs",
+        "repository",
+        "reproducibility",
+        "runtime",
+        "scientific_invariants",
+        "training_corpus",
+        "wordpiece_configuration",
+    }
+    mapping_fields = {
+        "audit",
+        "corrected_backend",
+        "frozen_inputs",
+        "repository",
+        "reproducibility",
+        "runtime",
+        "scientific_invariants",
+        "training_corpus",
+        "wordpiece_configuration",
+    }
+    if (
+        set(payload) != expected_top_level
+        or payload.get("format_version") != 1
+        or payload.get("builder") != "shared_wordpiece_tokenizer_freeze_v1"
+        or payload.get("freeze_decision") != "PASS"
+        or payload.get("freeze_declaration")
+        != (
+            "This single tokenizer vocabulary, token-ID mapping, normalization, "
+            "preprocessing, and checksum are frozen for EnglishMono, SpanishMono, "
+            "MonoCont, and CsCont."
+        )
+        or any(not isinstance(payload.get(key), Mapping) for key in mapping_fields)
+    ):
+        raise PreparationError("frozen tokenizer metadata container is not approved")
+
+    standalone_keys = {
         "backend_correction_id",
         "build",
         "format_version",
@@ -2437,40 +2532,144 @@ def _historical_tokenizer_build_identity(
         "upstream_repository",
         "upstream_tag",
     }
-    candidates: list[tuple[str, dict[str, Any]]] = []
-    for name, content in tokenizer_root.small_contents.items():
-        if not name.endswith(".json") or name == "tokenizer.json":
-            continue
-        try:
-            payload = json.loads(content, object_pairs_hook=_unique_object)
-        except BaseException:
-            continue
-        if isinstance(payload, dict) and set(payload) == required_keys:
-            candidates.append((name, payload))
-    if len(candidates) != 1:
-        raise PreparationError("historical tokenizer-build record is absent or ambiguous")
-    name, payload = candidates[0]
-    build = payload.get("build")
+    for section_name in mapping_fields - {"corrected_backend"}:
+        section = payload[section_name]
+        if (
+            set(section) == standalone_keys
+            or "corrected_backend" in section
+            or "historical_tokenizer_build" in section
+        ):
+            raise PreparationError("historical tokenizer-build record is ambiguous")
+
+    record = payload["corrected_backend"]
+    _validate_accepted_corrected_backend(record)
+    runtime = payload["runtime"]
+    expected_runtime_keys = {
+        "architecture",
+        "backend_build_configuration_sha256",
+        "backend_correction_id",
+        "configuration_sha256",
+        "native_backend",
+        "os",
+        "python",
+        "python_executable_sha256",
+        "python_hash_seed",
+        "python_implementation",
+        "rust_backend_version_exposed",
+        "tokenizers",
+        "tokenizers_parallelism",
+    }
+    native = runtime.get("native_backend") if isinstance(runtime, Mapping) else None
+    wordpiece_configuration = payload["wordpiece_configuration"]
+    configuration_sha256 = _sha256_bytes(canonical_json_bytes(wordpiece_configuration))
     if (
-        payload.get("backend_correction_id") != BACKEND_CORRECTION_ID
-        or payload.get("format_version") != 1
-        or payload.get("tokenizers") != "0.22.2"
-        or payload.get("upstream_tag") != "v0.22.2"
-        or payload.get("upstream_repository") != "https://github.com/huggingface/tokenizers.git"
-        or not isinstance(payload.get("upstream_commit"), str)
-        or not re.fullmatch(r"[0-9a-f]{40}", payload["upstream_commit"])
-        or not isinstance(payload.get("patch"), str)
-        or not isinstance(build, dict)
-        or set(build) != {"cargo_locked", "maturin", "rust"}
-        or build.get("cargo_locked") is not True
-        or not all(isinstance(build.get(key), str) and build[key] for key in ("maturin", "rust"))
+        set(runtime) != expected_runtime_keys
+        or runtime.get("backend_correction_id") != record["backend_correction_id"]
+        or runtime.get("backend_build_configuration_sha256")
+        != record["backend_build_configuration_sha256"]
+        or runtime.get("tokenizers") != record["tokenizers_version"]
+        or runtime.get("configuration_sha256") != payload["configuration_sha256"]
+        or payload["configuration_sha256"] != configuration_sha256
+        or wordpiece_configuration != protocol_configuration()
+        or not isinstance(native, Mapping)
+        or set(native) != {"filename", "sha256"}
+        or native.get("filename") != "tokenizers.abi3.so"
+        or native.get("sha256") != record["native_backend_sha256"]
+        or runtime.get("rust_backend_version_exposed") is not None
+        or runtime.get("python_implementation") != "CPython"
+        or runtime.get("python_hash_seed") != "1729"
+        or runtime.get("tokenizers_parallelism") != "false"
+        or not all(
+            isinstance(runtime.get(key), str) and runtime[key]
+            for key in ("architecture", "os", "python")
+        )
+        or not isinstance(runtime.get("python_executable_sha256"), str)
+        or not _SHA256_RE.fullmatch(runtime["python_executable_sha256"])
     ):
-        raise PreparationError("historical tokenizer-build record schema is not approved")
+        raise PreparationError("frozen tokenizer metadata relationships are not approved")
+
+    backend_lock = _accepted_tokenizer_backend_lock()
+    build_configuration = {
+        "backend_lock": backend_lock,
+        "backend_lock_sha256": _sha256_bytes(canonical_json_bytes(backend_lock)),
+        "patch_sha256": record["patch_sha256"],
+        "cargo_locked": backend_lock["build"]["cargo_locked"],
+        "rustc": record["rustc"],
+        "maturin": record["maturin"],
+        "python": f"Python {runtime['python']}",
+    }
+    if (
+        backend_lock["backend_correction_id"] != record["backend_correction_id"]
+        or backend_lock["tokenizers"] != record["tokenizers_version"]
+        or backend_lock["upstream_commit"] != record["upstream_commit"]
+        or _sha256_bytes(canonical_json_bytes(build_configuration))
+        != record["backend_build_configuration_sha256"]
+    ):
+        raise PreparationError("historical tokenizer-build configuration binding failed")
+
+
+def _historical_tokenizer_build_identity(
+    tokenizer_root: _VerifiedFrozenRoot,
+) -> Mapping[str, Any]:
+    expected_inventory = {
+        "audit_results.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "training_manifest.json",
+        "vocab.txt",
+    }
+    if (
+        tokenizer_root.record_identity_sha256
+        != "25489e732b64ce63c0380012ea719571f9cb4fc6c369e43da920d2b45af55b8d"
+        or set(tokenizer_root.constituent_sha256) != expected_inventory
+        or set(tokenizer_root.small_contents) != expected_inventory
+        or any(
+            _sha256_bytes(tokenizer_root.small_contents[name])
+            != tokenizer_root.constituent_sha256[name]
+            for name in expected_inventory
+        )
+    ):
+        raise PreparationError("frozen tokenizer metadata binding is not approved")
+
+    standalone_keys = {
+        "backend_correction_id",
+        "build",
+        "format_version",
+        "patch",
+        "tokenizers",
+        "upstream_commit",
+        "upstream_repository",
+        "upstream_tag",
+    }
+    for name in ("audit_results.json", "tokenizer_config.json"):
+        metadata = _json_object(
+            tokenizer_root.small_contents[name],
+            category="frozen tokenizer metadata constituent is malformed",
+        )
+        if (
+            set(metadata) == standalone_keys
+            or "corrected_backend" in metadata
+            or "historical_tokenizer_build" in metadata
+        ):
+            raise PreparationError("historical tokenizer-build record is ambiguous")
+
+    name = "training_manifest.json"
+    payload = _canonical_json_object(
+        tokenizer_root.small_contents[name],
+        category="frozen tokenizer training manifest is malformed",
+    )
+    _validate_accepted_tokenizer_freeze_manifest(payload)
+    record = dict(payload["corrected_backend"])
     return MappingProxyType(
         {
+            "backend_lock": _accepted_tokenizer_backend_lock(),
+            "checksum_record_sha256": tokenizer_root.record_identity_sha256,
             "constituent_name": name,
             "constituent_sha256": tokenizer_root.constituent_sha256[name],
-            "record": payload,
+            "container_format_version": payload["format_version"],
+            "container_schema": payload["builder"],
+            "record": record,
+            "record_location": "training_manifest.json#/corrected_backend",
         }
     )
 
@@ -2863,19 +3062,10 @@ def collect_runtime_identity(
     if len(native) != 1:
         raise PreparationError("Tokenizers native extension identity is ambiguous")
     historical = bundle.tokenizer_historical_build_identity
-    historical_record = historical.get("record")
-    anchored_constituents = (
-        dict(bundle.input_anchor.constituent_sha256)
-        if isinstance(bundle.input_anchor, InputPopulationAnchor)
-        else {}
-    )
-    if (
-        not isinstance(historical_record, Mapping)
-        or historical_record.get("backend_correction_id") != BACKEND_CORRECTION_ID
-        or historical.get("constituent_sha256")
-        != anchored_constituents.get(f"tokenizer:{historical.get('constituent_name')}")
-    ):
-        raise PreparationError("historical tokenizer-build identity is not anchored")
+    try:
+        _validate_historical_identity_record(historical, bundle.input_anchor)
+    except PreparationError:
+        raise PreparationError("historical tokenizer-build identity is not anchored") from None
     executable = Path(sys.executable)
     return MappingProxyType(
         {
@@ -5219,49 +5409,42 @@ def _validate_historical_identity_record(
     historical: Any,
     anchor: InputPopulationAnchor,
 ) -> None:
-    if not isinstance(historical, dict) or set(historical) != {
+    if not isinstance(historical, Mapping) or set(historical) != {
+        "backend_lock",
+        "checksum_record_sha256",
         "constituent_name",
         "constituent_sha256",
+        "container_format_version",
+        "container_schema",
         "record",
+        "record_location",
     }:
         raise PreparationError("candidate historical tokenizer-build identity is invalid")
     name = historical["constituent_name"]
     digest = historical["constituent_sha256"]
     record = historical["record"]
-    build = record.get("build") if isinstance(record, dict) else None
+    backend_lock = historical["backend_lock"]
+    failed = False
+    try:
+        _validate_accepted_corrected_backend(record)
+    except PreparationError:
+        failed = True
     if (
-        not isinstance(name, str)
-        or not name.endswith(".json")
-        or name == "tokenizer.json"
+        failed
+        or name != "training_manifest.json"
         or not isinstance(digest, str)
         or not _SHA256_RE.fullmatch(digest)
-        or not isinstance(record, dict)
-        or set(record)
-        != {
-            "backend_correction_id",
-            "build",
-            "format_version",
-            "patch",
-            "tokenizers",
-            "upstream_commit",
-            "upstream_repository",
-            "upstream_tag",
-        }
-        or record["backend_correction_id"] != BACKEND_CORRECTION_ID
-        or record["format_version"] != 1
-        or record["tokenizers"] != "0.22.2"
-        or record["upstream_tag"] != "v0.22.2"
-        or record["upstream_repository"]
-        != "https://github.com/huggingface/tokenizers.git"
-        or not isinstance(record["upstream_commit"], str)
-        or not re.fullmatch(r"[0-9a-f]{40}", record["upstream_commit"])
-        or not isinstance(record["patch"], str)
-        or not record["patch"]
-        or not isinstance(build, dict)
-        or set(build) != {"cargo_locked", "maturin", "rust"}
-        or build["cargo_locked"] is not True
-        or not all(isinstance(build[key], str) and build[key] for key in ("maturin", "rust"))
+        or historical["checksum_record_sha256"]
+        != "25489e732b64ce63c0380012ea719571f9cb4fc6c369e43da920d2b45af55b8d"
+        or historical["container_format_version"] != 1
+        or historical["container_schema"] != "shared_wordpiece_tokenizer_freeze_v1"
+        or historical["record_location"] != "training_manifest.json#/corrected_backend"
+        or not isinstance(backend_lock, Mapping)
+        or dict(backend_lock) != _accepted_tokenizer_backend_lock()
+        or not isinstance(anchor, InputPopulationAnchor)
         or dict(anchor.constituent_sha256).get(f"tokenizer:{name}") != digest
+        or dict(anchor.checksum_record_identities).get("tokenizer")
+        != historical["checksum_record_sha256"]
     ):
         raise PreparationError("candidate historical tokenizer-build identity is invalid")
 
