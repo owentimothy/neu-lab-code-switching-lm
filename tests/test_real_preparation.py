@@ -18,10 +18,12 @@ import pytest
 from synthetic_preparation_support import (
     build_synthetic_preparation_fixture,
     synthetic_bangor_nested_row,
+    synthetic_bangor_punctuation_nested_row,
     synthetic_bangor_record,
     synthetic_bangor_record_sequence,
     synthetic_callhome_document_identity,
     synthetic_callhome_row_identity,
+    synthetic_exact_tokenizer,
     synthetic_population,
 )
 
@@ -316,6 +318,68 @@ def _adapt_bangor_stream(
     return tuple(decoded)
 
 
+def _punctuation_bangor_record(
+    *,
+    identity: str,
+    split: str = "train",
+    sensitive_marker: str = "synthetic-speaker-metadata",
+) -> dict[str, object]:
+    nested = synthetic_bangor_punctuation_nested_row(
+        identity=identity,
+        split=split,
+        sensitive_marker=sensitive_marker,
+    )
+    return synthetic_bangor_record(
+        identity=identity,
+        split=split,
+        sensitive_marker=sensitive_marker,
+        nested=nested,
+    )
+
+
+def _replace_bangor_sequence_row_with_punctuation(
+    records: list[dict[str, object]],
+    index: int,
+) -> None:
+    prior = records[index]["row"]
+    assert isinstance(prior, dict)
+    identity = str(prior["conversation_id"]).removeprefix("conversation-")
+    nested = synthetic_bangor_punctuation_nested_row(
+        identity=identity,
+        split=str(prior["split"]),
+        sensitive_marker=str(prior["speaker_id"]),
+    )
+    identity_fields = (
+        "conversation_id",
+        "previous_language_category",
+        "previous_speaker_id",
+        "previous_utterance_id",
+        "same_speaker_as_previous",
+        "source_path",
+        "source_utterance_id",
+        "speaker_id",
+        "utterance_id",
+        "utterance_index",
+    )
+    for field_name in identity_fields:
+        nested[field_name] = prior[field_name]
+    nested["source_line_numbers"] = [prior["source_line_numbers"][0]]
+    nested["source_token_locations"] = [prior["source_token_locations"][0]]
+    nested["source_word_ids"] = [prior["source_word_ids"][0]]
+    nested = dict(sorted(nested.items()))
+    records[index] = synthetic_bangor_record(
+        identity=identity,
+        split=str(prior["split"]),
+        nested=nested,
+        document_id=str(records[index]["document_id"]),
+        document_row_index=int(records[index]["document_row_index"]),
+    )
+    if index + 1 < len(records):
+        successor = records[index + 1]["row"]
+        assert isinstance(successor, dict)
+        successor["previous_language_category"] = "punctuation_or_empty"
+
+
 def _open_descriptor_count() -> int:
     for root in (Path("/proc/self/fd"), Path("/dev/fd")):
         if root.is_dir():
@@ -453,6 +517,247 @@ def test_exact_full_bangor_v1_shape_succeeds_and_projects_only_four_fields() -> 
         "tokens",
     )
     assert adapt_cscont_record(record).component == "bangor_natural_span"
+
+
+def test_authoritative_punctuation_only_bangor_row_succeeds_and_projects_exactly() -> None:
+    record = _punctuation_bangor_record(identity="punctuation-only")
+    nested = record["row"]
+    assert isinstance(nested, dict)
+    assert len(nested) == 45
+    assert nested["tokens"] == ["!"]
+    assert nested["source_token_language_labels"] == ["999"]
+    assert nested["token_language_labels"] == ["punct"]
+    assert nested["source_word_ids"] == [1]
+    assert nested["n_word_tokens_excluding_punctuation"] == 0
+    assert nested["n_punctuation_tokens"] == 1
+    assert nested["n_tokens_including_punctuation"] == 1
+    assert nested["n_english_word_tokens"] == 0
+    assert nested["n_spanish_word_tokens"] == 0
+    assert nested["language_category"] == "punctuation_or_empty"
+    assert nested["condition_candidates"] == []
+    assert record["lexical_tokens"] == 0
+
+    projection = preparation_module._validate_and_project_bangor_v1_row(
+        nested,
+        record,
+    )
+    assert tuple(projection) == (
+        "conversation_id",
+        "source_word_ids",
+        "text",
+        "tokens",
+    )
+    assert projection["source_word_ids"] == (1,)
+    assert projection["tokens"] == ("!",)
+    decoded = adapt_cscont_record(record)
+    assert decoded.lexical_token_count == 0
+    assert decoded.row_order == 0
+    assert decoded.source_row_order == 0
+    assert not hasattr(decoded, "source_word_ids")
+    with pytest.raises(PreparationError):
+        lexical_token_count("!")
+
+
+@pytest.mark.parametrize("punctuation_index", (0, 1, 2))
+def test_punctuation_only_bangor_row_preserves_multirow_span_order(
+    punctuation_index: int,
+) -> None:
+    records = synthetic_bangor_record_sequence(
+        identity=f"punctuation-position-{punctuation_index}",
+        split="train",
+        length=3,
+    )
+    _replace_bangor_sequence_row_with_punctuation(records, punctuation_index)
+    first = _adapt_bangor_stream(records)
+    second = _adapt_bangor_stream(records)
+    assert [row.row_order for row in first] == [0, 1, 2]
+    assert [row.source_row_order for row in first] == [0, 1, 2]
+    assert [row.lexical_token_count for row in first] == [
+        0 if index == punctuation_index else 3
+        for index in range(3)
+    ]
+    assert tuple(
+        (
+            row.document_id,
+            row.conversation_id,
+            row.span_id,
+            row.row_id,
+            row.row_order,
+            row.lexical_token_count,
+        )
+        for row in first
+    ) == tuple(
+        (
+            row.document_id,
+            row.conversation_id,
+            row.span_id,
+            row.row_id,
+            row.row_order,
+            row.lexical_token_count,
+        )
+        for row in second
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("n_word_tokens_excluding_punctuation", 1),
+        ("n_punctuation_tokens", 0),
+        ("n_tokens_including_punctuation", 0),
+        ("n_english_word_tokens", 1),
+        ("source_word_ids", []),
+        ("condition_candidates", ["CsCont"]),
+        ("language_category", "neutral_or_bivalent"),
+    ),
+)
+def test_punctuation_only_bangor_count_and_category_mismatches_fail(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    record = _punctuation_bangor_record(identity=f"punctuation-{field_name}")
+    _replace_bangor_nested_field(record, field_name, invalid_value)
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+@pytest.mark.parametrize("invalid_count", (-1, True))
+def test_punctuation_only_bangor_outer_lexical_count_rejects_negative_and_bool(
+    invalid_count: object,
+) -> None:
+    record = _punctuation_bangor_record(identity=f"punctuation-count-{invalid_count}")
+    record["lexical_tokens"] = invalid_count
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+def test_punctuation_only_bangor_claiming_positive_lexical_count_fails() -> None:
+    record = _punctuation_bangor_record(identity="punctuation-positive-count")
+    record["lexical_tokens"] = 1
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+def test_ordinary_bangor_claiming_zero_lexical_count_fails() -> None:
+    record = synthetic_bangor_record(identity="ordinary-zero-count", split="train")
+    record["lexical_tokens"] = 0
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("text", ""),
+        ("tokens", []),
+        ("tokens", ["123"]),
+        ("source_token_language_labels", ["eng"]),
+        ("token_language_labels", ["neutral"]),
+    ),
+)
+def test_empty_or_unauthorized_zero_lexical_bangor_structures_fail(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    record = _punctuation_bangor_record(identity=f"punctuation-structure-{field_name}")
+    _replace_bangor_nested_field(record, field_name, invalid_value)
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+@pytest.mark.parametrize("schema_mutation", ("missing", "extra", "renamed", "wrong_type"))
+def test_punctuation_only_bangor_retains_exact_nested_schema(
+    schema_mutation: str,
+) -> None:
+    record = _punctuation_bangor_record(identity=f"punctuation-schema-{schema_mutation}")
+    nested = dict(record["row"])
+    if schema_mutation == "missing":
+        nested.pop("n_punctuation_tokens")
+    elif schema_mutation == "extra":
+        nested["extra"] = 0
+    elif schema_mutation == "renamed":
+        nested["punctuation_tokens"] = nested.pop("n_punctuation_tokens")
+    else:
+        nested["n_punctuation_tokens"] = False
+    record["row"] = dict(sorted(nested.items()))
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    (
+        ("component", "callhome_monolingual_filler"),
+        ("condition", "MonoCont"),
+        ("source", "callhome_eng"),
+        ("split", "validation"),
+        ("document_row_index", 1),
+    ),
+)
+def test_punctuation_only_bangor_cannot_bypass_outer_route_or_order(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    record = _punctuation_bangor_record(identity=f"punctuation-route-{field_name}")
+    record[field_name] = invalid_value
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(record)
+
+
+def test_zero_lexical_callhome_monocont_and_cscont_filler_remain_rejected() -> None:
+    for condition in ("EnglishMono", "MonoCont"):
+        with pytest.raises(PreparationError):
+            adapt_callhome_record(
+                _callhome(text="!", identity=f"zero-{condition}"),
+                logical_condition=condition,
+            )
+
+    filler = _cscont(
+        component="callhome_monolingual_filler",
+        identity="zero-filler",
+        nested=_callhome(identity="zero-filler"),
+    )
+    filler_nested = dict(filler["row"])
+    filler_nested["text"] = "!"
+    filler["row"] = filler_nested
+    filler["lexical_tokens"] = 0
+    with pytest.raises(PreparationError):
+        adapt_cscont_record(filler)
+
+
+def test_punctuation_only_failure_and_stream_state_remain_private() -> None:
+    marker = "PRIVATE-PUNCTUATION-MARKER-MUST-DISAPPEAR"
+    record = _punctuation_bangor_record(
+        identity="punctuation-private",
+        sensitive_marker=marker,
+    )
+    state = preparation_module._derive_bangor_v1_stream_state(
+        hmac_key=b"k" * 32,
+        input_role="synthetic:CsCont:train",
+        expected_split="train",
+        authorized_records=[record],
+    )
+    try:
+        decoded = preparation_module._adapt_cscont_record(
+            record,
+            input_role="synthetic:CsCont:train",
+            input_ordinal=0,
+            bangor_state=state,
+        )
+        assert marker not in repr(decoded)
+        assert marker not in repr(state)
+    finally:
+        state.clear()
+    assert marker not in repr(state)
+
+    malformed = _punctuation_bangor_record(
+        identity="punctuation-private-failure",
+        sensitive_marker=marker,
+    )
+    _replace_bangor_nested_field(malformed, "tokens", [marker])
+    with pytest.raises(PreparationError) as caught:
+        adapt_cscont_record(malformed)
+    _assert_exception_private(caught.value, (marker,))
 
 
 def test_authoritative_nonmonotonic_word_ids_preserve_location_and_projection_order() -> None:
@@ -1272,6 +1577,183 @@ def test_preparation_tokenizes_each_authorized_row_once_and_repeats_validation()
         assert np.array_equal(first.masked_input_ids, second.masked_input_ids)
         assert first.masked_input_ids.dtype == np.uint16
         assert first.labels.dtype == np.int32
+
+
+def test_punctuation_only_bangor_row_uses_existing_complete_preparation_pipeline(
+    tmp_path: Path,
+) -> None:
+    marker = "PRIVATE-PUNCTUATION-PIPELINE-MARKER"
+
+    def build_bundle():
+        rows: list[DecodedPreparationRow] = []
+        for condition, split, shard in approved_block_order():
+            if condition != "CsCont":
+                source = (
+                    "callhome_spa"
+                    if condition == "SpanishMono" or shard == "spanish"
+                    else "callhome_eng"
+                )
+                identity = f"pipeline-{source}-{split}"
+                for turn_index, text in enumerate(("one", "one two three")):
+                    rows.append(
+                        adapt_callhome_record(
+                            _callhome(
+                                source=source,
+                                split=split,
+                                text=text,
+                                identity=identity,
+                                turn_index=turn_index,
+                            ),
+                            logical_condition=condition,
+                        )
+                    )
+                continue
+
+            identity = f"pipeline-{condition}-{split}-{shard}"
+            records = synthetic_bangor_record_sequence(
+                identity=identity,
+                split=split,
+                length=2,
+                sensitive_marker=marker,
+            )
+            if split == "train":
+                _replace_bangor_sequence_row_with_punctuation(records, 0)
+            else:
+                lexical = records[0]["row"]
+                assert isinstance(lexical, dict)
+                lexical.update(
+                    {
+                        "clean_text": "one",
+                        "condition_candidates": [
+                            "EnglishMono",
+                            "MonoCont",
+                            "CsCont",
+                        ],
+                        "language_category": "en_only",
+                        "n_english_word_tokens": 1,
+                        "n_spanish_word_tokens": 0,
+                        "n_tokens_including_punctuation": 1,
+                        "n_word_tokens_excluding_punctuation": 1,
+                        "raw_text": "one",
+                        "source_line_numbers": lexical["source_line_numbers"][:1],
+                        "source_token_language_labels": ["eng"],
+                        "source_token_locations": lexical[
+                            "source_token_locations"
+                        ][:1],
+                        "source_word_ids": lexical["source_word_ids"][:1],
+                        "text": "one",
+                        "token_language_labels": ["eng"],
+                        "tokens": ["one"],
+                    }
+                )
+                records[0]["lexical_tokens"] = 1
+                successor = records[1]["row"]
+                assert isinstance(successor, dict)
+                successor["previous_language_category"] = "en_only"
+            rows.extend(
+                _adapt_bangor_stream(
+                    records,
+                    input_role=f"synthetic:CsCont:{split}",
+                    expected_split=split,
+                )
+            )
+        return prepare_synthetic_rows(
+            tuple(rows),
+            tokenizer=synthetic_exact_tokenizer(),
+            hmac_key=b"k" * 32,
+        )
+
+    first = build_bundle()
+    second = build_bundle()
+    punctuation_rows = [
+        row
+        for row in first.rows
+        if row.source == "bangor_cgwords" and row.lexical_token_count == 0
+    ]
+    assert len(punctuation_rows) == 1
+    punctuation = punctuation_rows[0]
+    assert punctuation.token_ids
+    assert not hasattr(punctuation, "text")
+    assert not hasattr(punctuation, "tokens")
+    assert not hasattr(punctuation, "source_word_ids")
+
+    ranges = [
+        item
+        for sequence in first.packing.sequences
+        for item in sequence.provenance
+        if item.source == "bangor_cgwords" and item.row_id == punctuation.row_id
+    ]
+    assert len(ranges) == 1
+    assert ranges[0].source_token_start == 0
+    assert ranges[0].source_token_end == len(punctuation.token_ids)
+    assert ranges[0].source_row_token_count == len(punctuation.token_ids)
+    assert (
+        first.packing.source_wordpieces_by_group
+        == first.packing.packed_wordpieces_by_group
+    )
+
+    membership = preparation_module._serialized_membership_payload(
+        first,
+        hmac_key=b"k" * 32,
+    )
+    punctuation_membership = [
+        row
+        for row in membership
+        if row["source_role"] == "bangor_cgwords"
+        and row["lexical_token_count"] == 0
+    ]
+    assert len(punctuation_membership) == 1
+    assert punctuation_membership[0]["source_token_count"] == len(
+        punctuation.token_ids
+    )
+
+    regenerated = materialize_fixed_validation(first.packing.sequences)
+    assert len(regenerated) == len(first.validation)
+    for stored, repeated in zip(first.validation, regenerated, strict=True):
+        assert stored.record == repeated.record
+        assert np.array_equal(stored.masked_input_ids, repeated.masked_input_ids)
+        assert np.array_equal(stored.labels, repeated.labels)
+        assert np.array_equal(stored.attention_mask, repeated.attention_mask)
+
+    first_parent = tmp_path / "first"
+    second_parent = tmp_path / "second"
+    for parent in (first_parent, second_parent):
+        parent.mkdir()
+        os.chmod(parent, 0o700)
+    first_published = preparation_module.publish_synthetic_preparation(
+        first,
+        output_root=first_parent / "candidate",
+        hmac_key=b"k" * 32,
+    )
+    second_published = preparation_module.publish_synthetic_preparation(
+        second,
+        output_root=second_parent / "candidate",
+        hmac_key=b"k" * 32,
+    )
+    first_snapshot = load_synthetic_preparation_candidate(
+        first_parent / "candidate"
+    )
+    second_snapshot = load_synthetic_preparation_candidate(
+        second_parent / "candidate"
+    )
+    assert (
+        first_published.artifact_map_sha256
+        == second_published.artifact_map_sha256
+    )
+    assert first_published.manifest_sha256 == second_published.manifest_sha256
+    assert (
+        first_snapshot.artifact_map_sha256,
+        first_snapshot.manifest_sha256,
+    ) == (
+        second_snapshot.artifact_map_sha256,
+        second_snapshot.manifest_sha256,
+    )
+    for candidate in (first_parent / "candidate", second_parent / "candidate"):
+        assert not any(
+            marker.encode() in path.read_bytes()
+            for path in candidate.rglob("*")
+            if path.is_file()
+        )
 
 
 @pytest.mark.parametrize(("long_count", "candidate"), [(99, True), (100, False)])

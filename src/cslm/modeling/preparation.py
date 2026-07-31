@@ -221,6 +221,12 @@ _BANGOR_V1_CONDITION_CANDIDATES = MappingProxyType(
         "metadata_or_noise": (),
     }
 )
+_BANGOR_PREPARATION_ROUTE = (
+    "CsCont",
+    "bangor_cgwords",
+    "bangor_natural_span",
+    None,
+)
 _LEXICAL_TOP_LEVEL_KEYS = frozenset({"text", "tokens", "row"})
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _BANGOR_V1_DOCUMENT_RE = re.compile(r"^bangor_span_[0-9a-f]{16}$")
@@ -1126,6 +1132,17 @@ def lexical_token_count(text: str) -> int:
     return count
 
 
+def _bangor_lexical_token_count(text: str) -> int:
+    """Recompute Bangor words while admitting only nonempty all-punctuation zeroes."""
+    if not isinstance(text, str) or not text.strip() or "\n" in text or "\r" in text:
+        raise PreparationError("authorized Bangor field is invalid")
+    tokens = text.split()
+    count = sum(any(character.isalpha() for character in token) for token in tokens)
+    if count == 0 and not all(_BANGOR_V1_PUNCT_RE.fullmatch(token) for token in tokens):
+        raise PreparationError("authorized Bangor field has invalid nonlexical material")
+    return count
+
+
 @dataclass(frozen=True, init=False)
 class DecodedPreparationRow:
     """Authorized lexical row; all raw identities and text are hidden from repr."""
@@ -1150,6 +1167,17 @@ class DecodedPreparationRow:
         raise PreparationError("decoded rows must be adapter-derived")
 
     def _validate(self) -> None:
+        route = (
+            self.condition,
+            self.source,
+            self.component,
+            self.language_shard,
+        )
+        recomputed_lexical_count = (
+            _bangor_lexical_token_count(self.text)
+            if route == _BANGOR_PREPARATION_ROUTE
+            else lexical_token_count(self.text)
+        )
         if self.condition not in CONDITIONS or self.split not in {"train", "validation"}:
             raise PreparationError("decoded row is outside the authorized population")
         if not all(
@@ -1168,7 +1196,8 @@ class DecodedPreparationRow:
             or self.row_order < 0
             or type(self.source_row_order) is not int
             or self.source_row_order < 0
-            or lexical_token_count(self.text) != self.lexical_token_count
+            or type(self.lexical_token_count) is not int
+            or recomputed_lexical_count != self.lexical_token_count
         ):
             raise PreparationError("decoded row lexical count or ordering is invalid")
         expected_route = {
@@ -1247,6 +1276,12 @@ class PreparedPreparationRow:
         raise PreparationError("prepared rows must be tokenizer-derived")
 
     def _validate(self) -> None:
+        route = (
+            self.condition,
+            self.source,
+            self.component,
+            self.language_shard,
+        )
         if (
             self.condition not in CONDITIONS
             or self.split not in {"train", "validation"}
@@ -1255,7 +1290,11 @@ class PreparedPreparationRow:
             or type(self.source_row_order) is not int
             or self.source_row_order < 0
             or type(self.lexical_token_count) is not int
-            or self.lexical_token_count <= 0
+            or self.lexical_token_count < 0
+            or (
+                self.lexical_token_count == 0
+                and route != _BANGOR_PREPARATION_ROUTE
+            )
             or not self.token_ids
             or any(
                 type(token_id) is not int or not 0 <= token_id < VOCAB_SIZE
@@ -1285,12 +1324,7 @@ class PreparedPreparationRow:
             ("CsCont", "callhome_spa", "callhome_monolingual_filler", None),
             ("CsCont", "bangor_cgwords", "bangor_natural_span", None),
         }
-        if (
-            self.condition,
-            self.source,
-            self.component,
-            self.language_shard,
-        ) not in expected_route:
+        if route not in expected_route:
             raise PreparationError("prepared row route is invalid")
         if self.component == "callhome_monolingual" and (
             self.document_id != self.conversation_id or self.span_id is not None
@@ -2311,8 +2345,18 @@ def _validate_and_project_bangor_v1_row(
         + expected_counts["n_punctuation_tokens"]
         + expected_counts["n_metadata_tokens"]
     )
+    punctuation_only = expected_counts["n_word_tokens_excluding_punctuation"] == 0
     if (
         any(row[key] != expected for key, expected in expected_counts.items())
+        or (
+            punctuation_only
+            and (
+                category != "punctuation_or_empty"
+                or expected_candidates
+                or expected_counts["n_punctuation_tokens"] != len(tokens)
+                or expected_counts["n_punctuation_tokens"] == 0
+            )
+        )
         or row["n_metadata_tokens"] != 0
         or row["n_other_word_tokens"] != 0
         or row["text"] != " ".join(tokens)
@@ -2382,7 +2426,7 @@ def _validate_and_project_bangor_v1_row(
         or outer["split"] != row["split"]
         or outer["lexical_tokens"] != row["n_word_tokens_excluding_punctuation"]
         or not _BANGOR_V1_DOCUMENT_RE.fullmatch(outer["document_id"])
-        or lexical_token_count(row["text"]) != outer["lexical_tokens"]
+        or _bangor_lexical_token_count(row["text"]) != outer["lexical_tokens"]
     ):
         raise PreparationError("CsCont Bangor v1 inner and outer identities conflict")
 
@@ -2492,7 +2536,11 @@ def _adapt_cscont_record_impl(
         span_id = record["document_id"]
     else:
         raise PreparationError("CsCont source and component combination is not approved")
-    count = lexical_token_count(text)
+    count = (
+        _bangor_lexical_token_count(text)
+        if component == "bangor_natural_span"
+        else lexical_token_count(text)
+    )
     if count != record["lexical_tokens"]:
         raise PreparationError("CsCont stored and recomputed lexical counts differ")
     return _derive_decoded_row(
@@ -4322,7 +4370,10 @@ def _source_row_token_content_binding(
             type(value) is not int or value < 0
             for value in (row_order, lexical_token_count, source_token_count)
         )
-        or lexical_token_count == 0
+        or (
+            lexical_token_count == 0
+            and source_namespace != "bangor_cgwords"
+        )
         or source_token_count == 0
         or source_token_count != len(material)
         or any(type(token_id) is not int or not 0 <= token_id < VOCAB_SIZE for token_id in material)
@@ -4543,7 +4594,10 @@ def _reconcile_packed_row_token_content(
                     "source_token_count",
                 )
             )
-            or row["lexical_token_count"] == 0
+            or (
+                row["lexical_token_count"] == 0
+                and row["source_role"] != "bangor_cgwords"
+            )
             or row["source_token_count"] == 0
         ):
             raise PreparationError("serialized membership content schema is invalid")
@@ -5867,6 +5921,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_aggregate_manifest_payload",
         "_artifact_files",
         "_atomic_rename_noreplace_at",
+        "_bangor_lexical_token_count",
         "_bangor_v1_inter_sentential_switch",
         "_bangor_v1_language_category",
         "_bangor_v1_source_token_label",

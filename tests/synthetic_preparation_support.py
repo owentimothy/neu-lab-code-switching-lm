@@ -148,6 +148,42 @@ def synthetic_bangor_nested_row(
     return dict(sorted(row.items()))
 
 
+def synthetic_bangor_punctuation_nested_row(
+    *,
+    identity: str,
+    split: str,
+    sensitive_marker: str = "synthetic-speaker-metadata",
+) -> dict[str, object]:
+    """Exact source-faithful Bangor punctuation-only row using synthetic values."""
+    row = synthetic_bangor_nested_row(
+        identity=identity,
+        split=split,
+        sensitive_marker=sensitive_marker,
+    )
+    text = "!"
+    row.update(
+        {
+            "clean_text": text,
+            "condition_candidates": [],
+            "language_category": "punctuation_or_empty",
+            "n_english_word_tokens": 0,
+            "n_punctuation_tokens": 1,
+            "n_spanish_word_tokens": 0,
+            "n_tokens_including_punctuation": 1,
+            "n_word_tokens_excluding_punctuation": 0,
+            "raw_text": text,
+            "source_line_numbers": [2],
+            "source_token_language_labels": ["999"],
+            "source_token_locations": [1],
+            "source_word_ids": [1],
+            "text": text,
+            "token_language_labels": ["punct"],
+            "tokens": [text],
+        }
+    )
+    return dict(sorted(row.items()))
+
+
 def synthetic_bangor_record(
     *,
     identity: str,
@@ -171,7 +207,7 @@ def synthetic_bangor_record(
         "conversation_id": nested["conversation_id"],
         "document_id": document_id or f"bangor_span_{document_suffix}",
         "document_row_index": document_row_index,
-        "lexical_tokens": 3,
+        "lexical_tokens": nested["n_word_tokens_excluding_punctuation"],
         "record_id": f"bangor:{nested['utterance_id']}",
         "row": nested,
         "source": "bangor_cgwords",
@@ -399,6 +435,11 @@ def _tokenizer() -> Tokenizer:
     return tokenizer
 
 
+def synthetic_exact_tokenizer():
+    """Return the existing synthetic-only exact WordPiece test tokenizer."""
+    return make_synthetic_exact_tokenizer(_tokenizer())
+
+
 def build_synthetic_preparation_fixture(
     base: Path,
     *,
@@ -410,7 +451,7 @@ def build_synthetic_preparation_fixture(
     hmac_key = b"k" * 32
     bundle = prepare_synthetic_rows(
         synthetic_population(),
-        tokenizer=make_synthetic_exact_tokenizer(_tokenizer()),
+        tokenizer=synthetic_exact_tokenizer(),
         hmac_key=hmac_key,
     )
     published = publish_synthetic_preparation(
