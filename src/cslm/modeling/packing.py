@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
+from types import MappingProxyType, ModuleType
 from typing import Any, Iterable, Literal, Mapping, Sequence
 
 from cslm.modeling.config import (
@@ -80,7 +82,15 @@ class PackingRow:
             raise PackingContractError("packing provenance fields must be non-empty")
         if self.span_id is not None and not self.span_id:
             raise PackingContractError("span provenance must be non-empty when present")
-        if self.row_order < 0 or self.lexical_token_count < 0 or not self.token_ids:
+        if (
+            isinstance(self.row_order, bool)
+            or not isinstance(self.row_order, int)
+            or self.row_order < 0
+            or isinstance(self.lexical_token_count, bool)
+            or not isinstance(self.lexical_token_count, int)
+            or self.lexical_token_count < 0
+            or not self.token_ids
+        ):
             raise PackingContractError("invalid row order, lexical count, or token sequence")
         if self.condition == "MonoCont" and self.language_shard not in {"english", "spanish"}:
             raise PackingContractError("MonoCont rows require an explicit language shard")
@@ -88,7 +98,8 @@ class PackingRow:
             raise PackingContractError("language shards are only valid for MonoCont")
         forbidden_lexical_ids = {PAD_TOKEN_ID, CLS_TOKEN_ID, SEP_TOKEN_ID, MASK_TOKEN_ID}
         if any(
-            not isinstance(token_id, int)
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
             or token_id < 0
             or token_id >= VOCAB_SIZE
             or token_id in forbidden_lexical_ids
@@ -169,14 +180,29 @@ class PackedSequence:
     example_identity: str = field(repr=False)
 
     def __post_init__(self) -> None:
+        if self.condition not in CONDITIONS or self.split not in {
+            "train",
+            "validation",
+            "test",
+        }:
+            raise PackingContractError("packed condition or split is invalid")
         lengths = {len(self.input_ids), len(self.attention_mask), len(self.token_type_ids)}
         if lengths != {MAX_SEQUENCE_LENGTH}:
             raise PackingContractError("packed tensors must have the approved maximum length")
+        if any(
+            isinstance(token_id, bool)
+            or not isinstance(token_id, int)
+            or token_id < 0
+            or token_id >= VOCAB_SIZE
+            or token_id == MASK_TOKEN_ID
+            for token_id in self.input_ids
+        ):
+            raise PackingContractError("packed token IDs violate the input contract")
         if self.input_ids[0] != CLS_TOKEN_ID:
             raise PackingContractError("packed sequence does not start with CLS")
-        if any(value != 0 for value in self.token_type_ids):
+        if any(type(value) is not int or value != 0 for value in self.token_type_ids):
             raise PackingContractError("all token-type IDs must be zero")
-        if any(value not in {0, 1} for value in self.attention_mask):
+        if any(type(value) is not int or value not in {0, 1} for value in self.attention_mask):
             raise PackingContractError("attention mask is not binary")
         padding_started = False
         for token_id, attended in zip(self.input_ids, self.attention_mask, strict=True):
@@ -189,6 +215,68 @@ class PackedSequence:
         last_attended = sum(self.attention_mask) - 1
         if last_attended < 1 or self.input_ids[last_attended] != SEP_TOKEN_ID:
             raise PackingContractError("last attended token must be SEP")
+        attended_ids = self.input_ids[: last_attended + 1]
+        if attended_ids.count(CLS_TOKEN_ID) != 1:
+            raise PackingContractError("packed sequence must contain one leading CLS")
+        separator_positions = tuple(
+            index
+            for index, token_id in enumerate(attended_ids)
+            if token_id == SEP_TOKEN_ID
+        )
+        if (
+            not separator_positions
+            or separator_positions[-1] != last_attended
+            or separator_positions[0] == 1
+            or any(
+                right == left + 1
+                for left, right in zip(
+                    separator_positions,
+                    separator_positions[1:],
+                )
+            )
+        ):
+            raise PackingContractError("packed row separators are invalid")
+        if self.provenance:
+            cursor = 1
+            provenance_separators: list[int] = []
+            for item in self.provenance:
+                if (
+                    type(item) is not SourceTokenRange
+                    or item.condition != self.condition
+                    or item.split != self.split
+                    or item.packed_token_start != cursor
+                    or item.packed_token_end <= item.packed_token_start
+                    or item.packed_token_end >= len(attended_ids)
+                    or item.source_token_start < 0
+                    or item.source_token_end <= item.source_token_start
+                    or item.source_token_end > item.source_row_token_count
+                    or item.packed_token_end - item.packed_token_start
+                    != item.source_token_end - item.source_token_start
+                    or self.input_ids[item.packed_token_end] != SEP_TOKEN_ID
+                    or any(
+                        token_id
+                        in {PAD_TOKEN_ID, CLS_TOKEN_ID, SEP_TOKEN_ID, MASK_TOKEN_ID}
+                        for token_id in self.input_ids[
+                            item.packed_token_start : item.packed_token_end
+                        ]
+                    )
+                ):
+                    raise PackingContractError(
+                        "packed provenance does not reconcile with row separators"
+                    )
+                provenance_separators.append(item.packed_token_end)
+                cursor = item.packed_token_end + 1
+            if (
+                cursor != len(attended_ids)
+                or tuple(provenance_separators) != separator_positions
+            ):
+                raise PackingContractError(
+                    "packed provenance does not cover every row separator"
+                )
+        elif separator_positions != (last_attended,):
+            raise PackingContractError(
+                "multi-row packed sequences require authoritative provenance"
+            )
 
     @property
     def non_padding_wordpieces(self) -> int:
@@ -482,3 +570,24 @@ def pack_rows(rows: Iterable[PackingRow]) -> PackingResult:
         dropped_token_count=0,
         truncated_token_count=0,
     )
+
+
+def _install_reviewed_dependency_capsule() -> None:
+    """Retain first-execution definitions independently of module aliases."""
+
+    reviewed_namespace = MappingProxyType(dict(globals()))
+    capsule = MappingProxyType(
+        {"module": __name__, "namespace": reviewed_namespace}
+    )
+
+    class _ReviewedDependencyModule(ModuleType):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_REVIEWED_DEPENDENCY_CAPSULE":
+                return capsule
+            return ModuleType.__getattribute__(self, name)
+
+    sys.modules[__name__].__class__ = _ReviewedDependencyModule
+
+
+_install_reviewed_dependency_capsule()
+del _install_reviewed_dependency_capsule

@@ -1,12 +1,31 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 
 import pytest
 
 from cslm.modeling.config import CONDITIONS
 from cslm.modeling.exposure import ExposureAuditError, audit_exposure
-from cslm.modeling.packing import PackingContractError, PackingRow, pack_rows
+from cslm.modeling.packing import (
+    PackedSequence,
+    PackingContractError,
+    PackingRow,
+    pack_rows,
+)
+
+
+def _unsafe_packed_copy(
+    sequence: PackedSequence,
+    **changes: object,
+) -> PackedSequence:
+    copied = object.__new__(PackedSequence)
+    for item in fields(PackedSequence):
+        object.__setattr__(
+            copied,
+            item.name,
+            changes.get(item.name, getattr(sequence, item.name)),
+        )
+    return copied
 
 
 def _packing_result(
@@ -61,6 +80,11 @@ def test_exposure_audit_calculates_privacy_safe_aggregate_counts() -> None:
         assert group.sequence_count == 1
         assert group.padding_count == 116
         assert group.padding_fraction == 116 / 128
+        assert group.mask_eligible_wordpieces == 10
+        assert group.cls_wordpieces == 1
+        assert group.sep_wordpieces == 1
+        assert group.unk_wordpieces == 0
+        assert group.mask_wordpieces == 0
         assert group.expected_masked_target_count == 1.5
     assert audit.projected_train_non_padding_wordpieces == tuple(
         (condition, 12 * 64_000) for condition in CONDITIONS
@@ -75,13 +99,13 @@ def test_exposure_audit_calculates_privacy_safe_aggregate_counts() -> None:
     assert "synthetic_source" not in diagnostic
 
 
-def test_exposure_audit_fails_closed_above_one_percent() -> None:
+def test_legacy_non_padding_imbalance_is_diagnostic_only() -> None:
     results = [
         _packing_result(condition, token_count=11 if condition == "CsCont" else 10)
         for condition in CONDITIONS
     ]
-    with pytest.raises(ExposureAuditError, match="more than one percent"):
-        audit_exposure(results)
+    audit = audit_exposure(results)
+    assert audit.maximum_projected_exposure_difference_fraction > 0.01
 
 
 def test_exposure_audit_fails_closed_on_boundary_crossing() -> None:
@@ -89,7 +113,7 @@ def test_exposure_audit_fails_closed_on_boundary_crossing() -> None:
     cscont = results[-1]
     sequence = cscont.sequences[0]
     provenance = sequence.provenance[0]
-    crossed = replace(
+    crossed = _unsafe_packed_copy(
         sequence,
         provenance=(
             provenance,
@@ -107,7 +131,7 @@ def test_exposure_audit_fails_closed_on_split_leakage() -> None:
     results = [_packing_result(condition) for condition in CONDITIONS]
     cscont = results[-1]
     sequence = cscont.sequences[0]
-    leaked = replace(
+    leaked = _unsafe_packed_copy(
         sequence,
         provenance=(replace(sequence.provenance[0], split="validation"),),
     )
@@ -252,7 +276,10 @@ def test_exposure_audit_rejects_repeated_or_overlapping_source_ranges(
             source_token_start=5,
             packed_token_start=6,
         )
-    forged = replace(sequence, provenance=(provenance, extra))
+    forged = _unsafe_packed_copy(
+        sequence,
+        provenance=(provenance, extra),
+    )
     results[0] = replace(english, sequences=(forged, *english.sequences[1:]))
     with pytest.raises(ExposureAuditError, match="token-loss"):
         audit_exposure(results)

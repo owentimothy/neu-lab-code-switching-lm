@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from dataclasses import dataclass, field
+from types import MappingProxyType, ModuleType
 from typing import Any, Iterable, Literal
 
 from cslm.modeling.config import (
@@ -13,6 +15,7 @@ from cslm.modeling.config import (
     SPECIAL_TOKEN_IDS,
     VOCAB_SIZE,
 )
+from cslm.modeling.eligibility import derive_mask_eligibility
 from cslm.modeling.packing import PackedSequence
 
 MaskingMode = Literal["train", "validation"]
@@ -92,7 +95,12 @@ class ValidationMaskRecord:
     def _validate(self) -> None:
         if self.condition not in CONDITIONS:
             raise MaskingContractError("validation mask record has an unknown condition")
-        if not isinstance(self.seed, int) or self.seed < 0 or self.example_count <= 0:
+        if (
+            type(self.seed) is not int
+            or self.seed < 0
+            or type(self.example_count) is not int
+            or self.example_count <= 0
+        ):
             raise MaskingContractError("validation mask record has invalid metadata")
         for checksum in (self.policy_sha256, self.checksum_sha256):
             if len(checksum) != 64 or any(
@@ -141,10 +149,10 @@ def mask_packed_sequence(
     policy: MaskingPolicy = APPROVED_MASKING_POLICY,
 ) -> MaskedExample:
     """Apply approved MLM masking using stable identity plus an explicit seed."""
-    if not isinstance(seed, int) or seed < 0:
+    if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise MaskingContractError("masking seed must be a non-negative integer")
     if mode == "train":
-        if not isinstance(visit, int) or visit < 0:
+        if isinstance(visit, bool) or not isinstance(visit, int) or visit < 0:
             raise MaskingContractError("training masking requires a non-negative visit")
         stream_identity: list[Any] = [
             "neu_mlm_masking_v1",
@@ -166,11 +174,15 @@ def mask_packed_sequence(
     selected_positions: list[int] = []
     replacement_kinds: list[ReplacementKind] = []
     non_special_count = policy.vocabulary_size - len(policy.special_token_ids)
+    eligibility = derive_mask_eligibility(
+        sequence.input_ids,
+        sequence.attention_mask,
+    )
 
-    for position, (token_id, attended) in enumerate(
-        zip(sequence.input_ids, sequence.attention_mask, strict=True)
+    for position, (token_id, eligible) in enumerate(
+        zip(sequence.input_ids, eligibility.eligible_positions, strict=True)
     ):
-        if not attended or token_id in policy.special_token_ids:
+        if not eligible:
             continue
         if rng.random() >= policy.probability:
             continue
@@ -285,3 +297,24 @@ def _non_special_token_at_rank(
             return token_id
         rank -= 1
     raise MaskingContractError("random replacement rank is outside the vocabulary")
+
+
+def _install_reviewed_dependency_capsule() -> None:
+    """Retain first-execution definitions independently of module aliases."""
+
+    reviewed_namespace = MappingProxyType(dict(globals()))
+    capsule = MappingProxyType(
+        {"module": __name__, "namespace": reviewed_namespace}
+    )
+
+    class _ReviewedDependencyModule(ModuleType):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_REVIEWED_DEPENDENCY_CAPSULE":
+                return capsule
+            return ModuleType.__getattribute__(self, name)
+
+    sys.modules[__name__].__class__ = _ReviewedDependencyModule
+
+
+_install_reviewed_dependency_capsule()
+del _install_reviewed_dependency_capsule

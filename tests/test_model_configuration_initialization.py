@@ -124,6 +124,44 @@ def preparation_snapshot(
         "preparation_manifest_sha256",
         fixture.published.manifest_sha256,
     )
+    object.__setattr__(
+        snapshot,
+        "schedule_plan_identity_sha256",
+        "a" * 64,
+    )
+    object.__setattr__(
+        snapshot,
+        "schedule_identities_by_condition",
+        tuple(
+            (condition, sha256(condition.encode("ascii")).hexdigest())
+            for condition in CONDITIONS
+        ),
+    )
+    object.__setattr__(
+        snapshot,
+        "approved_training_mask_seeds",
+        (
+            ("tiny_smoke_1", 11_729),
+            ("small_1", 281_828),
+            ("small_2", 324_159),
+            ("small_3", 171_803),
+        ),
+    )
+    object.__setattr__(
+        snapshot,
+        "training_seed_audit_evidence",
+        (
+            ("tiny_smoke_1", 11_729, "b" * 64),
+            ("small_1", 281_828, "c" * 64),
+            ("small_2", 324_159, "d" * 64),
+            ("small_3", 171_803, "e" * 64),
+        ),
+    )
+    object.__setattr__(
+        snapshot,
+        "resume_policy_protocol",
+        "neu_option2_update_boundary_resume_v1",
+    )
     object.__setattr__(snapshot, "_candidate_root", fixture.output_root)
     object.__setattr__(
         snapshot,
@@ -389,8 +427,11 @@ def test_typed_future_contract_and_paired_manifest_validation(
 ) -> None:
     assert APPROVED_BUDGET.optimizer_updates == 1_000
     assert APPROVED_BUDGET.projected_sequence_exposures == 64_000
+    assert APPROVED_BUDGET.nominal_eligible_appearances == 746_000
+    assert APPROVED_BUDGET.eligible_frontier_per_update == 746
     assert APPROVED_BUDGET.microbatch_sequences == 16
-    assert APPROVED_BUDGET.gradient_accumulation_steps == 4
+    assert APPROVED_BUDGET.minimum_microbatches_per_update == 1
+    assert APPROVED_BUDGET.maximum_microbatches_per_update == 6
     assert APPROVED_BUDGET.diagnostic_checkpoint_updates == (0, 250, 500, 750)
     assert APPROVED_BUDGET.primary_checkpoint_update == 1_000
     assert APPROVED_BUDGET.fixed_mask_validation_interval == 100
@@ -623,11 +664,34 @@ def test_preparation_snapshot_subclass_cannot_override_verification() -> None:
         preparation_module.verify_preparation_snapshot(fabricated)
 
 
+def test_snapshot_verification_ignores_mutable_public_loader_alias(
+    preparation_snapshot: PreparationSnapshot,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_calls = 0
+
+    def permissive_loader(*args: object, **kwargs: object) -> PreparationSnapshot:
+        nonlocal fake_calls
+        fake_calls += 1
+        return preparation_snapshot
+
+    monkeypatch.setattr(
+        preparation_module,
+        "load_preparation_candidate",
+        permissive_loader,
+    )
+    preparation_module.verify_preparation_snapshot(preparation_snapshot)
+    assert fake_calls == 0
+
+
 def test_future_contract_constants_remain_exact_without_fabricating_approval() -> None:
     assert APPROVED_BUDGET.optimizer_updates == 1_000
     assert APPROVED_BUDGET.projected_sequence_exposures == 64_000
+    assert APPROVED_BUDGET.nominal_eligible_appearances == 746_000
+    assert APPROVED_BUDGET.eligible_frontier_per_update == 746
     assert APPROVED_BUDGET.microbatch_sequences == 16
-    assert APPROVED_BUDGET.gradient_accumulation_steps == 4
+    assert APPROVED_BUDGET.minimum_microbatches_per_update == 1
+    assert APPROVED_BUDGET.maximum_microbatches_per_update == 6
     assert APPROVED_BUDGET.diagnostic_checkpoint_updates == (0, 250, 500, 750)
     assert APPROVED_BUDGET.primary_checkpoint_update == 1_000
     assert APPROVED_BUDGET.fixed_mask_validation_interval == 100

@@ -26,26 +26,186 @@ import sysconfig
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import FunctionType, MappingProxyType
+from types import FunctionType, MappingProxyType, ModuleType
 from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 import numpy as np
 
-from cslm.modeling.config import CONDITIONS, MAX_SEQUENCE_LENGTH, VOCAB_SIZE
-from cslm.modeling.contracts import APPROVED_BUDGET
-from cslm.modeling.exposure import ExposureAuditError, audit_exposure
-from cslm.modeling.initialization import SMALL_PILOT_SEED_PLANS, TINY_SMOKE_SEED_PLANS
-from cslm.modeling.masking import (
-    ValidationMaskRecord,
-    build_validation_mask_record,
-    mask_packed_sequence,
+import cslm.modeling.contracts as _reviewed_contracts_module
+import cslm.modeling.eligibility as _reviewed_eligibility_module
+import cslm.modeling.exposure as _reviewed_exposure_module
+import cslm.modeling.initialization as _reviewed_initialization_module
+import cslm.modeling.masking as _reviewed_masking_module
+import cslm.modeling.packing as _reviewed_packing_module
+import cslm.modeling.scheduling as _reviewed_scheduling_module
+import cslm.modeling.training_contract as _reviewed_training_contract_module
+import cslm.tokenization.shared_wordpiece as _reviewed_wordpiece_module
+
+_STABLE_PREPARATION_TYPE_NAMES = (
+    "AggregateExpectation",
+    "CandidateChecksumRecord",
+    "CandidateValidationSnapshot",
+    "DecodedPreparationRow",
+    "ExactTokenizer",
+    "ExpectedMembershipBlock",
+    "InputPopulationAnchor",
+    "MembershipPlan",
+    "MembershipValidation",
+    "PreparationBundle",
+    "PreparationError",
+    "PreparationManifest",
+    "PreparationSnapshot",
+    "PreparedPreparationRow",
+    "ProductionPreparationPaths",
+    "PublicationCommittedError",
+    "PublicationOutcomeIndeterminateError",
+    "PublishedPreparationCandidate",
+    "SyntheticParityCase",
+    "SyntheticPreparationSnapshot",
+    "SyntheticPublishedPreparationCandidate",
+    "ValidationMaterial",
+    "_BangorV1StreamState",
+    "_ByteJsonScanner",
+    "_PinnedPublicationParent",
+    "_StableFileSnapshot",
+    "_VerifiedFrozenRoot",
 )
-from cslm.modeling.packing import PackedSequence, PackingResult, PackingRow, pack_rows
-from cslm.tokenization.shared_wordpiece import (
-    BACKEND_CORRECTION_ID,
-    CONTINUATION_PREFIX,
-    protocol_configuration,
+_previous_stable_preparation_types = getattr(
+    sys.modules[__name__],
+    "_STABLE_PREPARATION_BOUNDARY_TYPES",
+    None,
 )
+
+_reviewed_dependency_modules = (
+    _reviewed_initialization_module,
+    _reviewed_eligibility_module,
+    _reviewed_packing_module,
+    _reviewed_masking_module,
+    _reviewed_contracts_module,
+    _reviewed_exposure_module,
+    _reviewed_training_contract_module,
+    _reviewed_scheduling_module,
+    _reviewed_wordpiece_module,
+)
+_reviewed_dependency_namespaces: dict[str, Mapping[str, object]] = {}
+for _reviewed_dependency_module in _reviewed_dependency_modules:
+    _reviewed_dependency_capsule = (
+        _reviewed_dependency_module._REVIEWED_DEPENDENCY_CAPSULE
+    )
+    if (
+        not isinstance(_reviewed_dependency_capsule, Mapping)
+        or set(_reviewed_dependency_capsule) != {"module", "namespace"}
+        or _reviewed_dependency_capsule["module"]
+        != _reviewed_dependency_module.__name__
+        or not isinstance(
+            _reviewed_dependency_capsule["namespace"],
+            Mapping,
+        )
+    ):
+        raise RuntimeError("reviewed dependency capsule is invalid")
+    _reviewed_dependency_namespaces[
+        _reviewed_dependency_module.__name__
+    ] = _reviewed_dependency_capsule["namespace"]
+_REVIEWED_DEPENDENCY_NAMESPACES = MappingProxyType(
+    dict(_reviewed_dependency_namespaces)
+)
+
+_reviewed_initialization = _REVIEWED_DEPENDENCY_NAMESPACES[
+    "cslm.modeling.initialization"
+]
+_reviewed_eligibility = _REVIEWED_DEPENDENCY_NAMESPACES[
+    "cslm.modeling.eligibility"
+]
+_reviewed_packing = _REVIEWED_DEPENDENCY_NAMESPACES["cslm.modeling.packing"]
+_reviewed_masking = _REVIEWED_DEPENDENCY_NAMESPACES["cslm.modeling.masking"]
+_reviewed_contracts = _REVIEWED_DEPENDENCY_NAMESPACES["cslm.modeling.contracts"]
+_reviewed_exposure = _REVIEWED_DEPENDENCY_NAMESPACES["cslm.modeling.exposure"]
+_reviewed_training_contract = _REVIEWED_DEPENDENCY_NAMESPACES[
+    "cslm.modeling.training_contract"
+]
+_reviewed_scheduling = _REVIEWED_DEPENDENCY_NAMESPACES[
+    "cslm.modeling.scheduling"
+]
+_reviewed_wordpiece = _REVIEWED_DEPENDENCY_NAMESPACES[
+    "cslm.tokenization.shared_wordpiece"
+]
+
+CONDITIONS = _reviewed_scheduling["CONDITIONS"]
+MAX_SEQUENCE_LENGTH = _reviewed_scheduling["MAX_SEQUENCE_LENGTH"]
+VOCAB_SIZE = _reviewed_eligibility["VOCAB_SIZE"]
+APPROVED_BUDGET = _reviewed_contracts["APPROVED_BUDGET"]
+approved_special_token_mapping = _reviewed_eligibility[
+    "approved_special_token_mapping"
+]
+derive_mask_eligibility = _reviewed_eligibility["derive_mask_eligibility"]
+ExposureAuditError = _reviewed_exposure["ExposureAuditError"]
+audit_exposure = _reviewed_exposure["audit_exposure"]
+SMALL_PILOT_SEED_PLANS = _reviewed_initialization["SMALL_PILOT_SEED_PLANS"]
+TINY_SMOKE_SEED_PLANS = _reviewed_initialization["TINY_SMOKE_SEED_PLANS"]
+ValidationMaskRecord = _reviewed_masking["ValidationMaskRecord"]
+build_validation_mask_record = _reviewed_masking[
+    "build_validation_mask_record"
+]
+mask_packed_sequence = _reviewed_masking["mask_packed_sequence"]
+PackedSequence = _reviewed_packing["PackedSequence"]
+PackingResult = _reviewed_packing["PackingResult"]
+PackingRow = _reviewed_packing["PackingRow"]
+SourceTokenRange = _reviewed_packing["SourceTokenRange"]
+pack_rows = _reviewed_packing["pack_rows"]
+ELIGIBILITY_PROTOCOL = _reviewed_scheduling["ELIGIBILITY_PROTOCOL"]
+EXPOSURE_POLICY_PROTOCOL = _reviewed_scheduling["EXPOSURE_POLICY_PROTOCOL"]
+NOMINAL_ELIGIBLE_TARGET = _reviewed_scheduling["NOMINAL_ELIGIBLE_TARGET"]
+RESUME_POLICY_PROTOCOL = _reviewed_scheduling["RESUME_POLICY_PROTOCOL"]
+SCHEDULE_PROTOCOL = _reviewed_scheduling["SCHEDULE_PROTOCOL"]
+SchedulingContractError = _reviewed_scheduling["SchedulingContractError"]
+TrainingExposurePlan = _reviewed_scheduling["TrainingExposurePlan"]
+approved_training_mask_seed_plans = _reviewed_scheduling[
+    "approved_training_mask_seed_plans"
+]
+build_training_exposure_plan = _reviewed_scheduling[
+    "build_training_exposure_plan"
+]
+scheduling_contract_payload = _reviewed_scheduling[
+    "scheduling_contract_payload"
+]
+training_exposure_plan_payload = _reviewed_scheduling[
+    "training_exposure_plan_payload"
+]
+validate_canonical_real_reference = _reviewed_scheduling[
+    "validate_canonical_real_reference"
+]
+validate_training_exposure_plan_payload = _reviewed_scheduling[
+    "validate_training_exposure_plan_payload"
+]
+loss_normalization_contract_payload = _reviewed_training_contract[
+    "loss_normalization_contract_payload"
+]
+BACKEND_CORRECTION_ID = _reviewed_wordpiece["BACKEND_CORRECTION_ID"]
+CONTINUATION_PREFIX = _reviewed_wordpiece["CONTINUATION_PREFIX"]
+protocol_configuration = _reviewed_wordpiece["protocol_configuration"]
+
+del _reviewed_dependency_capsule
+del _reviewed_dependency_module
+del _reviewed_dependency_modules
+del _reviewed_dependency_namespaces
+del _reviewed_initialization
+del _reviewed_eligibility
+del _reviewed_packing
+del _reviewed_masking
+del _reviewed_contracts
+del _reviewed_exposure
+del _reviewed_training_contract
+del _reviewed_scheduling
+del _reviewed_wordpiece
+del _reviewed_contracts_module
+del _reviewed_initialization_module
+del _reviewed_eligibility_module
+del _reviewed_packing_module
+del _reviewed_masking_module
+del _reviewed_exposure_module
+del _reviewed_training_contract_module
+del _reviewed_scheduling_module
+del _reviewed_wordpiece_module
 
 for _stale_name, _stale_value in tuple(globals().items()):
     if (
@@ -57,15 +217,7 @@ for _stale_name, _stale_value in tuple(globals().items()):
 del _stale_name
 del _stale_value
 
-_APPROVED_SPECIAL_TOKEN_IDS = MappingProxyType(
-    {
-        "[PAD]": 0,
-        "[UNK]": 1,
-        "[CLS]": 2,
-        "[SEP]": 3,
-        "[MASK]": 4,
-    }
-)
+_APPROVED_SPECIAL_TOKEN_IDS = approved_special_token_mapping()
 SPECIAL_TOKEN_IDS = _APPROVED_SPECIAL_TOKEN_IDS
 
 PREPARATION_PROTOCOL_VERSION = "neu_real_preparation_v1"
@@ -235,14 +387,6 @@ _BANGOR_V1_PUNCT_RE = re.compile(r"^[^\w\s]+$", re.UNICODE)
 
 class PreparationError(RuntimeError):
     """Privacy-safe preparation failure with no record values or paths."""
-
-
-class ExposureAcceptanceError(PreparationError):
-    """Fail-closed 1% exposure result carrying aggregate diagnostics only."""
-
-    def __init__(self, diagnostics: Mapping[str, object]) -> None:
-        super().__init__("projected non-padding exposure exceeds the approved tolerance")
-        self.diagnostics = MappingProxyType(dict(diagnostics))
 
 
 def canonical_json_bytes(value: Any) -> bytes:
@@ -3329,6 +3473,7 @@ class PreparationBundle:
     packing: PackingResult
     validation: tuple[ValidationMaterial, ...]
     exposure_audit: Any
+    training_exposure_plan: TrainingExposurePlan | None = field(repr=False)
     tokenizer_checksum_record_sha256: str
     tokenizer_loader_protocol: str
     tokenizer_synthetic_parity_sha256: str
@@ -3356,30 +3501,6 @@ def _packing_row(row: PreparedPreparationRow) -> PackingRow:
         lexical_token_count=row.lexical_token_count,
         language_shard=row.language_shard,
     )
-
-
-def _aggregate_exposure_diagnostics(packing: PackingResult) -> dict[str, object]:
-    train: dict[str, dict[str, int | float]] = {}
-    for condition in CONDITIONS:
-        sequences = [
-            sequence
-            for sequence in packing.sequences
-            if sequence.condition == condition and sequence.split == "train"
-        ]
-        non_padding = sum(sequence.non_padding_wordpieces for sequence in sequences)
-        train[condition] = {
-            "sequence_count": len(sequences),
-            "non_padding_wordpieces": non_padding,
-            "mean_non_padding_wordpieces": non_padding / len(sequences) if sequences else 0.0,
-        }
-    means = [float(train[condition]["mean_non_padding_wordpieces"]) for condition in CONDITIONS]
-    minimum = min(means) if means else 0.0
-    maximum = max(means) if means else 0.0
-    return {
-        "by_condition": train,
-        "difference_fraction": (maximum - minimum) / minimum if minimum > 0 else None,
-        "tolerance_fraction": EXPOSURE_TOLERANCE_FRACTION,
-    }
 
 
 def _validate_cross_condition_reuse(
@@ -3474,22 +3595,27 @@ def _prepare_tokenized_rows(
     packing = pack_rows(packing_rows)
     if source_wordpieces != sum(packing.source_wordpieces_by_group.values()):
         raise PreparationError("source WordPieces do not reconcile before auditing")
-    exposure_failure = False
-    exposure_diagnostics: dict[str, object] | None = None
+    exposure_failed = False
+    exposure: Any = None
     try:
         exposure = audit_exposure((packing,))
     except ExposureAuditError:
-        exposure_diagnostics = _aggregate_exposure_diagnostics(packing)
-        exposure_failure = True
-        exposure = None
-    if exposure_failure:
-        assert exposure_diagnostics is not None
-        if exposure_diagnostics["difference_fraction"] is not None and (
-            float(exposure_diagnostics["difference_fraction"]) > EXPOSURE_TOLERANCE_FRACTION
-        ):
-            raise ExposureAcceptanceError(exposure_diagnostics)
+        exposure_failed = True
+    if exposure_failed:
         _raise_fixed("aggregate exposure audit failed")
-    assert exposure is not None
+    training_exposure_plan: TrainingExposurePlan | None = None
+    if input_anchor is not None:
+        schedule_failed = False
+        try:
+            training_exposure_plan = build_training_exposure_plan(
+                packing.sequences,
+                input_population_anchor_sha256=input_anchor.identity_sha256,
+            )
+            validate_canonical_real_reference(training_exposure_plan)
+        except SchedulingContractError:
+            schedule_failed = True
+        if schedule_failed:
+            _raise_fixed("mask-eligible exposure schedule failed")
     validation = materialize_fixed_validation(packing.sequences)
     repeated = materialize_fixed_validation(packing.sequences)
     for first, second in zip(validation, repeated, strict=True):
@@ -3509,6 +3635,7 @@ def _prepare_tokenized_rows(
         packing=packing,
         validation=validation,
         exposure_audit=exposure,
+        training_exposure_plan=training_exposure_plan,
         tokenizer_checksum_record_sha256=tokenizer.checksum_record_sha256,
         tokenizer_loader_protocol=tokenizer.loader_protocol,
         tokenizer_synthetic_parity_sha256=tokenizer.synthetic_parity_sha256,
@@ -3966,7 +4093,6 @@ def _prepare_production_inputs(
     verified: _VerifiedFrozenRoot | None = None
     bangor_state: _BangorV1StreamState | None = None
     failed = False
-    exposure_diagnostics: dict[str, object] | None = None
     try:
         callhome = _verify_frozen_root(
             paths.callhome_root,
@@ -4119,10 +4245,6 @@ def _prepare_production_inputs(
             hmac_key=key,
             protocol_version=PREPARATION_PROTOCOL_VERSION,
         )
-    except ExposureAcceptanceError as error:
-        exposure_diagnostics = dict(error.diagnostics)
-        failed = True
-        result = None
     except BaseException:
         failed = True
         result = None
@@ -4149,8 +4271,6 @@ def _prepare_production_inputs(
         cscont = None
         tokenizer_root = None
         paths = ProductionPreparationPaths(Path(), Path(), Path(), Path())
-    if exposure_diagnostics is not None:
-        raise ExposureAcceptanceError(exposure_diagnostics)
     if failed or result is None:
         _raise_fixed("production preparation failed")
     return result
@@ -4287,7 +4407,11 @@ def _validation_record_payload(record: ValidationMaskRecord) -> dict[str, object
     }
 
 
-def _exposure_payload(audit: Any) -> dict[str, object]:
+def _exposure_payload(
+    audit: Any,
+    training_plan: TrainingExposurePlan | None,
+) -> dict[str, object]:
+    legacy_projection = dict(audit.projected_train_non_padding_wordpieces)
     return {
         "groups": [
             {
@@ -4298,20 +4422,35 @@ def _exposure_payload(audit: Any) -> dict[str, object]:
                 "sequence_count": group.sequence_count,
                 "padding_count": group.padding_count,
                 "padding_fraction": group.padding_fraction,
+                "mask_eligible_wordpieces": group.mask_eligible_wordpieces,
+                "cls_wordpieces": group.cls_wordpieces,
+                "sep_wordpieces": group.sep_wordpieces,
+                "unk_wordpieces": group.unk_wordpieces,
+                "mask_wordpieces": group.mask_wordpieces,
                 "expected_masked_target_count": group.expected_masked_target_count,
             }
             for group in audit.groups
         ],
-        "projected_train_non_padding_wordpieces": dict(
-            audit.projected_train_non_padding_wordpieces
+        "primary_authority": EXPOSURE_POLICY_PROTOCOL,
+        "training_exposure_plan": (
+            training_exposure_plan_payload(
+                training_plan,
+                legacy_non_padding_projection=legacy_projection,
+            )
+            if training_plan is not None
+            else None
         ),
+        "legacy_non_padding_projection_diagnostic": {
+            "authority": "diagnostic_only",
+            "projected_train_non_padding_wordpieces": legacy_projection,
+            "maximum_difference_fraction": (
+                audit.maximum_projected_exposure_difference_fraction
+            ),
+        },
         "prohibited_boundary_crossings": audit.prohibited_boundary_crossings,
         "split_leakage_count": audit.split_leakage_count,
         "dropped_token_count": audit.dropped_token_count,
         "truncated_token_count": audit.truncated_token_count,
-        "maximum_projected_exposure_difference_fraction": (
-            audit.maximum_projected_exposure_difference_fraction
-        ),
         "exposure_tolerance_fraction": audit.exposure_tolerance_fraction,
     }
 
@@ -4540,7 +4679,10 @@ def _reconcile_packed_row_token_content(
     ],
     protocol: str,
     reconciliation_key: bytes,
-) -> Mapping[tuple[str, str, str, str], tuple[object, ...]]:
+) -> tuple[
+    Mapping[tuple[str, str, str, str], tuple[object, ...]],
+    Mapping[tuple[str, str], tuple[tuple[SourceTokenRange, ...], ...]],
+]:
     """Rebuild every source row from packed arrays and verify its keyed binding."""
     _require_hmac_key(reconciliation_key)
     if (
@@ -4626,6 +4768,10 @@ def _reconcile_packed_row_token_content(
     ] = {}
     observed_row_order: list[tuple[str, str, str, str]] = []
     observed_rows: set[tuple[str, str, str, str]] = set()
+    sequence_provenance: dict[
+        tuple[str, str],
+        list[tuple[SourceTokenRange, ...]],
+    ] = {}
     provenance_fields = {"condition", "split", "example_pseudonym", "ranges"}
     range_fields = {
         "condition",
@@ -4691,6 +4837,7 @@ def _reconcile_packed_row_token_content(
         ):
             raise PreparationError("packed sequence special tokens do not reconcile")
         packed_cursor = 1
+        validated_ranges: list[SourceTokenRange] = []
         for item in example["ranges"]:
             if (
                 not isinstance(item, dict)
@@ -4698,8 +4845,17 @@ def _reconcile_packed_row_token_content(
                 or item["condition"] != group[0]
                 or item["split"] != group[1]
                 or not isinstance(item["source_role"], str)
+                or not isinstance(item["component_role"], str)
+                or not item["component_role"]
                 or not isinstance(item["row_pseudonym"], str)
                 or not isinstance(item["conversation_pseudonym"], str)
+                or not isinstance(item["document_pseudonym"], str)
+                or not item["document_pseudonym"]
+                or (
+                    item["span_pseudonym"] is not None
+                    and not isinstance(item["span_pseudonym"], str)
+                )
+                or item["language_shard"] not in {None, "english", "spanish"}
                 or any(
                     type(item[name]) is not int or item[name] < 0
                     for name in ("row_order", "source_row_token_count")
@@ -4756,9 +4912,31 @@ def _reconcile_packed_row_token_content(
             fragments.setdefault(row_key, []).append(
                 (source_start, source_end, lexical_ids)
             )
+            validated_ranges.append(
+                SourceTokenRange(
+                    condition=group[0],
+                    split=group[1],
+                    source=item["source_role"],
+                    component=item["component_role"],
+                    document_id=item["document_pseudonym"],
+                    conversation_id=item["conversation_pseudonym"],
+                    span_id=item["span_pseudonym"],
+                    row_id=item["row_pseudonym"],
+                    row_order=item["row_order"],
+                    language_shard=item["language_shard"],
+                    source_row_token_count=item["source_row_token_count"],
+                    source_token_start=source_start,
+                    source_token_end=source_end,
+                    packed_token_start=packed_start,
+                    packed_token_end=packed_end,
+                )
+            )
             packed_cursor = packed_end + 1
         if packed_cursor != attended:
             raise PreparationError("packed sequence contains unaccounted token content")
+        sequence_provenance.setdefault(group, []).append(
+            tuple(validated_ranges)
+        )
 
     if any(
         array_rows_seen[group] != arrays[0].shape[0]
@@ -4800,7 +4978,15 @@ def _reconcile_packed_row_token_content(
         )
         if not hmac.compare_digest(expected_binding, membership[5]):
             raise PreparationError("source-row token content binding does not reconcile")
-    return MappingProxyType(dict(membership_rows))
+    return (
+        MappingProxyType(dict(membership_rows)),
+        MappingProxyType(
+            {
+                group: tuple(ranges)
+                for group, ranges in sequence_provenance.items()
+            }
+        ),
+    )
 
 
 def _base_array_files(bundle: PreparationBundle) -> dict[str, bytes]:
@@ -4856,7 +5042,33 @@ def _artifact_files(
         files[f"{prefix}/validation_mask_record.json"] = canonical_json_bytes(
             _validation_record_payload(material.record)
         )
-    files["audits/exposure.json"] = canonical_json_bytes(_exposure_payload(bundle.exposure_audit))
+    files["audits/exposure.json"] = canonical_json_bytes(
+        _exposure_payload(
+            bundle.exposure_audit,
+            bundle.training_exposure_plan,
+        )
+    )
+    if bundle.training_exposure_plan is not None:
+        files["schedules/train_sequence_identities.json"] = canonical_json_bytes(
+            {
+                "identity_protocol": "packing_sequence_identity_sha256_v1",
+                "input_population_anchor_sha256": (
+                    bundle.training_exposure_plan.input_population_anchor_sha256
+                ),
+                "schedule_protocol": SCHEDULE_PROTOCOL,
+                "ordered_identities_by_condition": {
+                    condition: [
+                        sequence.example_identity
+                        for sequence in bundle.packing.sequences
+                        if (
+                            sequence.condition == condition
+                            and sequence.split == "train"
+                        )
+                    ]
+                    for condition in CONDITIONS
+                },
+            }
+        )
     files["runtime.json"] = canonical_json_bytes(runtime_identity)
     files["provenance.json"] = canonical_json_bytes(
         [_provenance_payload(sequence, hmac_key) for sequence in bundle.packing.sequences]
@@ -4976,6 +5188,23 @@ def _validate_bundle_for_publication(
         _raise_fixed("publisher exposure revalidation failed")
     if repeated_audit != bundle.exposure_audit:
         raise PreparationError("publisher exposure record is not derived from packing")
+    schedule_failed = False
+    repeated_schedule: TrainingExposurePlan | None = None
+    try:
+        repeated_schedule = build_training_exposure_plan(
+            bundle.packing.sequences,
+            input_population_anchor_sha256=bundle.input_anchor.identity_sha256,
+        )
+        validate_canonical_real_reference(repeated_schedule)
+    except Exception:
+        schedule_failed = True
+    if (
+        schedule_failed
+        or repeated_schedule is None
+        or bundle.training_exposure_plan is None
+        or repeated_schedule != bundle.training_exposure_plan
+    ):
+        _raise_fixed("publisher mask-eligible schedule revalidation failed")
     repeated_validation = materialize_fixed_validation(bundle.packing.sequences)
     if len(repeated_validation) != len(bundle.validation):
         raise PreparationError("publisher fixed validation population is incomplete")
@@ -5138,7 +5367,14 @@ def _derive_preparation_manifest(
         "conditions": list(CONDITIONS),
         "included_splits": ["train", "validation"],
         "aggregates": _aggregate_manifest_payload(bundle),
-        "exposure": _exposure_payload(bundle.exposure_audit),
+        "exposure": _exposure_payload(
+            bundle.exposure_audit,
+            bundle.training_exposure_plan,
+        ),
+        "future_training_contracts": {
+            "scheduling": scheduling_contract_payload(),
+            "loss_normalization": loss_normalization_contract_payload(),
+        },
         "fixed_validation_seed_plans": [
             {"name": name, "validation_mask_seed": seed}
             for name, seed in approved_validation_seed_plans()
@@ -5916,7 +6152,6 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_adapt_callhome_record",
         "_adapt_cscont_record",
         "_adapt_cscont_record_impl",
-        "_aggregate_exposure_diagnostics",
         "_aggregate_for_block",
         "_aggregate_manifest_payload",
         "_artifact_files",
@@ -5976,6 +6211,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_recompute_membership_digest",
         "_reconcile_packed_row_token_content",
         "_regenerate_fixed_validation",
+        "_regenerate_training_schedule",
         "_regular_open_flags",
         "_relative_parent_descriptor",
         "_remove_verified_stage_at",
@@ -6032,7 +6268,6 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_CLASSES = frozenset(
         "DecodedPreparationRow",
         "ExactTokenizer",
         "ExpectedMembershipBlock",
-        "ExposureAcceptanceError",
         "InputPopulationAnchor",
         "MembershipPlan",
         "MembershipValidation",
@@ -6058,6 +6293,13 @@ _PRODUCTION_LIFECYCLE_EXTERNAL_CALLABLE_ALLOWLIST = frozenset(
 )
 _PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS = MappingProxyType(
     {
+        "cslm.modeling.eligibility": frozenset(
+            {
+                "_derive_mask_eligibility_impl",
+                "approved_special_token_mapping",
+                "derive_mask_eligibility",
+            }
+        ),
         "cslm.modeling.exposure": frozenset(
             {"audit_exposure"}
         ),
@@ -6078,6 +6320,54 @@ _PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS = MappingProxyType(
                 "pack_rows",
             }
         ),
+        "cslm.modeling.scheduling": frozenset(
+            {
+                "_appearance_payload",
+                "_build_updates",
+                "_canonical_json_bytes",
+                "_paired_seed_audits",
+                "_paired_seed_target_audit",
+                "_pass_permutation",
+                "_permutation_digest",
+                "_population_anchor",
+                "_prefix_checksum",
+                "_range_payload",
+                "_require_exact_nonnegative_integer",
+                "_require_sha256",
+                "_resume_position",
+                "_schedule_order_checksum",
+                "_schedule_set_identity",
+                "_seed_target_audit",
+                "_selected_counts",
+                "_sequence_material",
+                "_sha256",
+                "_update_plan_payload",
+                "_visit_state_checksum",
+                "approved_training_mask_seed_plans",
+                "audit_future_paired_training_mask_seed",
+                "audit_training_mask_seed",
+                "build_condition_schedule",
+                "build_training_exposure_plan",
+                "derive_resume_state",
+                "exact_one_percent_pass",
+                "scheduling_contract_payload",
+                "training_exposure_plan_payload",
+                "validate_canonical_real_reference",
+                "validate_condition_schedule",
+                "validate_resume_state",
+                "validate_seed_authorization",
+                "validate_training_exposure_plan",
+                "validate_training_exposure_plan_payload",
+            }
+        ),
+        "cslm.modeling.training_contract": frozenset(
+            {
+                "authorize_adamw_step",
+                "authorize_gradient_clipping",
+                "loss_normalization_contract_payload",
+                "normalize_complete_update_loss",
+            }
+        ),
         "cslm.tokenization.shared_wordpiece": frozenset(
             {"protocol_configuration"}
         ),
@@ -6085,6 +6375,12 @@ _PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS = MappingProxyType(
 )
 _PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_CLASSES = MappingProxyType(
     {
+        "cslm.modeling.eligibility": frozenset(
+            {
+                "EligibilityContractError",
+                "EligibilityProfile",
+            }
+        ),
         "cslm.modeling.exposure": frozenset(
             {
                 "ExposureAudit",
@@ -6109,20 +6405,145 @@ _PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_CLASSES = MappingProxyType(
                 "SourceTokenRange",
             }
         ),
+        "cslm.modeling.scheduling": frozenset(
+            {
+                "ConditionSchedule",
+                "MicrobatchPlan",
+                "OptimizerUpdatePlan",
+                "PairedSeedTargetAudit",
+                "ResumeState",
+                "SchedulingContractError",
+                "SeedTargetAudit",
+                "SequenceAppearance",
+                "TrainingExposurePlan",
+            }
+        ),
+        "cslm.modeling.training_contract": frozenset(
+            {
+                "GradientClippingAuthorization",
+                "MicrobatchLoss",
+                "NormalizedUpdateLoss",
+                "OptimizerStepAuthorization",
+                "TrainingContractError",
+            }
+        ),
         "cslm.tokenization.shared_wordpiece": frozenset(),
     }
 )
-_PRODUCTION_REVIEWED_ORIGINAL_CLASS_ALLOWLIST = frozenset(
+_STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY = MappingProxyType(
     {
-        "CandidateChecksumRecord",
-        "ExposureAcceptanceError",
-        "PreparationError",
-        "PreparationManifest",
-        "ProductionPreparationPaths",
-        "PublicationCommittedError",
-        "PublicationOutcomeIndeterminateError",
-        "PublishedPreparationCandidate",
+        "cslm.modeling.contracts": frozenset(
+            {
+                "DevicePolicyContract",
+                "ManifestContractError",
+                "OptimizerContract",
+                "PairedRunManifest",
+                "RunManifest",
+                "TrainingBudgetContract",
+            }
+        ),
+        "cslm.modeling.eligibility": frozenset(
+            {"EligibilityContractError", "EligibilityProfile"}
+        ),
+        "cslm.modeling.exposure": frozenset(
+            {"ExposureAudit", "ExposureAuditError", "ExposureGroup"}
+        ),
+        "cslm.modeling.initialization": frozenset(
+            {
+                "InitializationContractError",
+                "InitializationManifest",
+                "PairedInitialization",
+                "ReplicateSeedPlan",
+            }
+        ),
+        "cslm.modeling.masking": frozenset(
+            {
+                "MaskedExample",
+                "MaskingContractError",
+                "MaskingPolicy",
+                "ValidationMaskRecord",
+            }
+        ),
+        "cslm.modeling.packing": frozenset(
+            {
+                "PackedSequence",
+                "PackingContractError",
+                "PackingResult",
+                "PackingRow",
+                "SourceTokenRange",
+            }
+        ),
+        "cslm.modeling.scheduling": frozenset(
+            {
+                "ConditionSchedule",
+                "MicrobatchPlan",
+                "OptimizerUpdatePlan",
+                "PairedSeedTargetAudit",
+                "ResumeState",
+                "SchedulingContractError",
+                "SeedTargetAudit",
+                "SequenceAppearance",
+                "TrainingExposurePlan",
+            }
+        ),
+        "cslm.modeling.training_contract": frozenset(
+            {
+                "GradientClippingAuthorization",
+                "MicrobatchLoss",
+                "NormalizedUpdateLoss",
+                "OptimizerStepAuthorization",
+                "TrainingContractError",
+            }
+        ),
+        "cslm.tokenization.shared_wordpiece": frozenset(
+            {
+                "BuildComparison",
+                "TokenizerBuild",
+                "TrainingExample",
+                "TrainingExtraction",
+                "WordPieceReproducibilityError",
+            }
+        ),
+        __name__: frozenset(
+            {
+                "AggregateExpectation",
+                "CandidateChecksumRecord",
+                "CandidateValidationSnapshot",
+                "DecodedPreparationRow",
+                "ExactTokenizer",
+                "ExpectedMembershipBlock",
+                "InputPopulationAnchor",
+                "MembershipPlan",
+                "MembershipValidation",
+                "PreparationBundle",
+                "PreparationError",
+                "PreparationManifest",
+                "PreparationSnapshot",
+                "PreparedPreparationRow",
+                "ProductionPreparationPaths",
+                "PublicationCommittedError",
+                "PublicationOutcomeIndeterminateError",
+                "PublishedPreparationCandidate",
+                "SyntheticParityCase",
+                "SyntheticPreparationSnapshot",
+                "SyntheticPublishedPreparationCandidate",
+                "ValidationMaterial",
+            }
+        ),
     }
+)
+_PRODUCTION_STABLE_PUBLIC_BOUNDARY_CLASSES = MappingProxyType(
+    {
+        module_name: frozenset(names)
+        & _STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY[module_name]
+        for module_name, names in {
+            __name__: _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_CLASSES,
+            **_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_CLASSES,
+        }.items()
+    }
+)
+_PRODUCTION_REVIEWED_ORIGINAL_CLASS_ALLOWLIST = (
+    _PRODUCTION_STABLE_PUBLIC_BOUNDARY_CLASSES[__name__]
 )
 
 
@@ -6131,14 +6552,28 @@ def _create_reviewed_production_graph() -> Mapping[str, object]:
     module_globals = globals()
     external_seeds = (
         audit_exposure,
+        derive_mask_eligibility,
         build_validation_mask_record,
+        build_training_exposure_plan,
+        loss_normalization_contract_payload,
         pack_rows,
         protocol_configuration,
+        scheduling_contract_payload,
     )
-    source_globals = {__name__: module_globals}
-    source_globals.update(
-        {seed.__module__: seed.__globals__ for seed in external_seeds}
-    )
+    external_module_names = frozenset(seed.__module__ for seed in external_seeds)
+    source_globals = {
+        __name__: module_globals,
+        **{
+            module_name: namespace
+            for module_name, namespace in _REVIEWED_DEPENDENCY_NAMESPACES.items()
+            if module_name in external_module_names
+        },
+    }
+    if set(source_globals) != {
+        __name__,
+        *_PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS,
+    }:
+        raise RuntimeError("reviewed production dependency inventory is incomplete")
     reviewed_namespaces = {
         module_name: dict(namespace)
         for module_name, namespace in source_globals.items()
@@ -6218,10 +6653,7 @@ def _create_reviewed_production_graph() -> Mapping[str, object]:
         reviewed_classes: dict[str, type[object]] = {}
         for name in class_inventories[module_name]:
             class_type = original_classes[name]
-            if (
-                name in _PRODUCTION_REVIEWED_ORIGINAL_CLASS_ALLOWLIST
-                or issubclass(class_type, BaseException)
-            ):
+            if name in _PRODUCTION_STABLE_PUBLIC_BOUNDARY_CLASSES[module_name]:
                 continue
             slot_names = set(getattr(class_type, "__slots__", ()))
             attributes = {
@@ -6486,6 +6918,8 @@ def _create_reviewed_production_graph() -> Mapping[str, object]:
             "candidate_loader": reviewed_functions[
                 "_load_preparation_candidate"
             ],
+            "key_loader": reviewed_functions["load_hmac_key"],
+            "fixed_error": reviewed_functions["_raise_fixed"],
         }
     )
 
@@ -6508,6 +6942,8 @@ def _create_closed_production_entrypoint(
             ("SpanishMono", 12_091, 90_000, 600, 5_000),
         ),
         "~/NEU_LAB_frozen_artifacts/model_ready/real_preparation_v1",
+        "b4356076f14f3a540a439fc715f55bd791f86a6934e7e23db35db50018992b50",
+        "d585f43634db702f478433c1027d398c695cc0a529e7a8bde46b04fcf26c66df",
     )
     reviewed_prepare_production_inputs = reviewed_graph["prepare"]
     reviewed_publish_preparation = reviewed_graph["publish"]
@@ -6517,6 +6953,16 @@ def _create_closed_production_entrypoint(
     reviewed_raise_fixed = reviewed_prepare_production_inputs.__globals__[
         "_raise_fixed"
     ]
+    reviewed_scheduling_contract_payload = (
+        reviewed_prepare_production_inputs.__globals__[
+            "scheduling_contract_payload"
+        ]
+    )
+    reviewed_loss_normalization_contract_payload = (
+        reviewed_prepare_production_inputs.__globals__[
+            "loss_normalization_contract_payload"
+        ]
+    )
     reviewed_paths_type = ProductionPreparationPaths
     reviewed_preparation_error = PreparationError
     reviewed_committed_error = PublicationCommittedError
@@ -6540,6 +6986,16 @@ def _create_closed_production_entrypoint(
         or APPROVED_CSCONT_CHECKSUM_RECORD_SHA256 != frozen_controls[2]
         or current_aggregates != frozen_controls[3]
         or str(APPROVED_PRIVATE_OUTPUT_ROOT) != frozen_controls[4]
+        or _sha256_bytes(
+            canonical_json_bytes(reviewed_scheduling_contract_payload())
+        )
+        != frozen_controls[5]
+        or _sha256_bytes(
+            canonical_json_bytes(
+                reviewed_loss_normalization_contract_payload()
+            )
+        )
+        != frozen_controls[6]
     ):
         raise RuntimeError("production scientific controls are invalid")
     reviewed_approved_output = (
@@ -6868,12 +7324,14 @@ def load_synthetic_preparation_candidate(
                 attention,
                 token_types,
             )
-    membership_rows = _reconcile_packed_row_token_content(
+    membership_rows, synthetic_packed_provenance = (
+        _reconcile_packed_row_token_content(
         serialized_membership=membership_payload,
         provenance=provenance_payload,
         packed_arrays=packed_arrays,
         protocol=SYNTHETIC_PREPARATION_PROTOCOL_VERSION,
         reconciliation_key=_SYNTHETIC_PRIVACY_RECONCILIATION_KEY,
+        )
     )
     baselines = {
         (source, split, row_id): binding
@@ -6955,6 +7413,9 @@ def load_synthetic_preparation_candidate(
                     unmasked_input_ids=unmasked_inputs,
                     attention_mask=base_attention,
                     token_type_ids=base_token_types,
+                    provenance=synthetic_packed_provenance[
+                        (condition, "validation")
+                    ],
                 )
             )
             if not (
@@ -6983,6 +7444,7 @@ def _required_artifact_names() -> frozenset[str]:
         "membership.json",
         "provenance.json",
         "runtime.json",
+        "schedules/train_sequence_identities.json",
     }
     for condition in CONDITIONS:
         for split in ("train", "validation"):
@@ -7092,6 +7554,7 @@ def _regenerate_fixed_validation(
     unmasked_input_ids: np.ndarray,
     attention_mask: np.ndarray,
     token_type_ids: np.ndarray,
+    provenance: Sequence[tuple[SourceTokenRange, ...]],
 ) -> tuple[np.ndarray, np.ndarray, ValidationMaskRecord]:
     """Rerun the one approved masker from serialized unmasked validation inputs."""
     if (
@@ -7103,6 +7566,7 @@ def _regenerate_fixed_validation(
         or unmasked_input_ids.shape != attention_mask.shape
         or unmasked_input_ids.shape != token_type_ids.shape
         or len(ordered_example_identities) != unmasked_input_ids.shape[0]
+        or len(provenance) != unmasked_input_ids.shape[0]
         or len(set(ordered_example_identities)) != len(ordered_example_identities)
         or any(
             not isinstance(identity, str) or not _SHA256_RE.fullmatch(identity)
@@ -7117,7 +7581,7 @@ def _regenerate_fixed_validation(
             input_ids=tuple(int(value) for value in unmasked_input_ids[index]),
             attention_mask=tuple(int(value) for value in attention_mask[index]),
             token_type_ids=tuple(int(value) for value in token_type_ids[index]),
-            provenance=(),
+            provenance=provenance[index],
             example_identity=identity,
         )
         for index, identity in enumerate(ordered_example_identities)
@@ -7131,6 +7595,95 @@ def _regenerate_fixed_validation(
         np.asarray([example.labels for example in masked], dtype=np.int32),
         build_validation_mask_record(sequences, seed=seed),
     )
+
+
+def _regenerate_training_schedule(
+    *,
+    identities_payload: object,
+    packed_arrays: Mapping[
+        tuple[str, str],
+        tuple[np.ndarray, np.ndarray, np.ndarray],
+    ],
+    packed_provenance: Mapping[
+        tuple[str, str],
+        tuple[tuple[SourceTokenRange, ...], ...],
+    ],
+    input_population_anchor_sha256: str,
+) -> tuple[TrainingExposurePlan, Mapping[str, tuple[str, ...]]]:
+    """Rebuild the complete schedule from validated arrays and bound identities."""
+
+    if (
+        not isinstance(identities_payload, dict)
+        or set(identities_payload)
+        != {
+            "identity_protocol",
+            "input_population_anchor_sha256",
+            "schedule_protocol",
+            "ordered_identities_by_condition",
+        }
+        or identities_payload["identity_protocol"]
+        != "packing_sequence_identity_sha256_v1"
+        or identities_payload["input_population_anchor_sha256"]
+        != input_population_anchor_sha256
+        or identities_payload["schedule_protocol"] != SCHEDULE_PROTOCOL
+        or not isinstance(
+            identities_payload["ordered_identities_by_condition"],
+            dict,
+        )
+        or set(identities_payload["ordered_identities_by_condition"])
+        != set(CONDITIONS)
+    ):
+        raise PreparationError("candidate training identities are invalid")
+    identities_by_condition: dict[str, tuple[str, ...]] = {}
+    sequences: list[PackedSequence] = []
+    for condition in CONDITIONS:
+        identities = identities_payload["ordered_identities_by_condition"][
+            condition
+        ]
+        arrays = packed_arrays[(condition, "train")]
+        provenance = packed_provenance.get((condition, "train"), ())
+        if (
+            not isinstance(identities, list)
+            or len(identities) != arrays[0].shape[0]
+            or len(provenance) != arrays[0].shape[0]
+            or len(set(identities)) != len(identities)
+            or any(
+                not isinstance(identity, str)
+                or not _SHA256_RE.fullmatch(identity)
+                for identity in identities
+            )
+        ):
+            raise PreparationError("candidate training identities are invalid")
+        identities_by_condition[condition] = tuple(identities)
+        for index, identity in enumerate(identities):
+            sequences.append(
+                PackedSequence(
+                    condition=condition,
+                    split="train",
+                    input_ids=tuple(int(value) for value in arrays[0][index]),
+                    attention_mask=tuple(
+                        int(value) for value in arrays[1][index]
+                    ),
+                    token_type_ids=tuple(
+                        int(value) for value in arrays[2][index]
+                    ),
+                    provenance=provenance[index],
+                    example_identity=identity,
+                )
+            )
+    schedule_failed = False
+    plan: TrainingExposurePlan | None = None
+    try:
+        plan = build_training_exposure_plan(
+            sequences,
+            input_population_anchor_sha256=input_population_anchor_sha256,
+        )
+        validate_canonical_real_reference(plan)
+    except Exception:
+        schedule_failed = True
+    if schedule_failed or plan is None:
+        _raise_fixed("candidate mask-eligible schedule regeneration failed")
+    return plan, MappingProxyType(identities_by_condition)
 
 
 def _validate_runtime_record(payload: Any, historical: Any) -> None:
@@ -7246,29 +7799,72 @@ def _validate_historical_identity_record(
 def _validate_exposure_record(payload: Any) -> None:
     if not isinstance(payload, dict) or set(payload) != {
         "groups",
-        "projected_train_non_padding_wordpieces",
+        "primary_authority",
+        "training_exposure_plan",
+        "legacy_non_padding_projection_diagnostic",
         "prohibited_boundary_crossings",
         "split_leakage_count",
         "dropped_token_count",
         "truncated_token_count",
-        "maximum_projected_exposure_difference_fraction",
         "exposure_tolerance_fraction",
     }:
         raise PreparationError("candidate exposure record schema is invalid")
+    plan = payload["training_exposure_plan"]
+    comparison = (
+        plan.get("eligible_exposure_comparison")
+        if isinstance(plan, dict)
+        else None
+    )
     if (
-        payload["exposure_tolerance_fraction"] != EXPOSURE_TOLERANCE_FRACTION
+        payload["primary_authority"] != EXPOSURE_POLICY_PROTOCOL
+        or payload["exposure_tolerance_fraction"] != EXPOSURE_TOLERANCE_FRACTION
         or payload["prohibited_boundary_crossings"] != 0
         or payload["split_leakage_count"] != 0
         or payload["dropped_token_count"] != 0
         or payload["truncated_token_count"] != 0
-        or not isinstance(payload["maximum_projected_exposure_difference_fraction"], (int, float))
-        or payload["maximum_projected_exposure_difference_fraction"]
-        > EXPOSURE_TOLERANCE_FRACTION
+        or not isinstance(plan, dict)
+        or plan.get("exposure_policy_protocol") != EXPOSURE_POLICY_PROTOCOL
+        or plan.get("eligibility_protocol") != ELIGIBILITY_PROTOCOL
+        or plan.get("schedule_protocol") != SCHEDULE_PROTOCOL
+        or plan.get("resume_policy_protocol") != RESUME_POLICY_PROTOCOL
+        or plan.get("immutable_special_token_ids")
+        != dict(_APPROVED_SPECIAL_TOKEN_IDS)
+        or plan.get("nominal_eligible_target") != NOMINAL_ELIGIBLE_TARGET
+        or plan.get("optimizer_updates") != 1_000
+        or plan.get("update_frontier_increment") != 746
+        or not isinstance(comparison, dict)
+        or comparison.get("comparison")
+        != "100 * maximum <= 101 * minimum"
+        or comparison.get("passed") is not True
+        or any(
+            type(comparison.get(name)) is not int
+            or comparison[name] <= 0
+            for name in (
+                "minimum",
+                "maximum",
+                "ratio_numerator",
+                "ratio_denominator",
+            )
+        )
+        or 100 * comparison["maximum"] > 101 * comparison["minimum"]
     ):
         raise PreparationError("candidate exposure result did not pass")
-    projected = payload["projected_train_non_padding_wordpieces"]
+    legacy = payload["legacy_non_padding_projection_diagnostic"]
+    projected = (
+        legacy.get("projected_train_non_padding_wordpieces")
+        if isinstance(legacy, dict)
+        else None
+    )
     if (
-        not isinstance(projected, dict)
+        not isinstance(legacy, dict)
+        or set(legacy)
+        != {
+            "authority",
+            "projected_train_non_padding_wordpieces",
+            "maximum_difference_fraction",
+        }
+        or legacy["authority"] != "diagnostic_only"
+        or not isinstance(projected, dict)
         or set(projected) != set(CONDITIONS)
         or any(
             not isinstance(value, (int, float))
@@ -7278,6 +7874,33 @@ def _validate_exposure_record(payload: Any) -> None:
         )
     ):
         raise PreparationError("candidate projected exposure population is invalid")
+    conditions = plan.get("conditions")
+    selected = plan.get("selected_target_comparisons")
+    if (
+        not isinstance(conditions, dict)
+        or set(conditions) != set(CONDITIONS)
+        or not isinstance(selected, dict)
+        or set(selected)
+        != {name for name, _ in approved_training_mask_seed_plans()}
+        or any(
+            not isinstance(record, dict)
+            or record.get("seed") != seed
+            or record.get("comparison")
+            != "100 * maximum <= 101 * minimum"
+            or record.get("passed") is not True
+            or not isinstance(record.get("by_condition"), dict)
+            or set(record["by_condition"]) != set(CONDITIONS)
+            or any(
+                type(value) is not int or value <= 0
+                for value in record["by_condition"].values()
+            )
+            or 100 * max(record["by_condition"].values())
+            > 101 * min(record["by_condition"].values())
+            for name, seed in approved_training_mask_seed_plans()
+            for record in (selected.get(name),)
+        )
+    ):
+        raise PreparationError("candidate selected-target audits are invalid")
     groups = payload["groups"]
     expected_groups = {
         (condition, split)
@@ -7324,6 +7947,11 @@ class PreparationSnapshot:
     protocol_version: str
     candidate_checksum_record_sha256: str
     preparation_manifest_sha256: str
+    schedule_plan_identity_sha256: str
+    schedule_identities_by_condition: tuple[tuple[str, str], ...]
+    approved_training_mask_seeds: tuple[tuple[str, int], ...]
+    training_seed_audit_evidence: tuple[tuple[str, int, str], ...]
+    resume_policy_protocol: str
     _candidate_root: Path = field(repr=False)
     _reconciliation_key_path: Path = field(repr=False)
     _tree_identity_sha256: str = field(repr=False)
@@ -7333,11 +7961,17 @@ class PreparationSnapshot:
         raise PreparationError("preparation snapshots must be candidate-loader-derived")
 
 
-def verify_preparation_snapshot(snapshot: PreparationSnapshot) -> None:
-    """Revalidate an exact factory product without dispatch through caller methods."""
-    if type(snapshot) is not PreparationSnapshot:
-        raise PreparationError("run construction requires an exact preparation snapshot")
-    loaded = load_preparation_candidate(
+def _verify_preparation_snapshot_with_loader(
+    snapshot: PreparationSnapshot,
+    *,
+    candidate_loader: Callable[..., PreparationSnapshot],
+    snapshot_type: type[PreparationSnapshot],
+    error_type: type[PreparationError],
+) -> None:
+    """Revalidate an exact factory product through a captured reviewed loader."""
+    if type(snapshot) is not snapshot_type:
+        raise error_type("run construction requires an exact preparation snapshot")
+    loaded = candidate_loader(
         snapshot._candidate_root,
         reconciliation_key_path=snapshot._reconciliation_key_path,
     )
@@ -7346,6 +7980,11 @@ def verify_preparation_snapshot(snapshot: PreparationSnapshot) -> None:
         snapshot.protocol_version,
         snapshot.candidate_checksum_record_sha256,
         snapshot.preparation_manifest_sha256,
+        snapshot.schedule_plan_identity_sha256,
+        snapshot.schedule_identities_by_condition,
+        snapshot.approved_training_mask_seeds,
+        snapshot.training_seed_audit_evidence,
+        snapshot.resume_policy_protocol,
         snapshot._reconciliation_key_path,
         snapshot._tree_identity_sha256,
         snapshot._validation_snapshots,
@@ -7355,12 +7994,17 @@ def verify_preparation_snapshot(snapshot: PreparationSnapshot) -> None:
         loaded.protocol_version,
         loaded.candidate_checksum_record_sha256,
         loaded.preparation_manifest_sha256,
+        loaded.schedule_plan_identity_sha256,
+        loaded.schedule_identities_by_condition,
+        loaded.approved_training_mask_seeds,
+        loaded.training_seed_audit_evidence,
+        loaded.resume_policy_protocol,
         loaded._reconciliation_key_path,
         loaded._tree_identity_sha256,
         loaded._validation_snapshots,
     )
     if values != expected:
-        raise PreparationError("preparation candidate snapshot changed")
+        raise error_type("preparation candidate snapshot changed")
 
 
 def candidate_validation_for(
@@ -7493,6 +8137,7 @@ def _load_preparation_candidate(
         "included_splits",
         "aggregates",
         "exposure",
+        "future_training_contracts",
         "fixed_validation_seed_plans",
         "derived_validation_records",
         "serialization",
@@ -7532,6 +8177,11 @@ def _load_preparation_candidate(
         or manifest["conditions"] != list(CONDITIONS)
         or manifest["included_splits"] != ["train", "validation"]
         or manifest["serialization"] != dict(_SERIALIZATION_SCHEMA)
+        or manifest["future_training_contracts"]
+        != {
+            "scheduling": scheduling_contract_payload(),
+            "loss_normalization": loss_normalization_contract_payload(),
+        }
     ):
         raise PreparationError("candidate preparation manifest semantics are invalid")
 
@@ -7697,6 +8347,39 @@ def _load_preparation_candidate(
                 token_types,
             )
 
+    provenance = _strict_json_value(
+        snapshots["provenance.json"].content,
+        category="candidate provenance record is malformed",
+    )
+    serialized_membership = _strict_json_value(
+        snapshots["membership.json"].content,
+        category="candidate serialized membership is malformed",
+    )
+    if (
+        not isinstance(provenance, list)
+        or not provenance
+        or not isinstance(serialized_membership, list)
+        or len(serialized_membership)
+        != sum(
+            aggregates[condition][split]["rows"]
+            for condition in CONDITIONS
+            for split in ("train", "validation")
+        )
+    ):
+        raise PreparationError("candidate serialized population is incomplete")
+    membership_rows, packed_provenance = _reconcile_packed_row_token_content(
+        serialized_membership=serialized_membership,
+        provenance=provenance,
+        packed_arrays=packed_arrays,
+        protocol=PREPARATION_PROTOCOL_VERSION,
+        reconciliation_key=reconciliation_key,
+    )
+
+    for condition in CONDITIONS:
+        base_arrays = {
+            split: packed_arrays[(condition, split)]
+            for split in ("train", "validation")
+        }
         validation_inputs, validation_attention, validation_types = base_arrays["validation"]
         for plan_name, seed in approved_validation_seed_plans():
             prefix = f"validation/{condition}/{plan_name}"
@@ -7767,6 +8450,9 @@ def _load_preparation_candidate(
                     unmasked_input_ids=validation_inputs,
                     attention_mask=validation_attention,
                     token_type_ids=validation_types,
+                    provenance=packed_provenance[
+                        (condition, "validation")
+                    ],
                 )
             )
             if not (
@@ -7807,6 +8493,16 @@ def _load_preparation_candidate(
     _validate_exposure_record(exposure)
     if manifest["exposure"] != exposure:
         raise PreparationError("candidate exposure manifest binding failed")
+    training_identities_payload = _strict_json_value(
+        snapshots["schedules/train_sequence_identities.json"].content,
+        category="candidate training identities are malformed",
+    )
+    regenerated_plan, training_identities = _regenerate_training_schedule(
+        identities_payload=training_identities_payload,
+        packed_arrays=packed_arrays,
+        packed_provenance=packed_provenance,
+        input_population_anchor_sha256=anchor.identity_sha256,
+    )
     groups = {
         (group["condition"], group["split"]): group for group in exposure["groups"]
     }
@@ -7814,36 +8510,42 @@ def _load_preparation_candidate(
     for condition in CONDITIONS:
         for split in ("train", "validation"):
             aggregate = aggregates[condition][split]
-            prefix = f"arrays/{condition}/{split}"
-            input_array = _load_npy(
-                snapshots[f"{prefix}/input_ids.npy"].content,
-                dtype="uint16",
-                rows=aggregate["sequences"],
+            input_array, attention_array, _ = packed_arrays[
+                (condition, split)
+            ]
+            profiles = tuple(
+                derive_mask_eligibility(
+                    tuple(int(value) for value in input_array[index]),
+                    tuple(int(value) for value in attention_array[index]),
+                )
+                for index in range(input_array.shape[0])
             )
-            attention_array = _load_npy(
-                snapshots[f"{prefix}/attention_mask.npy"].content,
-                dtype="uint8",
-                rows=aggregate["sequences"],
-            )
-            eligible = int(
-                (
-                    (attention_array == 1)
-                    & ~np.isin(
-                        input_array,
-                        tuple(_APPROVED_SPECIAL_TOKEN_IDS.values()),
-                    )
-                ).sum()
-            )
+            eligible = sum(profile.eligible_count for profile in profiles)
             group = groups[(condition, split)]
             expected_group = {
                 "condition": condition,
                 "split": split,
                 "source_lexical_tokens": aggregate["lexical_tokens"],
-                "non_padding_wordpieces": int(attention_array.sum()),
+                "non_padding_wordpieces": sum(
+                    profile.non_padding_count for profile in profiles
+                ),
                 "sequence_count": aggregate["sequences"],
                 "padding_count": aggregate["padding"],
                 "padding_fraction": aggregate["padding"]
                 / (aggregate["sequences"] * MAX_SEQUENCE_LENGTH),
+                "mask_eligible_wordpieces": eligible,
+                "cls_wordpieces": sum(
+                    profile.cls_count for profile in profiles
+                ),
+                "sep_wordpieces": sum(
+                    profile.sep_count for profile in profiles
+                ),
+                "unk_wordpieces": sum(
+                    profile.unk_count for profile in profiles
+                ),
+                "mask_wordpieces": sum(
+                    profile.mask_count for profile in profiles
+                ),
                 "expected_masked_target_count": eligible * 0.15,
             }
             if group != expected_group:
@@ -7852,8 +8554,30 @@ def _load_preparation_candidate(
         projected_expected[condition] = (
             packed_nonpadding[(condition, "train")] / train["sequences"]
         ) * APPROVED_BUDGET.projected_sequence_exposures
-    if exposure["projected_train_non_padding_wordpieces"] != projected_expected:
-        raise PreparationError("candidate projected exposure does not match packed arrays")
+    projected_values = tuple(projected_expected.values())
+    legacy_expected = {
+        "authority": "diagnostic_only",
+        "projected_train_non_padding_wordpieces": projected_expected,
+        "maximum_difference_fraction": (
+            (max(projected_values) - min(projected_values))
+            / min(projected_values)
+        ),
+    }
+    serialized_schedule_failed = False
+    try:
+        validate_training_exposure_plan_payload(
+            regenerated_plan,
+            exposure["training_exposure_plan"],
+            legacy_non_padding_projection=projected_expected,
+        )
+    except SchedulingContractError:
+        serialized_schedule_failed = True
+    if (
+        exposure["legacy_non_padding_projection_diagnostic"]
+        != legacy_expected
+        or serialized_schedule_failed
+    ):
+        raise PreparationError("candidate exposure does not regenerate from packed arrays")
     runtime = _strict_json_value(
         snapshots["runtime.json"].content,
         category="candidate runtime record is malformed",
@@ -7861,12 +8585,6 @@ def _load_preparation_candidate(
     _validate_runtime_record(runtime, manifest["historical_tokenizer_build_identity"])
     if manifest["runtime_identity"] != runtime:
         raise PreparationError("candidate runtime manifest binding failed")
-    provenance = _strict_json_value(
-        snapshots["provenance.json"].content,
-        category="candidate provenance record is malformed",
-    )
-    if not isinstance(provenance, list) or not provenance:
-        raise PreparationError("candidate serialized population is empty")
     serialized_examples = sum(
         aggregates[condition][split]["sequences"]
         for condition in CONDITIONS
@@ -7894,7 +8612,9 @@ def _load_preparation_candidate(
             or not example["ranges"]
         ):
             raise PreparationError("candidate provenance schema is invalid")
-        provenance_counts[(example["condition"], example["split"])] += 1
+        example_group = (example["condition"], example["split"])
+        example_group_index = provenance_counts[example_group]
+        provenance_counts[example_group] += 1
         packed_ranges: list[tuple[int, int]] = []
         for item in example["ranges"]:
             if (
@@ -8031,6 +8751,32 @@ def _load_preparation_candidate(
                 monocont_rows.add(reuse_key)
             elif item["component_role"] == "callhome_monolingual_filler":
                 filler_rows.add(reuse_key)
+        if example["split"] == "train":
+            if example_group_index >= len(
+                training_identities[example["condition"]]
+            ):
+                raise PreparationError(
+                    "candidate training identity population is incomplete"
+                )
+            identity = training_identities[example["condition"]][
+                example_group_index
+            ]
+            expected_pseudonym = _pseudonym(
+                reconciliation_key,
+                "example",
+                example["ranges"][0]["source_role"],
+                identity,
+            )
+            if (
+                expected_pseudonym is None
+                or not hmac.compare_digest(
+                    expected_pseudonym,
+                    example["example_pseudonym"],
+                )
+            ):
+                raise PreparationError(
+                    "candidate training identity reconciliation failed"
+                )
         for earlier, later in zip(
             sorted(packed_ranges),
             sorted(packed_ranges)[1:],
@@ -8070,27 +8816,6 @@ def _load_preparation_candidate(
         raise PreparationError("candidate serialized rows do not reconcile")
     if not filler_rows <= monocont_rows:
         raise PreparationError("candidate CALLHOME filler reuse is not anchored")
-    serialized_membership = _strict_json_value(
-        snapshots["membership.json"].content,
-        category="candidate serialized membership is malformed",
-    )
-    if (
-        not isinstance(serialized_membership, list)
-        or len(serialized_membership)
-        != sum(
-            aggregates[condition][split]["rows"]
-            for condition in CONDITIONS
-            for split in ("train", "validation")
-        )
-    ):
-        raise PreparationError("candidate serialized membership population is incomplete")
-    membership_rows = _reconcile_packed_row_token_content(
-        serialized_membership=serialized_membership,
-        provenance=provenance,
-        packed_arrays=packed_arrays,
-        protocol=PREPARATION_PROTOCOL_VERSION,
-        reconciliation_key=reconciliation_key,
-    )
     if set(membership_rows) != set(ranges_by_row):
         raise PreparationError(
             "candidate serialized membership and packed provenance do not reconcile"
@@ -8189,6 +8914,40 @@ def _load_preparation_candidate(
         checksum_identity,
     )
     object.__setattr__(result, "preparation_manifest_sha256", manifest_identity)
+    object.__setattr__(
+        result,
+        "schedule_plan_identity_sha256",
+        regenerated_plan.identity_sha256,
+    )
+    object.__setattr__(
+        result,
+        "schedule_identities_by_condition",
+        tuple(
+            (
+                schedule.condition,
+                schedule.identity_sha256,
+            )
+            for schedule in regenerated_plan.conditions
+        ),
+    )
+    object.__setattr__(
+        result,
+        "approved_training_mask_seeds",
+        approved_training_mask_seed_plans(),
+    )
+    object.__setattr__(
+        result,
+        "training_seed_audit_evidence",
+        tuple(
+            (audit.plan_name, audit.seed, audit.evidence_sha256)
+            for audit in regenerated_plan.seed_audits
+        ),
+    )
+    object.__setattr__(
+        result,
+        "resume_policy_protocol",
+        RESUME_POLICY_PROTOCOL,
+    )
     object.__setattr__(result, "_candidate_root", root.expanduser().absolute())
     object.__setattr__(result, "_reconciliation_key_path", Path())
     object.__setattr__(
@@ -8200,44 +8959,166 @@ def _load_preparation_candidate(
     return result
 
 
-def load_preparation_candidate(
-    root: Path,
-    *,
-    reconciliation_key_path: Path,
-) -> PreparationSnapshot:
-    """Reconcile a candidate with its separate privacy pseudonymization key."""
-    result: PreparationSnapshot | None = None
-    reconciliation_key = b""
-    failed = False
-    try:
-        reconciliation_key = load_hmac_key(
-            reconciliation_key_path,
-            forbidden_roots=(root,),
-        )
-        result = _load_preparation_candidate(
-            root,
-            reconciliation_key=reconciliation_key,
-        )
-    except BaseException:
-        failed = True
-    candidate_root = root.expanduser().absolute()
-    key_path = reconciliation_key_path.expanduser().absolute()
-    reconciliation_key = b""
-    root = Path()
-    reconciliation_key_path = Path()
-    if failed or result is None:
-        candidate_root = Path()
-        key_path = Path()
-        _raise_fixed("preparation candidate failed verification")
-    object.__setattr__(result, "_candidate_root", candidate_root)
-    object.__setattr__(result, "_reconciliation_key_path", key_path)
-    return result
+def _create_closed_candidate_loader(
+    reviewed_graph: Mapping[str, object],
+) -> Callable[..., PreparationSnapshot]:
+    """Close the public candidate boundary over the reviewed semantic loader."""
 
+    reviewed_candidate_loader = reviewed_graph["candidate_loader"]
+    reviewed_key_loader = reviewed_graph["key_loader"]
+    reviewed_raise_fixed = reviewed_graph["fixed_error"]
+    reviewed_snapshot_type = PreparationSnapshot
+    reviewed_path_type = Path
+
+    def closed_candidate_loader(
+        root: Path,
+        *,
+        reconciliation_key_path: Path,
+    ) -> PreparationSnapshot:
+        result: PreparationSnapshot | None = None
+        reconciliation_key = b""
+        failed = False
+        candidate_root = reviewed_path_type()
+        key_path = reviewed_path_type()
+        try:
+            reconciliation_key = reviewed_key_loader(
+                reconciliation_key_path,
+                forbidden_roots=(root,),
+            )
+            result = reviewed_candidate_loader(
+                root,
+                reconciliation_key=reconciliation_key,
+            )
+            candidate_root = root.expanduser().absolute()
+            key_path = reconciliation_key_path.expanduser().absolute()
+        except BaseException:
+            failed = True
+        reconciliation_key = b""
+        root = reviewed_path_type()
+        reconciliation_key_path = reviewed_path_type()
+        if failed or type(result) is not reviewed_snapshot_type:
+            result = None
+            candidate_root = reviewed_path_type()
+            key_path = reviewed_path_type()
+            reviewed_raise_fixed("preparation candidate failed verification")
+        object.__setattr__(result, "_candidate_root", candidate_root)
+        object.__setattr__(result, "_reconciliation_key_path", key_path)
+        return result
+
+    closed_candidate_loader.__name__ = "load_preparation_candidate"
+    closed_candidate_loader.__qualname__ = "load_preparation_candidate"
+    closed_candidate_loader.__doc__ = (
+        "Reconcile a candidate through the closed reviewed semantic loader."
+    )
+    return closed_candidate_loader
+
+
+def _create_closed_snapshot_verifier(
+    candidate_loader: Callable[..., PreparationSnapshot],
+) -> Callable[[PreparationSnapshot], None]:
+    """Close snapshot verification over the exact reviewed candidate loader."""
+
+    reviewed_verifier = _verify_preparation_snapshot_with_loader
+    reviewed_snapshot_type = PreparationSnapshot
+    reviewed_error_type = PreparationError
+
+    def closed_snapshot_verifier(snapshot: PreparationSnapshot) -> None:
+        reviewed_verifier(
+            snapshot,
+            candidate_loader=candidate_loader,
+            snapshot_type=reviewed_snapshot_type,
+            error_type=reviewed_error_type,
+        )
+
+    closed_snapshot_verifier.__name__ = "verify_preparation_snapshot"
+    closed_snapshot_verifier.__qualname__ = "verify_preparation_snapshot"
+    closed_snapshot_verifier.__doc__ = (
+        "Revalidate an exact factory product through the reviewed candidate loader."
+    )
+    return closed_snapshot_verifier
+
+
+def _stabilize_preparation_boundary_types(
+    previous_types: Mapping[str, type[object]] | None,
+) -> Mapping[str, type[object]]:
+    """Preserve public and reviewed preparation types across module reload."""
+
+    current_types = {
+        name: globals()[name] for name in _STABLE_PREPARATION_TYPE_NAMES
+    }
+    stable_types = previous_types
+    if stable_types is None:
+        stable_types = MappingProxyType(dict(current_types))
+    elif (
+        not isinstance(stable_types, Mapping)
+        or set(stable_types) != set(_STABLE_PREPARATION_TYPE_NAMES)
+        or any(
+            not isinstance(class_type, type)
+            or class_type.__module__ != __name__
+            or class_type.__name__ != name
+            for name, class_type in stable_types.items()
+        )
+    ):
+        raise RuntimeError("stable preparation boundary types are invalid")
+
+    replacements = {
+        id(current_types[name]): stable_types[name]
+        for name in _STABLE_PREPARATION_TYPE_NAMES
+    }
+
+    def stable_value(value: object) -> object:
+        return replacements.get(id(value), value)
+
+    for name, class_type in stable_types.items():
+        globals()[name] = class_type
+    for value in tuple(globals().values()):
+        if isinstance(value, FunctionType) and value.__module__ == __name__:
+            value.__defaults__ = tuple(
+                stable_value(default) for default in (value.__defaults__ or ())
+            )
+            value.__kwdefaults__ = {
+                name: stable_value(default)
+                for name, default in (value.__kwdefaults__ or {}).items()
+            }
+            value.__annotations__ = {
+                name: stable_value(annotation)
+                for name, annotation in value.__annotations__.items()
+            }
+
+    globals()["_STABLE_PREPARATION_BOUNDARY_TYPES"] = stable_types
+    module = sys.modules[__name__]
+    if previous_types is None:
+
+        class _StablePreparationModule(ModuleType):
+            def __getattribute__(self, name: str) -> object:
+                if name == "_STABLE_PREPARATION_BOUNDARY_TYPES":
+                    return stable_types
+                return ModuleType.__getattribute__(self, name)
+
+        module.__class__ = _StablePreparationModule
+    elif module._STABLE_PREPARATION_BOUNDARY_TYPES is not stable_types:
+        raise RuntimeError("stable preparation boundary types were replaced")
+    return stable_types
+
+
+_STABLE_PREPARATION_BOUNDARY_TYPES = _stabilize_preparation_boundary_types(
+    _previous_stable_preparation_types
+)
+del _previous_stable_preparation_types
+del _stabilize_preparation_boundary_types
 
 _reviewed_production_graph = _create_reviewed_production_graph()
+load_preparation_candidate = _create_closed_candidate_loader(
+    _reviewed_production_graph
+)
+verify_preparation_snapshot = _create_closed_snapshot_verifier(
+    load_preparation_candidate
+)
 prepare_and_publish_production = _create_closed_production_entrypoint(
     _reviewed_production_graph
 )
 del _reviewed_production_graph
 del _create_reviewed_production_graph
 del _create_closed_production_entrypoint
+del _create_closed_candidate_loader
+del _create_closed_snapshot_verifier
