@@ -6,8 +6,9 @@ import copy
 import hashlib
 import importlib.metadata
 import json
+import sys
 from dataclasses import dataclass, field
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import Any, Mapping
 
 import numpy as np
@@ -53,7 +54,7 @@ class ReplicateSeedPlan:
 
     def __post_init__(self) -> None:
         values = (self.model_seed, self.training_mask_seed, self.validation_mask_seed)
-        if any(not isinstance(value, int) or value < 0 for value in values):
+        if any(type(value) is not int or value < 0 for value in values):
             raise InitializationContractError("replicate seeds must be non-negative integers")
         if len(set(values)) != len(values):
             raise InitializationContractError(
@@ -369,3 +370,24 @@ def create_paired_initialization(
     object.__setattr__(paired, "models", MappingProxyType(models))
     object.__setattr__(paired, "manifest", manifest)
     return paired
+
+
+def _install_reviewed_dependency_capsule() -> None:
+    """Retain first-execution definitions independently of module aliases."""
+
+    reviewed_namespace = MappingProxyType(dict(globals()))
+    capsule = MappingProxyType(
+        {"module": __name__, "namespace": reviewed_namespace}
+    )
+
+    class _ReviewedDependencyModule(ModuleType):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_REVIEWED_DEPENDENCY_CAPSULE":
+                return capsule
+            return ModuleType.__getattribute__(self, name)
+
+    sys.modules[__name__].__class__ = _ReviewedDependencyModule
+
+
+_install_reviewed_dependency_capsule()
+del _install_reviewed_dependency_capsule

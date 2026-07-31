@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 from typing import TYPE_CHECKING, Literal
 
 from cslm.modeling.config import (
@@ -85,9 +86,11 @@ class OptimizerContract:
 @dataclass(frozen=True)
 class TrainingBudgetContract:
     optimizer_updates: int = 1_000
-    effective_batch_sequences: int = 64
-    microbatch_sequences: int = 16
-    gradient_accumulation_steps: int = 4
+    nominal_eligible_appearances: int = 746_000
+    eligible_frontier_per_update: int = 746
+    maximum_microbatch_sequences: int = 16
+    minimum_microbatches_per_update: int = 1
+    maximum_microbatches_per_update: int = 6
     maximum_sequence_length: int = MAX_SEQUENCE_LENGTH
     primary_checkpoint_update: int = 1_000
     diagnostic_checkpoint_updates: tuple[int, ...] = (0, 250, 500, 750)
@@ -97,28 +100,68 @@ class TrainingBudgetContract:
     def __post_init__(self) -> None:
         actual = (
             self.optimizer_updates,
-            self.effective_batch_sequences,
-            self.microbatch_sequences,
-            self.gradient_accumulation_steps,
+            self.nominal_eligible_appearances,
+            self.eligible_frontier_per_update,
+            self.maximum_microbatch_sequences,
+            self.minimum_microbatches_per_update,
+            self.maximum_microbatches_per_update,
             self.maximum_sequence_length,
             self.primary_checkpoint_update,
             self.diagnostic_checkpoint_updates,
             self.fixed_mask_validation_interval,
             self.condition_specific_early_stopping,
         )
-        expected = (1_000, 64, 16, 4, 128, 1_000, (0, 250, 500, 750), 100, False)
-        if actual != expected:
+        expected = (
+            1_000,
+            746_000,
+            746,
+            16,
+            1,
+            6,
+            128,
+            1_000,
+            (0, 250, 500, 750),
+            100,
+            False,
+        )
+        exact_integer_fields = (
+            self.optimizer_updates,
+            self.nominal_eligible_appearances,
+            self.eligible_frontier_per_update,
+            self.maximum_microbatch_sequences,
+            self.minimum_microbatches_per_update,
+            self.maximum_microbatches_per_update,
+            self.maximum_sequence_length,
+            self.primary_checkpoint_update,
+            self.fixed_mask_validation_interval,
+        )
+        if (
+            actual != expected
+            or any(type(value) is not int for value in exact_integer_fields)
+            or any(
+                type(value) is not int
+                for value in self.diagnostic_checkpoint_updates
+            )
+        ):
             raise ManifestContractError("training budget differs from the approved policy")
-        if self.microbatch_sequences * self.gradient_accumulation_steps != (
-            self.effective_batch_sequences
+        if self.optimizer_updates * self.eligible_frontier_per_update != (
+            self.nominal_eligible_appearances
         ):
             raise ManifestContractError(
-                "microbatch and accumulation do not make the effective batch"
+                "eligible update frontiers do not reach the nominal target"
             )
 
     @property
     def projected_sequence_exposures(self) -> int:
-        return self.optimizer_updates * self.effective_batch_sequences
+        """Legacy all-non-padding projection scale retained as a diagnostic only."""
+
+        return 64_000
+
+    @property
+    def microbatch_sequences(self) -> int:
+        """Compatibility alias for the maximum sequence count."""
+
+        return self.maximum_microbatch_sequences
 
 
 @dataclass(frozen=True)
@@ -168,6 +211,11 @@ class RunManifest:
     preparation_authorization_version: str
     preparation_identity_matches: bool
     preparation_manifest_sha256: str
+    training_schedule_plan_identity_sha256: str
+    training_schedule_identity_sha256: str
+    training_mask_seed: int
+    training_seed_audit_evidence_sha256: str
+    resume_policy_protocol: str
     validation_mask_record: ValidationMaskRecord
     validation_artifact_identities: tuple[tuple[str, str], ...]
     optimizer: OptimizerContract = APPROVED_OPTIMIZER
@@ -193,8 +241,11 @@ class RunManifest:
             self.expected_approved_preparation_checksum_record_sha256,
             self.verified_candidate_checksum_record_sha256,
             self.preparation_manifest_sha256,
+            self.training_schedule_plan_identity_sha256,
+            self.training_schedule_identity_sha256,
+            self.training_seed_audit_evidence_sha256,
         ):
-            if len(identity) != 64 or any(
+            if not isinstance(identity, str) or len(identity) != 64 or any(
                 character not in "0123456789abcdef" for character in identity
             ):
                 raise ManifestContractError("run manifest lacks a candidate checksum identity")
@@ -207,6 +258,15 @@ class RunManifest:
         ):
             raise ManifestContractError(
                 "externally expected and internally verified preparation identities differ"
+            )
+        if (
+            self.training_mask_seed
+            != self.initialization.seed_plan.training_mask_seed
+            or self.resume_policy_protocol
+            != "neu_option2_update_boundary_resume_v1"
+        ):
+            raise ManifestContractError(
+                "run training schedule seed or resume policy is invalid"
             )
         if not isinstance(self.validation_mask_record, ValidationMaskRecord):
             raise ManifestContractError("run lacks a derived validation mask record")
@@ -276,6 +336,15 @@ class PairedRunManifest:
             raise ManifestContractError(
                 "paired runs do not derive from one initialization manifest"
             )
+        if len(
+            {
+                run.training_schedule_identity_sha256
+                for run in self.runs
+            }
+        ) != len(CONDITIONS):
+            raise ManifestContractError(
+                "condition training schedule identities are not separated"
+            )
         shared_fields = (
             "device",
             "mps_repeatability_passed",
@@ -285,6 +354,10 @@ class PairedRunManifest:
             "preparation_authorization_version",
             "preparation_identity_matches",
             "preparation_manifest_sha256",
+            "training_schedule_plan_identity_sha256",
+            "training_mask_seed",
+            "training_seed_audit_evidence_sha256",
+            "resume_policy_protocol",
             "optimizer",
             "budget",
             "device_policy",
@@ -370,6 +443,12 @@ def create_paired_run_manifest(
         raise ManifestContractError("paired initialization manifest does not match its live models")
 
     runs: list[RunManifest] = []
+    seed_audit_evidence = {
+        seed: evidence
+        for _, seed, evidence in (
+            preparation_snapshot.training_seed_audit_evidence
+        )
+    }
     for condition in CONDITIONS:
         validation_failed = False
         try:
@@ -385,6 +464,24 @@ def create_paired_run_manifest(
             raise ManifestContractError("verified validation snapshot is unavailable")
 
         run = object.__new__(RunManifest)
+        schedule_identities = dict(
+            preparation_snapshot.schedule_identities_by_condition
+        )
+        if (
+            set(schedule_identities) != set(CONDITIONS)
+            or derived_initialization.seed_plan.training_mask_seed
+            not in {
+                seed
+                for _, seed in (
+                    preparation_snapshot.approved_training_mask_seeds
+                )
+            }
+            or derived_initialization.seed_plan.training_mask_seed
+            not in seed_audit_evidence
+        ):
+            raise ManifestContractError(
+                "verified training schedule snapshot is unavailable"
+            )
         values = {
             "condition": condition,
             "initialization": derived_initialization,
@@ -402,6 +499,21 @@ def create_paired_run_manifest(
             "preparation_identity_matches": True,
             "preparation_manifest_sha256": (
                 preparation_snapshot.preparation_manifest_sha256
+            ),
+            "training_schedule_plan_identity_sha256": (
+                preparation_snapshot.schedule_plan_identity_sha256
+            ),
+            "training_schedule_identity_sha256": (
+                schedule_identities[condition]
+            ),
+            "training_mask_seed": (
+                derived_initialization.seed_plan.training_mask_seed
+            ),
+            "training_seed_audit_evidence_sha256": seed_audit_evidence[
+                derived_initialization.seed_plan.training_mask_seed
+            ],
+            "resume_policy_protocol": (
+                preparation_snapshot.resume_policy_protocol
             ),
             "validation_mask_record": validation_snapshot.record,
             "validation_artifact_identities": (
@@ -429,3 +541,24 @@ def create_paired_run_manifest(
     object.__setattr__(paired, "runs", tuple(runs))
     paired._validate()
     return paired
+
+
+def _install_reviewed_dependency_capsule() -> None:
+    """Retain first-execution definitions independently of module aliases."""
+
+    reviewed_namespace = MappingProxyType(dict(globals()))
+    capsule = MappingProxyType(
+        {"module": __name__, "namespace": reviewed_namespace}
+    )
+
+    class _ReviewedDependencyModule(ModuleType):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_REVIEWED_DEPENDENCY_CAPSULE":
+                return capsule
+            return ModuleType.__getattribute__(self, name)
+
+    sys.modules[__name__].__class__ = _ReviewedDependencyModule
+
+
+_install_reviewed_dependency_capsule()
+del _install_reviewed_dependency_capsule

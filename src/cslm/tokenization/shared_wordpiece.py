@@ -16,6 +16,7 @@ import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType, ModuleType
 from typing import Any, Iterator, Mapping, Sequence
 
 PROTOCOL_ID = "shared_wordpiece_8k_v1"
@@ -535,3 +536,24 @@ def compare_builds(first: TokenizerBuild, second: TokenizerBuild) -> BuildCompar
         identical_tokenizer_json=(first.files["tokenizer.json"] == second.files["tokenizer.json"]),
         identical_checksums=first.file_sha256 == second.file_sha256,
     )
+
+
+def _install_reviewed_dependency_capsule() -> None:
+    """Retain first-execution definitions independently of module aliases."""
+
+    reviewed_namespace = MappingProxyType(dict(globals()))
+    capsule = MappingProxyType(
+        {"module": __name__, "namespace": reviewed_namespace}
+    )
+
+    class _ReviewedDependencyModule(ModuleType):
+        def __getattribute__(self, name: str) -> object:
+            if name == "_REVIEWED_DEPENDENCY_CAPSULE":
+                return capsule
+            return ModuleType.__getattribute__(self, name)
+
+    sys.modules[__name__].__class__ = _ReviewedDependencyModule
+
+
+_install_reviewed_dependency_capsule()
+del _install_reviewed_dependency_capsule

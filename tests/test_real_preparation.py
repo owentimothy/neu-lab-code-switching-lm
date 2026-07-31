@@ -30,6 +30,7 @@ from synthetic_preparation_support import (
 import cslm.modeling.preparation as preparation_module
 import cslm.tokenization.shared_wordpiece as shared_wordpiece_module
 from cslm.modeling.config import CONDITIONS
+from cslm.modeling.packing import SourceTokenRange
 from cslm.modeling.preparation import (
     APPROVED_PRIVATE_OUTPUT_ROOT,
     APPROVED_REAL_AGGREGATES,
@@ -37,7 +38,6 @@ from cslm.modeling.preparation import (
     SYNTHETIC_PREPARATION_PROTOCOL_VERSION,
     DecodedPreparationRow,
     ExactTokenizer,
-    ExposureAcceptanceError,
     MembershipPlan,
     PreparationError,
     PreparationManifest,
@@ -1756,10 +1756,10 @@ def test_punctuation_only_bangor_row_uses_existing_complete_preparation_pipeline
         )
 
 
-@pytest.mark.parametrize(("long_count", "candidate"), [(99, True), (100, False)])
-def test_exposure_exactly_one_percent_passes_and_just_over_fails(
+@pytest.mark.parametrize(("long_count", "difference"), [(99, 0.01), (100, 0.02)])
+def test_old_non_padding_exposure_is_diagnostic_only(
     long_count: int,
-    candidate: bool,
+    difference: float,
 ) -> None:
     rows = list(_synthetic_population())
     rows[0] = adapt_callhome_record(
@@ -1773,19 +1773,16 @@ def test_exposure_exactly_one_percent_passes_and_just_over_fails(
             count = long_count if text.endswith("boundary") else 98
             return SimpleNamespace(ids=[10] * count)
 
-    operation = lambda: prepare_synthetic_rows(  # noqa: E731
+    bundle = prepare_synthetic_rows(
         rows,
         tokenizer=make_synthetic_exact_tokenizer(VariableBackend()),
         hmac_key=b"k" * 32,
     )
-    if candidate:
-        bundle = operation()
-        assert bundle.exposure_audit.maximum_projected_exposure_difference_fraction == 0.01
-    else:
-        with pytest.raises(ExposureAcceptanceError) as caught:
-            operation()
-        assert caught.value.diagnostics["difference_fraction"] > 0.01
-        assert "row-" not in json.dumps(dict(caught.value.diagnostics))
+    assert (
+        bundle.exposure_audit.maximum_projected_exposure_difference_fraction
+        == difference
+    )
+    assert bundle.training_exposure_plan is None
 
 
 def test_hmac_namespaces_separate_sources_and_entity_types() -> None:
@@ -2232,6 +2229,42 @@ def test_training_token_mutation_is_rejected_after_all_outer_rehashing(
     os.chmod(path, 0o600)
     _rewrite_synthetic_outer_identities(fixture.output_root)
     with pytest.raises(PreparationError, match="token content binding"):
+        load_synthetic_preparation_candidate(fixture.output_root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("internal_cls", "extra_separator", "missing_terminal_separator"),
+)
+def test_candidate_array_special_layout_mutations_fail_after_outer_rehash(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    fixture = build_synthetic_preparation_fixture(tmp_path)
+    path = (
+        fixture.output_root
+        / "synthetic-artifacts/arrays/CsCont/train/input_ids.npy"
+    )
+    with path.open("rb") as handle:
+        inputs = np.load(handle, allow_pickle=False)
+    attention_path = (
+        fixture.output_root
+        / "synthetic-artifacts/arrays/CsCont/train/attention_mask.npy"
+    )
+    with attention_path.open("rb") as handle:
+        attention = np.load(handle, allow_pickle=False)
+    attended = int(attention[0].sum())
+    if mutation == "internal_cls":
+        inputs[0, 1] = 2
+    elif mutation == "extra_separator":
+        inputs[0, 1] = 3
+    else:
+        inputs[0, attended - 1] = 7
+    with path.open("wb") as handle:
+        np.save(handle, inputs, allow_pickle=False)
+    os.chmod(path, 0o600)
+    _rewrite_synthetic_outer_identities(fixture.output_root)
+    with pytest.raises(PreparationError):
         load_synthetic_preparation_candidate(fixture.output_root)
 
 
@@ -2999,6 +3032,9 @@ def _exercise_reviewed_ingestion_components(
 
 
 def test_production_lifecycle_static_call_graph_is_explicitly_captured() -> None:
+    assert "importlib.reload(" not in Path(preparation_module.__file__).read_text(
+        encoding="utf-8"
+    )
     (
         local_functions,
         local_classes,
@@ -3026,6 +3062,18 @@ def test_production_lifecycle_static_call_graph_is_explicitly_captured() -> None
         )
     }
     assert not preparation_module._PRODUCTION_LIFECYCLE_EXTERNAL_CALLABLE_ALLOWLIST
+    assert set(preparation_module._STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY) == {
+        preparation_module.__name__,
+        "cslm.modeling.contracts",
+        "cslm.modeling.eligibility",
+        "cslm.modeling.exposure",
+        "cslm.modeling.initialization",
+        "cslm.modeling.masking",
+        "cslm.modeling.packing",
+        "cslm.modeling.scheduling",
+        "cslm.modeling.training_contract",
+        "cslm.tokenization.shared_wordpiece",
+    }
 
     _, reviewed_prepare, reviewed_globals = _closed_reviewed_ingestion()
     assert reviewed_prepare is not preparation_module._prepare_production_inputs
@@ -3034,9 +3082,13 @@ def test_production_lifecycle_static_call_graph_is_explicitly_captured() -> None
         reviewed_globals[name].__module__: reviewed_globals[name].__globals__
         for name in (
             "audit_exposure",
+            "derive_mask_eligibility",
             "build_validation_mask_record",
+            "build_training_exposure_plan",
+            "loss_normalization_contract_payload",
             "pack_rows",
             "protocol_configuration",
+            "scheduling_contract_payload",
         )
     }
     for name in local_functions:
@@ -3067,7 +3119,9 @@ def test_production_lifecycle_static_call_graph_is_explicitly_captured() -> None
         for name in names:
             captured = captured_globals[name]
             exported = getattr(exported_module, name)
-            if issubclass(exported, BaseException):
+            if name in preparation_module._PRODUCTION_STABLE_PUBLIC_BOUNDARY_CLASSES[
+                module
+            ]:
                 assert captured is exported
             else:
                 assert captured is not exported
@@ -3228,6 +3282,487 @@ print(json.dumps({"first": first, "second": second}, sort_keys=True))
         == "production output root is not the approved private root"
     )
     assert not (tmp_path / "fresh-import-unapproved").exists()
+
+
+def test_reverse_import_preserves_every_public_boundary_type_and_old_entrypoint(
+    tmp_path: Path,
+) -> None:
+    root = Path(preparation_module.__file__).resolve().parents[3]
+    script = r"""
+import importlib
+from hashlib import sha256
+from pathlib import Path
+
+module_names = (
+    "cslm.modeling.contracts",
+    "cslm.modeling.eligibility",
+    "cslm.modeling.exposure",
+    "cslm.modeling.initialization",
+    "cslm.modeling.masking",
+    "cslm.modeling.packing",
+    "cslm.modeling.scheduling",
+    "cslm.modeling.training_contract",
+    "cslm.tokenization.shared_wordpiece",
+)
+modules = {name: importlib.import_module(name) for name in module_names}
+public_types = {
+    name: {
+        class_name: value
+        for class_name, value in vars(module).items()
+        if isinstance(value, type)
+        and value.__module__ == name
+        and not class_name.startswith("_")
+    }
+    for name, module in modules.items()
+}
+
+packing = modules["cslm.modeling.packing"]
+scheduling = modules["cslm.modeling.scheduling"]
+eligibility = modules["cslm.modeling.eligibility"]
+masking = modules["cslm.modeling.masking"]
+training_contract = modules["cslm.modeling.training_contract"]
+
+def packed(index):
+    lexical = tuple(5 + ((index + offset) % 7990) for offset in range(126))
+    return packing.PackedSequence(
+        condition="EnglishMono",
+        split="train",
+        input_ids=(2, *lexical, 3),
+        attention_mask=(1,) * 128,
+        token_type_ids=(0,) * 128,
+        provenance=(),
+        example_identity=sha256(f"reverse:{index}".encode()).hexdigest(),
+    )
+
+population = tuple(packed(index) for index in range(850))
+profile = eligibility.derive_mask_eligibility(
+    population[0].input_ids,
+    population[0].attention_mask,
+)
+masked = masking.mask_packed_sequence(
+    population[0],
+    seed=11729,
+    mode="train",
+    visit=0,
+)
+schedule = scheduling.build_condition_schedule(
+    population,
+    input_population_anchor_sha256="a" * 64,
+)
+audit = scheduling.audit_training_mask_seed(
+    schedule,
+    population,
+    plan_name="future_reverse",
+    seed=99173,
+)
+normalized = training_contract.normalize_complete_update_loss(
+    (
+        training_contract.MicrobatchLoss(3.0, 1),
+        training_contract.MicrobatchLoss(9.0, 3),
+    )
+)
+
+import cslm.modeling.preparation as preparation
+
+assert {
+    name: set(types)
+    for name, types in public_types.items()
+} == {
+    name: set(types)
+    for name, types in preparation._STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY.items()
+    if name != preparation.__name__
+}
+for name, types in public_types.items():
+    module = modules[name]
+    capsule = module._REVIEWED_DEPENDENCY_CAPSULE["namespace"]
+    for class_name, class_type in types.items():
+        assert getattr(module, class_name) is class_type
+        assert capsule[class_name] is class_type
+
+assert type(profile) is public_types[eligibility.__name__]["EligibilityProfile"]
+assert type(masked) is public_types[masking.__name__]["MaskedExample"]
+assert type(schedule) is public_types[scheduling.__name__]["ConditionSchedule"]
+assert type(audit) is public_types[scheduling.__name__]["SeedTargetAudit"]
+assert type(normalized) is public_types[training_contract.__name__][
+    "NormalizedUpdateLoss"
+]
+scheduling.validate_condition_schedule(schedule, population)
+
+preparation_types = {
+    name: getattr(preparation, name)
+    for name in preparation._STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY[
+        preparation.__name__
+    ]
+}
+old_error = preparation.PreparationError
+old_loader = preparation.load_preparation_candidate
+old_production = preparation.prepare_and_publish_production
+for _ in range(3):
+    importlib.reload(preparation)
+    assert all(
+        getattr(preparation, name) is class_type
+        for name, class_type in preparation_types.items()
+    )
+    assert all(
+        getattr(modules[name], class_name) is class_type
+        for name, types in public_types.items()
+        for class_name, class_type in types.items()
+    )
+
+calls = []
+def permissive(*args, **kwargs):
+    del args, kwargs
+    calls.append("fake")
+    return object()
+
+for name in (
+    "_load_preparation_candidate",
+    "_snapshot_relative_regular_file",
+    "_walk_private_tree",
+    "_strict_json_value",
+    "_regenerate_training_schedule",
+    "_validate_exposure_record",
+    "derive_mask_eligibility",
+    "validate_training_exposure_plan_payload",
+):
+    setattr(preparation, name, permissive)
+for module, names in (
+    (eligibility, ("derive_mask_eligibility",)),
+    (masking, ("mask_packed_sequence",)),
+    (packing, ("pack_rows",)),
+    (
+        scheduling,
+        (
+            "build_training_exposure_plan",
+            "audit_future_paired_training_mask_seed",
+            "validate_seed_authorization",
+            "validate_training_exposure_plan_payload",
+        ),
+    ),
+    (training_contract, ("normalize_complete_update_loss",)),
+):
+    for name in names:
+        setattr(module, name, permissive)
+
+invalid_root = Path.cwd() / "absent-candidate"
+invalid_key = Path.cwd() / "absent-key"
+for loader in (old_loader, preparation.load_preparation_candidate):
+    try:
+        loader(invalid_root, reconciliation_key_path=invalid_key)
+    except old_error as error:
+        assert type(error) is old_error
+        assert str(error) == "preparation candidate failed verification"
+    else:
+        raise AssertionError("empty candidate was accepted")
+
+paths = preparation.ProductionPreparationPaths(
+    Path.cwd() / "absent-callhome",
+    Path.cwd() / "absent-cscont",
+    Path.cwd() / "absent-tokenizer",
+    Path.cwd() / "absent-key",
+)
+for entrypoint in (old_production, preparation.prepare_and_publish_production):
+    try:
+        entrypoint(paths, Path.cwd() / "unapproved-output")
+    except old_error as error:
+        assert type(error) is old_error
+        assert str(error) == "production output root is not the approved private root"
+    else:
+        raise AssertionError("unapproved output root was accepted")
+assert not (Path.cwd() / "unapproved-output").exists()
+assert calls == []
+"""
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(root / "src")))
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_preimport_and_reload_option2_replacements_never_become_authority(
+    tmp_path: Path,
+) -> None:
+    root = Path(preparation_module.__file__).resolve().parents[3]
+    script = r"""
+import importlib
+import inspect
+import json
+
+import cslm.modeling.eligibility as eligibility
+import cslm.modeling.exposure as exposure
+import cslm.modeling.initialization as initialization
+import cslm.modeling.masking as masking
+import cslm.modeling.packing as packing
+import cslm.modeling.scheduling as scheduling
+import cslm.modeling.training_contract as training_contract
+import cslm.tokenization.shared_wordpiece as wordpiece
+
+calls = []
+
+def permissive(*args, **kwargs):
+    del args, kwargs
+    calls.append("fake")
+    return object()
+
+def patch_external_graph():
+    replacements = {
+        eligibility: ("derive_mask_eligibility",),
+        exposure: ("audit_exposure",),
+        masking: ("build_validation_mask_record", "mask_packed_sequence"),
+        packing: ("pack_rows",),
+        scheduling: (
+            "build_condition_schedule",
+            "build_training_exposure_plan",
+            "audit_training_mask_seed",
+            "audit_future_paired_training_mask_seed",
+            "validate_seed_authorization",
+            "validate_training_exposure_plan",
+            "validate_training_exposure_plan_payload",
+            "validate_canonical_real_reference",
+        ),
+        training_contract: (
+            "loss_normalization_contract_payload",
+            "normalize_complete_update_loss",
+        ),
+    }
+    for module, names in replacements.items():
+        for name in names:
+            setattr(module, name, permissive)
+    scheduling._APPROVED_REAL_APPEARANCES = {"synthetic": 1}
+    scheduling._APPROVED_REAL_ELIGIBLE_EXPOSURE = {"synthetic": 1}
+    scheduling._APPROVED_REAL_SELECTED_TARGETS = {"synthetic": {"synthetic": 1}}
+    scheduling.CONDITIONS = ("synthetic",)
+    scheduling.NOMINAL_ELIGIBLE_TARGET = 1
+    scheduling.OPTIMIZER_UPDATES = 1
+    scheduling.UPDATE_FRONTIER_INCREMENT = 1
+    initialization.TINY_SMOKE_SEED_PLANS = ()
+    initialization.SMALL_PILOT_SEED_PLANS = ()
+    for module in (
+        eligibility,
+        exposure,
+        initialization,
+        masking,
+        packing,
+        scheduling,
+        training_contract,
+        wordpiece,
+    ):
+        module._REVIEWED_DEPENDENCY_CAPSULE = {
+            "module": module.__name__,
+            "namespace": {},
+        }
+
+def assert_closed(preparation):
+    closed = inspect.getclosurevars(
+        preparation.prepare_and_publish_production
+    ).nonlocals
+    reviewed = closed["reviewed_prepare_production_inputs"].__globals__
+    schedule_globals = reviewed[
+        "build_training_exposure_plan"
+    ].__globals__
+    assert schedule_globals["mask_packed_sequence"] is not permissive
+    assert dict(schedule_globals["_APPROVED_REAL_APPEARANCES"]) == {
+        "EnglishMono": 59398,
+        "SpanishMono": 43001,
+        "MonoCont": 64387,
+        "CsCont": 7523,
+    }
+    assert dict(schedule_globals["_APPROVED_REAL_ELIGIBLE_EXPOSURE"]) == {
+        "EnglishMono": 746008,
+        "SpanishMono": 746002,
+        "MonoCont": 746015,
+        "CsCont": 746025,
+    }
+    assert schedule_globals["derive_mask_eligibility"] is not permissive
+    assert reviewed["audit_exposure"] is not permissive
+    assert reviewed["loss_normalization_contract_payload"] is not permissive
+    assert reviewed["CONDITIONS"] == (
+        "EnglishMono", "SpanishMono", "MonoCont", "CsCont"
+    )
+    assert schedule_globals["NOMINAL_ELIGIBLE_TARGET"] == 746000
+    assert schedule_globals["OPTIMIZER_UPDATES"] == 1000
+    assert schedule_globals["UPDATE_FRONTIER_INCREMENT"] == 746
+    assert [
+        seed for _, seed in reviewed["approved_training_mask_seed_plans"]()
+    ] == [11729, 281828, 324159, 171803]
+    return {
+        "local": sorted(preparation._PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS),
+        "external": {
+            name: sorted(values)
+            for name, values in (
+                preparation._PRODUCTION_LIFECYCLE_REVIEWED_EXTERNAL_FUNCTIONS.items()
+            )
+        },
+    }
+
+patch_external_graph()
+import cslm.modeling.preparation as preparation
+first = assert_closed(preparation)
+assert calls == []
+
+patch_external_graph()
+preparation._load_preparation_candidate = permissive
+preparation._regenerate_training_schedule = permissive
+preparation._validate_exposure_record = permissive
+reloaded = importlib.reload(preparation)
+second = assert_closed(reloaded)
+assert calls == []
+assert first == second
+print(json.dumps({"first": first, "second": second}, sort_keys=True))
+"""
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(root / "src")))
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["first"] == payload["second"]
+
+
+@pytest.mark.parametrize(
+    "mapping_names",
+    (
+        ("_APPROVED_REAL_APPEARANCES",),
+        ("_APPROVED_REAL_ELIGIBLE_EXPOSURE",),
+        ("_APPROVED_REAL_SELECTED_TARGETS",),
+        (
+            "_APPROVED_REAL_APPEARANCES",
+            "_APPROVED_REAL_ELIGIBLE_EXPOSURE",
+            "_APPROVED_REAL_SELECTED_TARGETS",
+        ),
+    ),
+)
+def test_canonical_reference_mappings_are_private_across_import_and_reload(
+    tmp_path: Path,
+    mapping_names: tuple[str, ...],
+) -> None:
+    root = Path(preparation_module.__file__).resolve().parents[3]
+    script = f"""
+import importlib
+import inspect
+import cslm.modeling.scheduling as scheduling
+
+names = {mapping_names!r}
+for name in names:
+    setattr(scheduling, name, {{"synthetic": 1}})
+import cslm.modeling.preparation as preparation
+
+def captured():
+    reviewed = inspect.getclosurevars(
+        preparation.prepare_and_publish_production
+    ).nonlocals["reviewed_prepare_production_inputs"].__globals__
+    return reviewed["build_training_exposure_plan"].__globals__
+
+first = captured()
+assert set(first["_APPROVED_REAL_APPEARANCES"]) == {{
+    "EnglishMono", "SpanishMono", "MonoCont", "CsCont"
+}}
+for name in names:
+    setattr(scheduling, name, {{"synthetic": 1}})
+preparation = importlib.reload(preparation)
+second = captured()
+assert set(second["_APPROVED_REAL_APPEARANCES"]) == {{
+    "EnglishMono", "SpanishMono", "MonoCont", "CsCont"
+}}
+assert set(second["_APPROVED_REAL_ELIGIBLE_EXPOSURE"]) == {{
+    "EnglishMono", "SpanishMono", "MonoCont", "CsCont"
+}}
+assert set(second["_APPROVED_REAL_SELECTED_TARGETS"]) == {{
+    "tiny_smoke_1", "small_1", "small_2", "small_3"
+}}
+"""
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONPATH"] = os.pathsep.join((str(root), str(root / "src")))
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+_CANDIDATE_LOADER_REPLACEMENT_PROBES = (
+    "_load_preparation_candidate",
+    "_snapshot_relative_regular_file",
+    "_walk_private_tree",
+    "_strict_json_value",
+    "_load_npy",
+    "_regenerate_training_schedule",
+    "derive_mask_eligibility",
+    "validate_training_exposure_plan_payload",
+    "_validate_exposure_record",
+)
+
+
+@pytest.mark.parametrize("binding", _CANDIDATE_LOADER_REPLACEMENT_PROBES)
+def test_public_candidate_loader_is_closed_over_semantic_validation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding: str,
+) -> None:
+    root = tmp_path / f"empty-{binding}"
+    root.mkdir()
+    os.chmod(root, 0o700)
+    key_path = _write_privacy_reconciliation_key(tmp_path / f"key-{binding}")
+    calls: list[str] = []
+    fabricated = object.__new__(PreparationSnapshot)
+
+    def permissive(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append(binding)
+        return fabricated
+
+    monkeypatch.setattr(preparation_module, binding, permissive)
+    with pytest.raises(PreparationError, match="failed verification"):
+        load_preparation_candidate(
+            root,
+            reconciliation_key_path=key_path,
+        )
+    assert calls == []
+
+
+def test_combined_candidate_loader_replacements_cannot_return_exact_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "empty-combined-loader"
+    root.mkdir()
+    os.chmod(root, 0o700)
+    key_path = _write_privacy_reconciliation_key(tmp_path / "combined-key")
+    calls: list[str] = []
+    fabricated = object.__new__(PreparationSnapshot)
+
+    def permissive(*args: object, **kwargs: object) -> object:
+        del args, kwargs
+        calls.append("fake")
+        return fabricated
+
+    for binding in _CANDIDATE_LOADER_REPLACEMENT_PROBES:
+        monkeypatch.setattr(preparation_module, binding, permissive)
+    with pytest.raises(PreparationError, match="failed verification"):
+        load_preparation_candidate(
+            root,
+            reconciliation_key_path=key_path,
+        )
+    assert calls == []
 
 
 def test_reviewed_publisher_resolves_late_runtime_and_loader_dependencies(
@@ -3624,9 +4159,14 @@ def test_every_reviewed_application_global_is_disconnected_one_at_a_time(
 ) -> None:
     _, _, reviewed_globals = _closed_reviewed_ingestion()
     external_roots = {
+        "cslm.modeling.eligibility": "derive_mask_eligibility",
         "cslm.modeling.exposure": "audit_exposure",
         "cslm.modeling.masking": "build_validation_mask_record",
         "cslm.modeling.packing": "pack_rows",
+        "cslm.modeling.scheduling": "build_training_exposure_plan",
+        "cslm.modeling.training_contract": (
+            "loss_normalization_contract_payload"
+        ),
         "cslm.tokenization.shared_wordpiece": "protocol_configuration",
     }
 
@@ -3708,10 +4248,16 @@ def test_combined_production_global_replacement_cannot_cross_boundary(
     for name in (
         "PackingRow",
         "audit_exposure",
+        "derive_mask_eligibility",
         "build_validation_mask_record",
+        "build_training_exposure_plan",
+        "loss_normalization_contract_payload",
         "mask_packed_sequence",
         "pack_rows",
         "protocol_configuration",
+        "scheduling_contract_payload",
+        "training_exposure_plan_payload",
+        "validate_training_exposure_plan_payload",
     ):
         monkeypatch.setattr(preparation_module, name, permissive_fake)
     for module, names in (
@@ -4070,6 +4616,28 @@ def test_validation_regeneration_binds_exact_example_order() -> None:
     attention[:, :5] = 1
     token_types = np.zeros((2, 128), dtype=np.uint8)
     identities = ("a" * 64, "b" * 64)
+    provenance = tuple(
+        (
+            SourceTokenRange(
+                condition="EnglishMono",
+                split="validation",
+                source="synthetic_source",
+                component="synthetic_component",
+                document_id=f"document-{index}",
+                conversation_id=f"conversation-{index}",
+                span_id=None,
+                row_id=f"row-{index}",
+                row_order=index,
+                language_shard=None,
+                source_row_token_count=3,
+                source_token_start=0,
+                source_token_end=3,
+                packed_token_start=1,
+                packed_token_end=4,
+            ),
+        )
+        for index in range(2)
+    )
     baseline = preparation_module._regenerate_fixed_validation(
         condition="EnglishMono",
         seed=approved_validation_seed_plans()[0][1],
@@ -4077,6 +4645,7 @@ def test_validation_regeneration_binds_exact_example_order() -> None:
         unmasked_input_ids=inputs,
         attention_mask=attention,
         token_type_ids=token_types,
+        provenance=provenance,
     )
     reordered = preparation_module._regenerate_fixed_validation(
         condition="EnglishMono",
@@ -4085,6 +4654,7 @@ def test_validation_regeneration_binds_exact_example_order() -> None:
         unmasked_input_ids=inputs,
         attention_mask=attention,
         token_type_ids=token_types,
+        provenance=provenance,
     )
     assert reordered[2].checksum_sha256 != baseline[2].checksum_sha256
 
