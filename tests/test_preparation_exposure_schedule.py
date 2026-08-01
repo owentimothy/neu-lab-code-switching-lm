@@ -661,6 +661,70 @@ print(json.dumps(_pass_permutation(
     assert outputs[0] == outputs[1]
 
 
+def test_python_hash_seed_does_not_change_complete_plan_identities() -> None:
+    root = Path(__file__).resolve().parents[1]
+    code = """
+import json
+from hashlib import sha256
+from types import SimpleNamespace
+import cslm.modeling.scheduling as scheduling
+from cslm.modeling.config import CONDITIONS
+from cslm.modeling.packing import PackedSequence
+
+scheduling.mask_packed_sequence = (
+    lambda *args, **kwargs: SimpleNamespace(selected_positions=(1,))
+)
+sequences = tuple(
+    PackedSequence(
+        condition,
+        "train",
+        (2, *(5 + ((index + offset) % 7990) for offset in range(126)), 3),
+        (1,) * 128,
+        (0,) * 128,
+        (),
+        sha256(f"identity:{condition}:{index}".encode()).hexdigest(),
+    )
+    for condition in CONDITIONS
+    for index in range(850)
+)
+plan = scheduling.build_training_exposure_plan(
+    sequences,
+    input_population_anchor_sha256="a" * 64,
+)
+print(json.dumps({
+    "schedule_set": plan.schedule_set_identity_sha256,
+    "plan": plan.identity_sha256,
+    "conditions": [
+        [
+            schedule.condition,
+            schedule.schedule_order_sha256,
+            schedule.update_plan_sha256,
+            schedule.identity_sha256,
+        ]
+        for schedule in plan.conditions
+    ],
+}, sort_keys=True))
+"""
+    outputs = []
+    for seed in ("1", "987654"):
+        environment = {
+            **os.environ,
+            "PYTHONHASHSEED": seed,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "PYTHONPATH": str(root / "src"),
+        }
+        outputs.append(
+            subprocess.run(
+                [sys.executable, "-c", code],
+                check=True,
+                capture_output=True,
+                text=True,
+                env=environment,
+            ).stdout
+        )
+    assert outputs[0] == outputs[1]
+
+
 def test_zero_eligible_sequences_are_covered_without_looping(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1122,6 +1186,228 @@ def test_synthetic_plan_cannot_match_canonical_real_reference(fast_plan) -> None
     plan, _, _ = fast_plan
     with pytest.raises(SchedulingContractError, match="reference"):
         validate_canonical_real_reference(plan)
+
+
+def test_authoritative_canonical_reference_tables_are_exact_and_current() -> None:
+    appearances = {
+        "EnglishMono": 59_424,
+        "SpanishMono": 42_990,
+        "MonoCont": 64_371,
+        "CsCont": 7_527,
+    }
+    exposures = {
+        "EnglishMono": 746_019,
+        "SpanishMono": 746_009,
+        "MonoCont": 746_003,
+        "CsCont": 746_017,
+    }
+    selected = {
+        "tiny_smoke_1": {
+            "EnglishMono": 112_163,
+            "SpanishMono": 112_124,
+            "MonoCont": 111_634,
+            "CsCont": 111_674,
+        },
+        "small_1": {
+            "EnglishMono": 112_327,
+            "SpanishMono": 111_570,
+            "MonoCont": 112_298,
+            "CsCont": 111_586,
+        },
+        "small_2": {
+            "EnglishMono": 111_405,
+            "SpanishMono": 111_484,
+            "MonoCont": 111_860,
+            "CsCont": 111_424,
+        },
+        "small_3": {
+            "EnglishMono": 112_277,
+            "SpanishMono": 112_036,
+            "MonoCont": 111_768,
+            "CsCont": 111_830,
+        },
+    }
+    population = {
+        "EnglishMono": {
+            "train_sequences": 9_750,
+            "validation_sequences": 537,
+            "population_eligible_exposure": 122_418,
+            "overshoot": 19,
+            "six_visits": 8_826,
+            "seven_visits": 924,
+        },
+        "SpanishMono": {
+            "train_sequences": 7_155,
+            "validation_sequences": 362,
+            "population_eligible_exposure": 124_172,
+            "overshoot": 9,
+            "six_visits": 7_095,
+            "seven_visits": 60,
+        },
+        "MonoCont": {
+            "train_sequences": 10_640,
+            "validation_sequences": 525,
+            "population_eligible_exposure": 123_271,
+            "overshoot": 3,
+            "six_visits": 10_109,
+            "seven_visits": 531,
+        },
+        "CsCont": {
+            "train_sequences": 1_247,
+            "validation_sequences": 67,
+            "population_eligible_exposure": 123_672,
+            "overshoot": 17,
+            "six_visits": 1_202,
+            "seven_visits": 45,
+        },
+    }
+    assert dict(scheduling_module._APPROVED_REAL_APPEARANCES) == appearances
+    assert dict(scheduling_module._APPROVED_REAL_ELIGIBLE_EXPOSURE) == exposures
+    assert {
+        name: dict(values)
+        for name, values in (
+            scheduling_module._APPROVED_REAL_SELECTED_TARGETS.items()
+        )
+    } == selected
+    assert {
+        condition: dict(values)
+        for condition, values in (
+            scheduling_module._APPROVED_REAL_POPULATION_EVIDENCE.items()
+        )
+    } == population
+    assert min(exposures.values()) == 746_003
+    assert max(exposures.values()) == 746_019
+    assert 746_019 / 746_003 == pytest.approx(1.0000214476349292)
+    assert exact_one_percent_pass(exposures.values()) is True
+    assert {
+        name: (min(values.values()), max(values.values()))
+        for name, values in selected.items()
+    } == {
+        "tiny_smoke_1": (111_634, 112_163),
+        "small_1": (111_570, 112_327),
+        "small_2": (111_405, 111_860),
+        "small_3": (111_768, 112_277),
+    }
+    assert all(
+        100 * max(values.values()) <= 101 * min(values.values())
+        and exact_one_percent_pass(values.values())
+        for values in selected.values()
+    )
+
+
+def test_canonical_reference_accepts_current_values_and_rejects_stale_values() -> None:
+    population = {
+        condition: dict(values)
+        for condition, values in (
+            scheduling_module._APPROVED_REAL_POPULATION_EVIDENCE.items()
+        )
+    }
+
+    def reference_plan(
+        appearances: dict[str, int],
+        exposures: dict[str, int],
+        selected: dict[str, dict[str, int]],
+    ) -> SimpleNamespace:
+        schedules = tuple(
+            SimpleNamespace(
+                condition=condition,
+                appearances=range(appearances[condition]),
+                actual_eligible_exposure=exposures[condition],
+                sequence_count=population[condition]["train_sequences"],
+                population_eligible_exposure=(
+                    population[condition]["population_eligible_exposure"]
+                ),
+                overshoot=population[condition]["overshoot"],
+                repetition_distribution=(
+                    (6, population[condition]["six_visits"]),
+                    (7, population[condition]["seven_visits"]),
+                ),
+            )
+            for condition in CONDITIONS
+        )
+        audits = tuple(
+            SimpleNamespace(
+                plan_name=plan_name,
+                actual_selected_targets_by_condition=tuple(
+                    (condition, values[condition]) for condition in CONDITIONS
+                ),
+                minimum_selected_targets=min(values.values()),
+                maximum_selected_targets=max(values.values()),
+                exact_ratio_numerator=max(values.values()),
+                exact_ratio_denominator=min(values.values()),
+                exact_one_percent_passed=True,
+            )
+            for plan_name, values in selected.items()
+        )
+        return SimpleNamespace(
+            conditions=schedules,
+            seed_audits=audits,
+            minimum_eligible_exposure=min(exposures.values()),
+            maximum_eligible_exposure=max(exposures.values()),
+            exact_ratio_numerator=max(exposures.values()),
+            exact_ratio_denominator=min(exposures.values()),
+            exact_one_percent_passed=True,
+        )
+
+    current_appearances = dict(scheduling_module._APPROVED_REAL_APPEARANCES)
+    current_exposures = dict(
+        scheduling_module._APPROVED_REAL_ELIGIBLE_EXPOSURE
+    )
+    current_selected = {
+        name: dict(values)
+        for name, values in (
+            scheduling_module._APPROVED_REAL_SELECTED_TARGETS.items()
+        )
+    }
+    validate_canonical_real_reference(
+        reference_plan(
+            current_appearances,
+            current_exposures,
+            current_selected,
+        )
+    )
+    stale = reference_plan(
+        {
+            "EnglishMono": 59_398,
+            "SpanishMono": 43_001,
+            "MonoCont": 64_387,
+            "CsCont": 7_523,
+        },
+        {
+            "EnglishMono": 746_008,
+            "SpanishMono": 746_002,
+            "MonoCont": 746_015,
+            "CsCont": 746_025,
+        },
+        {
+            "tiny_smoke_1": {
+                "EnglishMono": 112_226,
+                "SpanishMono": 112_126,
+                "MonoCont": 111_587,
+                "CsCont": 111_713,
+            },
+            "small_1": {
+                "EnglishMono": 112_424,
+                "SpanishMono": 111_568,
+                "MonoCont": 112_273,
+                "CsCont": 111_570,
+            },
+            "small_2": {
+                "EnglishMono": 111_400,
+                "SpanishMono": 111_472,
+                "MonoCont": 111_828,
+                "CsCont": 111_467,
+            },
+            "small_3": {
+                "EnglishMono": 112_252,
+                "SpanishMono": 112_042,
+                "MonoCont": 111_748,
+                "CsCont": 111_824,
+            },
+        },
+    )
+    with pytest.raises(SchedulingContractError, match="reference"):
+        validate_canonical_real_reference(stale)
 
 
 def test_real_masker_produces_nonzero_targets_for_every_complete_update() -> None:
