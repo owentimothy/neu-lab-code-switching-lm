@@ -43,52 +43,96 @@ _SHA256_CHARACTERS = frozenset("0123456789abcdef")
 _SPECIAL_TOKEN_IDS = approved_special_token_mapping()
 _APPROVED_REAL_APPEARANCES = MappingProxyType(
     {
-        "EnglishMono": 59_398,
-        "SpanishMono": 43_001,
-        "MonoCont": 64_387,
-        "CsCont": 7_523,
+        "EnglishMono": 59_424,
+        "SpanishMono": 42_990,
+        "MonoCont": 64_371,
+        "CsCont": 7_527,
     }
 )
 _APPROVED_REAL_ELIGIBLE_EXPOSURE = MappingProxyType(
     {
-        "EnglishMono": 746_008,
-        "SpanishMono": 746_002,
-        "MonoCont": 746_015,
-        "CsCont": 746_025,
+        "EnglishMono": 746_019,
+        "SpanishMono": 746_009,
+        "MonoCont": 746_003,
+        "CsCont": 746_017,
     }
 )
 _APPROVED_REAL_SELECTED_TARGETS = MappingProxyType(
     {
         "tiny_smoke_1": MappingProxyType(
             {
-                "EnglishMono": 112_226,
-                "SpanishMono": 112_126,
-                "MonoCont": 111_587,
-                "CsCont": 111_713,
+                "EnglishMono": 112_163,
+                "SpanishMono": 112_124,
+                "MonoCont": 111_634,
+                "CsCont": 111_674,
             }
         ),
         "small_1": MappingProxyType(
             {
-                "EnglishMono": 112_424,
-                "SpanishMono": 111_568,
-                "MonoCont": 112_273,
-                "CsCont": 111_570,
+                "EnglishMono": 112_327,
+                "SpanishMono": 111_570,
+                "MonoCont": 112_298,
+                "CsCont": 111_586,
             }
         ),
         "small_2": MappingProxyType(
             {
-                "EnglishMono": 111_400,
-                "SpanishMono": 111_472,
-                "MonoCont": 111_828,
-                "CsCont": 111_467,
+                "EnglishMono": 111_405,
+                "SpanishMono": 111_484,
+                "MonoCont": 111_860,
+                "CsCont": 111_424,
             }
         ),
         "small_3": MappingProxyType(
             {
-                "EnglishMono": 112_252,
-                "SpanishMono": 112_042,
-                "MonoCont": 111_748,
-                "CsCont": 111_824,
+                "EnglishMono": 112_277,
+                "SpanishMono": 112_036,
+                "MonoCont": 111_768,
+                "CsCont": 111_830,
+            }
+        ),
+    }
+)
+_APPROVED_REAL_POPULATION_EVIDENCE = MappingProxyType(
+    {
+        "EnglishMono": MappingProxyType(
+            {
+                "train_sequences": 9_750,
+                "validation_sequences": 537,
+                "population_eligible_exposure": 122_418,
+                "overshoot": 19,
+                "six_visits": 8_826,
+                "seven_visits": 924,
+            }
+        ),
+        "SpanishMono": MappingProxyType(
+            {
+                "train_sequences": 7_155,
+                "validation_sequences": 362,
+                "population_eligible_exposure": 124_172,
+                "overshoot": 9,
+                "six_visits": 7_095,
+                "seven_visits": 60,
+            }
+        ),
+        "MonoCont": MappingProxyType(
+            {
+                "train_sequences": 10_640,
+                "validation_sequences": 525,
+                "population_eligible_exposure": 123_271,
+                "overshoot": 3,
+                "six_visits": 10_109,
+                "seven_visits": 531,
+            }
+        ),
+        "CsCont": MappingProxyType(
+            {
+                "train_sequences": 1_247,
+                "validation_sequences": 67,
+                "population_eligible_exposure": 123_672,
+                "overshoot": 17,
+                "six_visits": 1_202,
+                "seven_visits": 45,
             }
         ),
     }
@@ -1285,9 +1329,52 @@ def validate_canonical_real_reference(plan: TrainingExposurePlan) -> None:
         audit.plan_name: dict(audit.actual_selected_targets_by_condition)
         for audit in plan.seed_audits
     }
+    population_evidence = {
+        schedule.condition: {
+            "train_sequences": schedule.sequence_count,
+            "population_eligible_exposure": schedule.population_eligible_exposure,
+            "overshoot": schedule.overshoot,
+            "six_visits": dict(schedule.repetition_distribution).get(6, 0),
+            "seven_visits": dict(schedule.repetition_distribution).get(7, 0),
+        }
+        for schedule in plan.conditions
+    }
+    expected_population_evidence = {
+        condition: {
+            key: value
+            for key, value in evidence.items()
+            if key != "validation_sequences"
+        }
+        for condition, evidence in _APPROVED_REAL_POPULATION_EVIDENCE.items()
+    }
+    exposure_values = tuple(exposures.values())
+    primary_comparison_matches = bool(exposure_values) and (
+        plan.minimum_eligible_exposure == min(exposure_values)
+        and plan.maximum_eligible_exposure == max(exposure_values)
+        and plan.exact_ratio_numerator == max(exposure_values)
+        and plan.exact_ratio_denominator == min(exposure_values)
+        and plan.exact_one_percent_passed is True
+        and exact_one_percent_pass(exposure_values)
+    )
+    seed_comparisons_match = len(selected) == len(plan.seed_audits)
+    for audit in plan.seed_audits:
+        values = tuple(dict(audit.actual_selected_targets_by_condition).values())
+        seed_comparisons_match = seed_comparisons_match and bool(values) and (
+            audit.minimum_selected_targets == min(values)
+            and audit.maximum_selected_targets == max(values)
+            and audit.exact_ratio_numerator == max(values)
+            and audit.exact_ratio_denominator == min(values)
+            and audit.exact_one_percent_passed is True
+            and exact_one_percent_pass(values)
+        )
     if (
-        appearances != dict(_APPROVED_REAL_APPEARANCES)
+        len(appearances) != len(plan.conditions)
+        or len(selected) != len(plan.seed_audits)
+        or appearances != dict(_APPROVED_REAL_APPEARANCES)
         or exposures != dict(_APPROVED_REAL_ELIGIBLE_EXPOSURE)
+        or population_evidence != expected_population_evidence
+        or not primary_comparison_matches
+        or not seed_comparisons_match
         or selected
         != {
             name: dict(values)

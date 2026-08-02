@@ -159,6 +159,9 @@ RESUME_POLICY_PROTOCOL = _reviewed_scheduling["RESUME_POLICY_PROTOCOL"]
 SCHEDULE_PROTOCOL = _reviewed_scheduling["SCHEDULE_PROTOCOL"]
 SchedulingContractError = _reviewed_scheduling["SchedulingContractError"]
 TrainingExposurePlan = _reviewed_scheduling["TrainingExposurePlan"]
+_APPROVED_REAL_POPULATION_EVIDENCE = _reviewed_scheduling[
+    "_APPROVED_REAL_POPULATION_EVIDENCE"
+]
 approved_training_mask_seed_plans = _reviewed_scheduling[
     "approved_training_mask_seed_plans"
 ]
@@ -3416,6 +3419,72 @@ def approved_validation_seed_plans() -> tuple[tuple[str, int], ...]:
     return tuple(plans)
 
 
+def _select_training_packed_sequences(
+    sequences: Iterable[PackedSequence],
+) -> tuple[PackedSequence, ...]:
+    """Select every validated train sequence without rebuilding or renumbering it."""
+
+    material = tuple(sequences)
+    population_counts = Counter(
+        (sequence.condition, sequence.split)
+        for sequence in material
+        if type(sequence) is PackedSequence
+    )
+    _validate_canonical_packed_population_counts(population_counts)
+    if (
+        not material
+        or any(
+            type(sequence) is not PackedSequence
+            or sequence.condition not in CONDITIONS
+            or sequence.split not in {"train", "validation"}
+            for sequence in material
+        )
+        or len({sequence.example_identity for sequence in material})
+        != len(material)
+    ):
+        raise PreparationError("packed training selection is invalid")
+    training_indexes = tuple(
+        index
+        for index, sequence in enumerate(material)
+        if sequence.split == "train"
+    )
+    training = tuple(material[index] for index in training_indexes)
+    if (
+        not training
+        or {sequence.condition for sequence in training} != set(CONDITIONS)
+        or len(training)
+        != sum(sequence.split == "train" for sequence in material)
+        or any(
+            selected is not material[index]
+            for index, selected in zip(
+                training_indexes,
+                training,
+                strict=True,
+            )
+        )
+    ):
+        raise PreparationError("packed training population is incomplete")
+    return training
+
+
+def _validate_canonical_packed_population_counts(
+    population_counts: Mapping[tuple[str, str], int],
+) -> None:
+    """Require the reviewed complete packed population for both authorized splits."""
+
+    expected_population_counts = {
+        (condition, split): evidence[f"{split}_sequences"]
+        for condition, evidence in _APPROVED_REAL_POPULATION_EVIDENCE.items()
+        for split in ("train", "validation")
+    }
+    if (
+        not isinstance(population_counts, Mapping)
+        or any(type(value) is not int for value in population_counts.values())
+        or dict(population_counts) != expected_population_counts
+    ):
+        raise PreparationError("packed population counts differ from canonical references")
+
+
 def materialize_fixed_validation(
     sequences: Iterable[PackedSequence],
 ) -> tuple[ValidationMaterial, ...]:
@@ -3607,12 +3676,15 @@ def _prepare_tokenized_rows(
     if input_anchor is not None:
         schedule_failed = False
         try:
+            training_sequences = _select_training_packed_sequences(
+                packing.sequences
+            )
             training_exposure_plan = build_training_exposure_plan(
-                packing.sequences,
+                training_sequences,
                 input_population_anchor_sha256=input_anchor.identity_sha256,
             )
             validate_canonical_real_reference(training_exposure_plan)
-        except SchedulingContractError:
+        except (PreparationError, SchedulingContractError):
             schedule_failed = True
         if schedule_failed:
             _raise_fixed("mask-eligible exposure schedule failed")
@@ -5191,8 +5263,11 @@ def _validate_bundle_for_publication(
     schedule_failed = False
     repeated_schedule: TrainingExposurePlan | None = None
     try:
+        training_sequences = _select_training_packed_sequences(
+            bundle.packing.sequences
+        )
         repeated_schedule = build_training_exposure_plan(
-            bundle.packing.sequences,
+            training_sequences,
             input_population_anchor_sha256=bundle.input_anchor.identity_sha256,
         )
         validate_canonical_real_reference(repeated_schedule)
@@ -6223,6 +6298,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_serialized_membership_payload",
         "_sha256_bytes",
         "_sha256_file",
+        "_select_training_packed_sequences",
         "_snapshot_absolute_regular_file",
         "_snapshot_relative_jsonl_lines",
         "_snapshot_relative_regular_file",
@@ -6238,6 +6314,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_validate_and_project_bangor_v1_row",
         "_validate_bundle_for_publication",
         "_validate_cross_condition_reuse",
+        "_validate_canonical_packed_population_counts",
         "_validate_exposure_record",
         "_validate_historical_identity_record",
         "_validate_runtime_record",
@@ -8496,6 +8573,13 @@ def _load_preparation_candidate(
     training_identities_payload = _strict_json_value(
         snapshots["schedules/train_sequence_identities.json"].content,
         category="candidate training identities are malformed",
+    )
+    _validate_canonical_packed_population_counts(
+        {
+            (condition, split): packed_arrays[(condition, split)][0].shape[0]
+            for condition in CONDITIONS
+            for split in ("train", "validation")
+        }
     )
     regenerated_plan, training_identities = _regenerate_training_schedule(
         identities_payload=training_identities_payload,

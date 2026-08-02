@@ -30,7 +30,7 @@ from synthetic_preparation_support import (
 import cslm.modeling.preparation as preparation_module
 import cslm.tokenization.shared_wordpiece as shared_wordpiece_module
 from cslm.modeling.config import CONDITIONS
-from cslm.modeling.packing import SourceTokenRange
+from cslm.modeling.packing import PackedSequence, SourceTokenRange
 from cslm.modeling.preparation import (
     APPROVED_PRIVATE_OUTPUT_ROOT,
     APPROVED_REAL_AGGREGATES,
@@ -39,6 +39,7 @@ from cslm.modeling.preparation import (
     DecodedPreparationRow,
     ExactTokenizer,
     MembershipPlan,
+    PreparationBundle,
     PreparationError,
     PreparationManifest,
     PreparationSnapshot,
@@ -3421,6 +3422,8 @@ for name in (
     "_walk_private_tree",
     "_strict_json_value",
     "_regenerate_training_schedule",
+    "_select_training_packed_sequences",
+    "_validate_canonical_packed_population_counts",
     "_validate_exposure_record",
     "derive_mask_eligibility",
     "validate_training_exposure_plan_payload",
@@ -3538,6 +3541,9 @@ def patch_external_graph():
     scheduling._APPROVED_REAL_APPEARANCES = {"synthetic": 1}
     scheduling._APPROVED_REAL_ELIGIBLE_EXPOSURE = {"synthetic": 1}
     scheduling._APPROVED_REAL_SELECTED_TARGETS = {"synthetic": {"synthetic": 1}}
+    scheduling._APPROVED_REAL_POPULATION_EVIDENCE = {
+        "synthetic": {"synthetic": 1}
+    }
     scheduling.CONDITIONS = ("synthetic",)
     scheduling.NOMINAL_ELIGIBLE_TARGET = 1
     scheduling.OPTIMIZER_UPDATES = 1
@@ -3567,19 +3573,68 @@ def assert_closed(preparation):
     schedule_globals = reviewed[
         "build_training_exposure_plan"
     ].__globals__
+    selection_globals = reviewed[
+        "_select_training_packed_sequences"
+    ].__globals__
+    assert selection_globals is reviewed
+    assert reviewed["_select_training_packed_sequences"] is not permissive
+    assert reviewed["_validate_canonical_packed_population_counts"] is not permissive
     assert schedule_globals["mask_packed_sequence"] is not permissive
     assert dict(schedule_globals["_APPROVED_REAL_APPEARANCES"]) == {
-        "EnglishMono": 59398,
-        "SpanishMono": 43001,
-        "MonoCont": 64387,
-        "CsCont": 7523,
+        "EnglishMono": 59424,
+        "SpanishMono": 42990,
+        "MonoCont": 64371,
+        "CsCont": 7527,
     }
     assert dict(schedule_globals["_APPROVED_REAL_ELIGIBLE_EXPOSURE"]) == {
-        "EnglishMono": 746008,
-        "SpanishMono": 746002,
-        "MonoCont": 746015,
-        "CsCont": 746025,
+        "EnglishMono": 746019,
+        "SpanishMono": 746009,
+        "MonoCont": 746003,
+        "CsCont": 746017,
     }
+    assert {
+        condition: dict(values)
+        for condition, values in schedule_globals[
+            "_APPROVED_REAL_POPULATION_EVIDENCE"
+        ].items()
+    } == {
+        "EnglishMono": {
+            "train_sequences": 9750,
+            "validation_sequences": 537,
+            "population_eligible_exposure": 122418,
+            "overshoot": 19,
+            "six_visits": 8826,
+            "seven_visits": 924,
+        },
+        "SpanishMono": {
+            "train_sequences": 7155,
+            "validation_sequences": 362,
+            "population_eligible_exposure": 124172,
+            "overshoot": 9,
+            "six_visits": 7095,
+            "seven_visits": 60,
+        },
+        "MonoCont": {
+            "train_sequences": 10640,
+            "validation_sequences": 525,
+            "population_eligible_exposure": 123271,
+            "overshoot": 3,
+            "six_visits": 10109,
+            "seven_visits": 531,
+        },
+        "CsCont": {
+            "train_sequences": 1247,
+            "validation_sequences": 67,
+            "population_eligible_exposure": 123672,
+            "overshoot": 17,
+            "six_visits": 1202,
+            "seven_visits": 45,
+        },
+    }
+    assert (
+        reviewed["_APPROVED_REAL_POPULATION_EVIDENCE"]
+        is schedule_globals["_APPROVED_REAL_POPULATION_EVIDENCE"]
+    )
     assert schedule_globals["derive_mask_eligibility"] is not permissive
     assert reviewed["audit_exposure"] is not permissive
     assert reviewed["loss_normalization_contract_payload"] is not permissive
@@ -3610,6 +3665,9 @@ assert calls == []
 patch_external_graph()
 preparation._load_preparation_candidate = permissive
 preparation._regenerate_training_schedule = permissive
+preparation._select_training_packed_sequences = permissive
+preparation._validate_canonical_packed_population_counts = permissive
+preparation._APPROVED_REAL_POPULATION_EVIDENCE = {"synthetic": 1}
 preparation._validate_exposure_record = permissive
 reloaded = importlib.reload(preparation)
 second = assert_closed(reloaded)
@@ -3639,10 +3697,12 @@ print(json.dumps({"first": first, "second": second}, sort_keys=True))
         ("_APPROVED_REAL_APPEARANCES",),
         ("_APPROVED_REAL_ELIGIBLE_EXPOSURE",),
         ("_APPROVED_REAL_SELECTED_TARGETS",),
+        ("_APPROVED_REAL_POPULATION_EVIDENCE",),
         (
             "_APPROVED_REAL_APPEARANCES",
             "_APPROVED_REAL_ELIGIBLE_EXPOSURE",
             "_APPROVED_REAL_SELECTED_TARGETS",
+            "_APPROVED_REAL_POPULATION_EVIDENCE",
         ),
     ),
 )
@@ -3673,6 +3733,8 @@ assert set(first["_APPROVED_REAL_APPEARANCES"]) == {{
 }}
 for name in names:
     setattr(scheduling, name, {{"synthetic": 1}})
+    if hasattr(preparation, name):
+        setattr(preparation, name, {{"synthetic": 1}})
 preparation = importlib.reload(preparation)
 second = captured()
 assert set(second["_APPROVED_REAL_APPEARANCES"]) == {{
@@ -3683,6 +3745,9 @@ assert set(second["_APPROVED_REAL_ELIGIBLE_EXPOSURE"]) == {{
 }}
 assert set(second["_APPROVED_REAL_SELECTED_TARGETS"]) == {{
     "tiny_smoke_1", "small_1", "small_2", "small_3"
+}}
+assert set(second["_APPROVED_REAL_POPULATION_EVIDENCE"]) == {{
+    "EnglishMono", "SpanishMono", "MonoCont", "CsCont"
 }}
 """
     environment = os.environ.copy()
@@ -3706,6 +3771,8 @@ _CANDIDATE_LOADER_REPLACEMENT_PROBES = (
     "_strict_json_value",
     "_load_npy",
     "_regenerate_training_schedule",
+    "_select_training_packed_sequences",
+    "_validate_canonical_packed_population_counts",
     "derive_mask_eligibility",
     "validate_training_exposure_plan_payload",
     "_validate_exposure_record",
@@ -3847,6 +3914,345 @@ def _private_synthetic_input_anchor(
         object.__setattr__(anchor, name, value)
     anchor._validate()
     return anchor
+
+
+def _synthetic_packed_population_evidence(
+    sequences: tuple[PackedSequence, ...],
+) -> MappingProxyType:
+    counts = {
+        condition: {
+            split: sum(
+                sequence.condition == condition and sequence.split == split
+                for sequence in sequences
+            )
+            for split in ("train", "validation")
+        }
+        for condition in CONDITIONS
+    }
+    return MappingProxyType(
+        {
+            condition: MappingProxyType(
+                {
+                    "train_sequences": split_counts["train"],
+                    "validation_sequences": split_counts["validation"],
+                }
+            )
+            for condition, split_counts in counts.items()
+        }
+    )
+
+
+def _unsafe_packed_copy(
+    sequence: PackedSequence,
+    **changes: object,
+) -> PackedSequence:
+    result = object.__new__(PackedSequence)
+    for name in PackedSequence.__dataclass_fields__:
+        object.__setattr__(
+            result,
+            name,
+            changes.get(name, getattr(sequence, name)),
+        )
+    return result
+
+
+def test_production_and_publication_select_exact_train_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = build_synthetic_preparation_fixture(tmp_path / "source")
+    _, _, reviewed_globals = _closed_reviewed_ingestion()
+    anchor = _private_synthetic_input_anchor(reviewed_globals)
+    expected_packing = fixture.bundle.packing.sequences
+    expected_training = tuple(
+        sequence for sequence in expected_packing if sequence.split == "train"
+    )
+    expected_validation = tuple(
+        sequence
+        for sequence in expected_packing
+        if sequence.split == "validation"
+    )
+    population_evidence = _synthetic_packed_population_evidence(
+        expected_packing
+    )
+    aggregates = {
+        key: (
+            sum(row.block_key == key for row in fixture.bundle.rows),
+            sum(
+                row.lexical_token_count
+                for row in fixture.bundle.rows
+                if row.block_key == key
+            ),
+        )
+        for key in approved_block_order()
+    }
+    plan = SimpleNamespace(
+        conditions=tuple(
+            SimpleNamespace(
+                condition=condition,
+                sequence_count=sum(
+                    sequence.condition == condition
+                    for sequence in expected_training
+                ),
+            )
+            for condition in CONDITIONS
+        )
+    )
+    schedule_calls: list[tuple[PackedSequence, ...]] = []
+    reference_calls: list[object] = []
+    permissive_calls: list[str] = []
+
+    def schedule_builder(
+        sequences: object,
+        *,
+        input_population_anchor_sha256: str,
+    ) -> object:
+        material = tuple(sequences)
+        assert input_population_anchor_sha256 == anchor.identity_sha256
+        assert all(sequence.split == "train" for sequence in material)
+        schedule_calls.append(material)
+        return plan
+
+    def reference_validator(value: object) -> None:
+        assert value is plan
+        reference_calls.append(value)
+
+    def permissive_selector(
+        *args: object,
+        **kwargs: object,
+    ) -> tuple[PackedSequence, ...]:
+        del args, kwargs
+        permissive_calls.append("public-selector")
+        return ()
+
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_APPROVED_REAL_POPULATION_EVIDENCE",
+        population_evidence,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_aggregate_for_block",
+        lambda key: aggregates[key],
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "build_training_exposure_plan",
+        schedule_builder,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "validate_canonical_real_reference",
+        reference_validator,
+    )
+    monkeypatch.setattr(
+        preparation_module,
+        "_select_training_packed_sequences",
+        permissive_selector,
+    )
+    monkeypatch.setattr(
+        preparation_module,
+        "_validate_canonical_packed_population_counts",
+        permissive_selector,
+    )
+
+    prepared = reviewed_globals["_prepare_tokenized_rows"](
+        tuple(fixture.bundle.rows),
+        input_anchor=anchor,
+        tokenizer=synthetic_exact_tokenizer(),
+        hmac_key=fixture.hmac_key,
+        protocol_version=preparation_module.PREPARATION_PROTOCOL_VERSION,
+    )
+    assert type(prepared) is PreparationBundle
+    assert prepared.packing.sequences == expected_packing
+    assert tuple(
+        sequence
+        for sequence in prepared.packing.sequences
+        if sequence.split == "validation"
+    ) == expected_validation
+    assert {
+        material.condition: material.example_identities
+        for material in prepared.validation
+        if material.plan_name == "tiny_smoke_1"
+    } == {
+        condition: tuple(
+            sequence.example_identity
+            for sequence in expected_validation
+            if sequence.condition == condition
+        )
+        for condition in CONDITIONS
+    }
+
+    publication_values = dict(vars(prepared))
+    publication_values["tokenizer_historical_build_identity"] = {}
+    publication = PreparationBundle(**publication_values)
+    reviewed_globals["_validate_bundle_for_publication"](
+        publication,
+        hmac_key=fixture.hmac_key,
+    )
+
+    assert len(schedule_calls) == 2
+    assert len(reference_calls) == 2
+    assert permissive_calls == []
+    for selected in schedule_calls:
+        assert selected == expected_training
+        assert len(selected) == sum(
+            sequence.split == "train" for sequence in expected_packing
+        )
+        expected_indexes = tuple(
+            index
+            for index, sequence in enumerate(expected_packing)
+            if sequence.split == "train"
+        )
+        assert all(
+            sequence is prepared.packing.sequences[index]
+            for index, sequence in zip(
+                expected_indexes,
+                selected,
+                strict=True,
+            )
+        )
+        assert tuple(
+            sequence.example_identity for sequence in selected
+        ) == tuple(
+            expected_packing[index].example_identity
+            for index in expected_indexes
+        )
+        assert {
+            sequence.condition for sequence in selected
+        } == set(CONDITIONS)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "unknown_split",
+        "test_split",
+        "missing_condition",
+        "fifth_condition",
+        "duplicate_within_condition",
+        "duplicate_across_conditions",
+        "omitted_training_sequence",
+    ),
+)
+def test_train_selection_rejects_incomplete_or_malformed_population(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    fixture = build_synthetic_preparation_fixture(tmp_path / "source")
+    material = list(fixture.bundle.packing.sequences)
+    evidence = _synthetic_packed_population_evidence(tuple(material))
+    monkeypatch.setattr(
+        preparation_module,
+        "_APPROVED_REAL_POPULATION_EVIDENCE",
+        evidence,
+    )
+    train_indexes = [
+        index for index, sequence in enumerate(material) if sequence.split == "train"
+    ]
+    if mutation in {"unknown_split", "test_split"}:
+        index = next(
+            index
+            for index, sequence in enumerate(material)
+            if sequence.split == "validation"
+        )
+        material[index] = _unsafe_packed_copy(
+            material[index],
+            split="unknown" if mutation == "unknown_split" else "test",
+        )
+    elif mutation == "missing_condition":
+        material = [
+            sequence
+            for sequence in material
+            if not (
+                sequence.condition == "EnglishMono"
+                and sequence.split == "train"
+            )
+        ]
+    elif mutation == "fifth_condition":
+        material.append(
+            _unsafe_packed_copy(
+                material[train_indexes[0]],
+                condition="FifthCondition",
+                example_identity="e" * 64,
+            )
+        )
+    elif mutation == "duplicate_within_condition":
+        first, second = next(
+            tuple(index for index in train_indexes if material[index].condition == condition)[:2]
+            for condition in CONDITIONS
+            if sum(material[index].condition == condition for index in train_indexes) >= 2
+        )
+        material[second] = _unsafe_packed_copy(
+            material[second],
+            example_identity=material[first].example_identity,
+        )
+    elif mutation == "duplicate_across_conditions":
+        first = train_indexes[0]
+        second = next(
+            index
+            for index in train_indexes
+            if material[index].condition != material[first].condition
+        )
+        material[second] = _unsafe_packed_copy(
+            material[second],
+            example_identity=material[first].example_identity,
+        )
+    else:
+        del material[train_indexes[0]]
+
+    with pytest.raises(PreparationError):
+        preparation_module._select_training_packed_sequences(material)
+
+
+def test_train_selection_failure_retains_no_private_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = "synthetic-private-packed-identity"
+    fixture = build_synthetic_preparation_fixture(tmp_path / "source")
+    material = list(fixture.bundle.packing.sequences)
+    monkeypatch.setattr(
+        preparation_module,
+        "_APPROVED_REAL_POPULATION_EVIDENCE",
+        _synthetic_packed_population_evidence(tuple(material)),
+    )
+    train_indexes = [
+        index for index, sequence in enumerate(material) if sequence.split == "train"
+    ]
+    for index in train_indexes[:2]:
+        material[index] = _unsafe_packed_copy(
+            material[index],
+            example_identity=marker,
+        )
+    with pytest.raises(PreparationError) as caught:
+        preparation_module._select_training_packed_sequences(material)
+    _assert_exception_private(caught.value, (marker,))
+
+
+def test_train_selection_and_count_authority_are_in_closed_graph() -> None:
+    _, _, reviewed_globals = _closed_reviewed_ingestion()
+    required = {
+        "_select_training_packed_sequences",
+        "_validate_canonical_packed_population_counts",
+    }
+    assert required <= set(
+        preparation_module._PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS
+    )
+    assert "_validate_canonical_packed_population_counts" in _nested_global_names(
+        reviewed_globals["_select_training_packed_sequences"].__code__
+    )
+    for name in (
+        "_prepare_tokenized_rows",
+        "_validate_bundle_for_publication",
+    ):
+        assert "_select_training_packed_sequences" in _nested_global_names(
+            reviewed_globals[name].__code__
+        )
+    assert "_validate_canonical_packed_population_counts" in _nested_global_names(
+        reviewed_globals["_load_preparation_candidate"].__code__
+    )
 
 
 def _write_private_synthetic_tree(
