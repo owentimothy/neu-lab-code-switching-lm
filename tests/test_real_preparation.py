@@ -4,6 +4,7 @@ import dis
 import inspect
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -2213,6 +2214,424 @@ def _rewrite_synthetic_outer_identities(root: Path) -> None:
     os.chmod(completion_path, 0o600)
 
 
+def _cross_condition_order_bundle() -> PreparationBundle:
+    """Build one shared CALLHOME row with distinct condition-local placement."""
+    rows = list(synthetic_population())
+    shared = _callhome(
+        source="callhome_eng",
+        split="train",
+        identity="shared-english-train",
+        turn_index=4,
+    )
+    replacements = {
+        ("EnglishMono", "callhome_monolingual"): adapt_callhome_record(
+            shared,
+            logical_condition="EnglishMono",
+        ),
+        ("MonoCont", "callhome_monolingual"): adapt_callhome_record(
+            shared,
+            logical_condition="MonoCont",
+        ),
+        ("CsCont", "callhome_monolingual_filler"): adapt_cscont_record(
+            _cscont(
+                split="train",
+                identity="shared-english-train",
+                component="callhome_monolingual_filler",
+                nested=shared,
+            )
+        ),
+    }
+    for index, row in enumerate(rows):
+        replacement = replacements.get((row.condition, row.component))
+        if row.source == "callhome_eng" and row.split == "train" and replacement:
+            rows[index] = replacement
+    bundle = prepare_synthetic_rows(
+        rows,
+        tokenizer=synthetic_exact_tokenizer(),
+        hmac_key=b"k" * 32,
+    )
+    matching = {
+        row.condition: row
+        for row in bundle.rows
+        if row.source == "callhome_eng"
+        and row.split == "train"
+        and row.source_row_order == 4
+    }
+    assert set(matching) == {"EnglishMono", "MonoCont", "CsCont"}
+    assert matching["EnglishMono"].row_order == 4
+    assert matching["MonoCont"].row_order == 4
+    assert matching["CsCont"].row_order == 0
+    return bundle
+
+
+def _serialized_row_token_ids(
+    root: Path,
+    row: dict[str, object],
+) -> tuple[int, ...]:
+    provenance = json.loads(
+        (root / "synthetic-artifacts/provenance.json").read_bytes()
+    )
+    group = [
+        example
+        for example in provenance
+        if example["condition"] == row["condition"]
+        and example["split"] == row["split"]
+    ]
+    arrays_path = (
+        root
+        / "synthetic-artifacts/arrays"
+        / str(row["condition"])
+        / str(row["split"])
+        / "input_ids.npy"
+    )
+    with arrays_path.open("rb") as handle:
+        inputs = np.load(handle, allow_pickle=False)
+    fragments: list[tuple[int, int, tuple[int, ...]]] = []
+    for index, example in enumerate(group):
+        for item in example["ranges"]:
+            if (
+                item["source_role"] == row["source_role"]
+                and item["row_pseudonym"] == row["row_pseudonym"]
+            ):
+                packed_start, packed_end = item["packed_token_range"]
+                source_start, source_end = item["source_token_range"]
+                fragments.append(
+                    (
+                        source_start,
+                        source_end,
+                        tuple(
+                            int(value)
+                            for value in inputs[index, packed_start:packed_end]
+                        ),
+                    )
+                )
+    ordered = sorted(fragments)
+    assert ordered and ordered[0][0] == 0
+    assert all(
+        earlier[1] == later[0]
+        for earlier, later in zip(ordered, ordered[1:])
+    )
+    return tuple(
+        token_id
+        for _, _, fragment in ordered
+        for token_id in fragment
+    )
+
+
+def _refresh_serialized_row_binding(
+    fixture: SimpleNamespace,
+    row: dict[str, object],
+    *,
+    token_ids: tuple[int, ...] | None = None,
+) -> None:
+    material = token_ids or _serialized_row_token_ids(fixture.output_root, row)
+    row["row_content_binding_hmac_sha256"] = (
+        preparation_module._source_row_token_content_binding(
+            fixture.hmac_key,
+            protocol=SYNTHETIC_PREPARATION_PROTOCOL_VERSION,
+            source_namespace=row["source_role"],
+            split=row["split"],
+            row_pseudonym=row["row_pseudonym"],
+            conversation_pseudonym=row["conversation_pseudonym"],
+            row_order=row["row_order"],
+            source_row_order=row["source_row_order"],
+            lexical_token_count=row["lexical_token_count"],
+            source_token_count=row["source_token_count"],
+            token_ids=material,
+        )
+    )
+
+
+def _cross_condition_order_fixture(base: Path) -> SimpleNamespace:
+    base.mkdir(parents=True, exist_ok=True)
+    os.chmod(base, 0o700)
+    bundle = _cross_condition_order_bundle()
+    output_root = base / "synthetic-candidate"
+    hmac_key = b"k" * 32
+    published = preparation_module.publish_synthetic_preparation(
+        bundle,
+        output_root=output_root,
+        hmac_key=hmac_key,
+    )
+    snapshot = load_synthetic_preparation_candidate(output_root)
+    return SimpleNamespace(
+        bundle=bundle,
+        hmac_key=hmac_key,
+        output_root=output_root,
+        published=published,
+        snapshot=snapshot,
+    )
+
+
+def test_closed_loader_accepts_shared_source_with_different_local_order(
+    tmp_path: Path,
+) -> None:
+    fixture = _cross_condition_order_fixture(tmp_path)
+    assert type(fixture.snapshot) is SyntheticPreparationSnapshot
+    assert not hasattr(fixture.snapshot, "status")
+    membership = json.loads(
+        (fixture.output_root / "synthetic-artifacts/membership.json").read_bytes()
+    )
+    shared = [
+        row
+        for row in membership
+        if row["source_role"] == "callhome_eng"
+        and row["split"] == "train"
+        and row["source_row_order"] == 4
+    ]
+    assert {row["condition"] for row in shared} == {
+        "EnglishMono",
+        "MonoCont",
+        "CsCont",
+    }
+    assert {row["condition"]: row["row_order"] for row in shared} == {
+        "EnglishMono": 4,
+        "MonoCont": 4,
+        "CsCont": 0,
+    }
+
+
+def _shared_filler_membership(
+    fixture: SimpleNamespace,
+) -> tuple[Path, list[dict[str, object]], dict[str, object]]:
+    path = fixture.output_root / "synthetic-artifacts/membership.json"
+    membership = json.loads(path.read_bytes())
+    target = next(
+        row
+        for row in membership
+        if row["condition"] == "CsCont"
+        and row["split"] == "train"
+        and row["source_role"] == "callhome_eng"
+        and row["source_row_order"] == 4
+    )
+    return path, membership, target
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "source_order",
+        "lexical_count",
+        "conversation",
+        "row_pseudonym",
+        "source_namespace",
+    ),
+)
+def test_closed_loader_rejects_cross_condition_source_substitution(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    fixture = _cross_condition_order_fixture(tmp_path)
+    membership_path, membership, target = _shared_filler_membership(fixture)
+    provenance_path = fixture.output_root / "synthetic-artifacts/provenance.json"
+    provenance = json.loads(provenance_path.read_bytes())
+    target_range = next(
+        item
+        for example in provenance
+        if example["condition"] == "CsCont" and example["split"] == "train"
+        for item in example["ranges"]
+        if item["source_role"] == target["source_role"]
+        and item["row_pseudonym"] == target["row_pseudonym"]
+    )
+    token_ids = _serialized_row_token_ids(fixture.output_root, target)
+    if mutation == "source_order":
+        target["source_row_order"] += 1
+    elif mutation == "lexical_count":
+        target["lexical_token_count"] += 1
+    elif mutation == "conversation":
+        target["conversation_pseudonym"] = "a" * 64
+        target_range["conversation_pseudonym"] = "a" * 64
+    elif mutation == "row_pseudonym":
+        target["row_pseudonym"] = "b" * 64
+        target_range["row_pseudonym"] = "b" * 64
+    else:
+        target["source_role"] = "callhome_spa"
+        target_range["source_role"] = "callhome_spa"
+    _refresh_serialized_row_binding(fixture, target, token_ids=token_ids)
+    membership_path.write_bytes(canonical_json_bytes(membership))
+    provenance_path.write_bytes(canonical_json_bytes(provenance))
+    os.chmod(membership_path, 0o600)
+    os.chmod(provenance_path, 0o600)
+    _rewrite_synthetic_outer_identities(fixture.output_root)
+    with pytest.raises(PreparationError, match="filler membership"):
+        load_synthetic_preparation_candidate(fixture.output_root)
+
+
+@pytest.mark.parametrize(
+    "match_condition_local_order",
+    (False, True),
+    ids=("different-local-order", "matching-local-order"),
+)
+def test_closed_loader_rejects_same_source_pseudonym_with_altered_tokens(
+    tmp_path: Path,
+    match_condition_local_order: bool,
+) -> None:
+    fixture = _cross_condition_order_fixture(tmp_path)
+    membership_path, membership, target = _shared_filler_membership(fixture)
+    provenance_path = fixture.output_root / "synthetic-artifacts/provenance.json"
+    provenance = json.loads(
+        provenance_path.read_bytes()
+    )
+    group = [
+        example
+        for example in provenance
+        if example["condition"] == "CsCont" and example["split"] == "train"
+    ]
+    example_index, target_range = next(
+        (index, item)
+        for index, example in enumerate(group)
+        for item in example["ranges"]
+        if item["source_role"] == target["source_role"]
+        and item["row_pseudonym"] == target["row_pseudonym"]
+    )
+    arrays_path = (
+        fixture.output_root
+        / "synthetic-artifacts/arrays/CsCont/train/input_ids.npy"
+    )
+    with arrays_path.open("rb") as handle:
+        inputs = np.load(handle, allow_pickle=False)
+    packed_start, packed_end = target_range["packed_token_range"]
+    altered = tuple(int(value) for value in inputs[example_index, packed_start:packed_end])
+    altered = (altered[0] + 1, *altered[1:])
+    if match_condition_local_order:
+        target["row_order"] = 4
+        target_range["row_order"] = 4
+    inputs[example_index, packed_start:packed_end] = np.asarray(
+        altered,
+        dtype=np.uint16,
+    )
+    with arrays_path.open("wb") as handle:
+        np.save(handle, inputs, allow_pickle=False)
+    os.chmod(arrays_path, 0o600)
+    _refresh_serialized_row_binding(fixture, target, token_ids=altered)
+    membership_path.write_bytes(canonical_json_bytes(membership))
+    provenance_path.write_bytes(canonical_json_bytes(provenance))
+    os.chmod(membership_path, 0o600)
+    os.chmod(provenance_path, 0o600)
+    _rewrite_synthetic_outer_identities(fixture.output_root)
+    with pytest.raises(PreparationError, match="filler membership"):
+        load_synthetic_preparation_candidate(fixture.output_root)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "condition_local_order",
+        "wordpiece_count",
+        "split",
+        "missing_monocont",
+        "extra_filler",
+        "duplicate_filler",
+    ),
+)
+def test_serialized_source_binding_rejects_local_and_membership_tampering(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    fixture = _cross_condition_order_fixture(tmp_path)
+    membership_path, membership, target = _shared_filler_membership(fixture)
+    if mutation == "condition_local_order":
+        target["row_order"] = 4
+        _refresh_serialized_row_binding(fixture, target)
+    elif mutation == "wordpiece_count":
+        target["source_token_count"] += 1
+    elif mutation == "split":
+        target["split"] = "validation"
+    elif mutation == "missing_monocont":
+        membership[:] = [
+            row
+            for row in membership
+            if not (
+                row["condition"] == "MonoCont"
+                and row["source_role"] == "callhome_eng"
+                and row["split"] == "train"
+                and row["source_row_order"] == 4
+            )
+        ]
+    elif mutation == "extra_filler":
+        fabricated = dict(target)
+        fabricated["row_pseudonym"] = "c" * 64
+        membership.append(fabricated)
+    else:
+        membership.append(dict(target))
+    membership_path.write_bytes(canonical_json_bytes(membership))
+    os.chmod(membership_path, 0o600)
+    _rewrite_synthetic_outer_identities(fixture.output_root)
+    with pytest.raises(PreparationError):
+        load_synthetic_preparation_candidate(fixture.output_root)
+
+
+def test_source_reuse_binding_excludes_only_condition_local_order() -> None:
+    common = {
+        "protocol": SYNTHETIC_PREPARATION_PROTOCOL_VERSION,
+        "source_namespace": "callhome_eng",
+        "split": "train",
+        "row_pseudonym": "a" * 64,
+        "conversation_pseudonym": "b" * 64,
+        "source_row_order": 4,
+        "lexical_token_count": 3,
+        "source_token_count": 3,
+        "token_ids": (5, 6, 7),
+    }
+    local_zero = preparation_module._source_row_token_content_binding(
+        b"k" * 32,
+        row_order=0,
+        **common,
+    )
+    local_four = preparation_module._source_row_token_content_binding(
+        b"k" * 32,
+        row_order=4,
+        **common,
+    )
+    shared = preparation_module._source_reuse_content_binding(
+        b"k" * 32,
+        **common,
+    )
+    assert local_zero != local_four
+    assert shared == preparation_module._source_reuse_content_binding(
+        b"k" * 32,
+        **common,
+    )
+    assert shared != preparation_module._source_reuse_content_binding(
+        b"k" * 32,
+        **{**common, "token_ids": (5, 7, 6)},
+    )
+    assert shared != preparation_module._source_reuse_content_binding(
+        b"k" * 32,
+        **{**common, "row_pseudonym": "c" * 64},
+    )
+
+
+def test_source_reuse_binding_is_captured_by_production_closure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, reviewed_globals = _closed_reviewed_ingestion()
+    calls: list[str] = []
+
+    def permissive(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        calls.append("fake")
+        return "0" * 64
+
+    reviewed = reviewed_globals["_source_reuse_content_binding"]
+    monkeypatch.setattr(
+        preparation_module,
+        "_source_reuse_content_binding",
+        permissive,
+    )
+    assert "_source_reuse_content_binding" in (
+        preparation_module._PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS
+    )
+    assert reviewed is not permissive
+    assert (
+        reviewed_globals["_reconcile_packed_row_token_content"].__globals__[
+            "_source_reuse_content_binding"
+        ]
+        is reviewed
+    )
+    assert calls == []
+
+
 def test_training_token_mutation_is_rejected_after_all_outer_rehashing(
     tmp_path: Path,
 ) -> None:
@@ -2384,6 +2803,7 @@ def test_swapped_equal_length_rows_rejected_after_outer_rehash(
             row_pseudonym=target["row_pseudonym"],
             conversation_pseudonym=target["conversation_pseudonym"],
             row_order=target["row_order"],
+            source_row_order=target["source_row_order"],
             lexical_token_count=target["lexical_token_count"],
             source_token_count=target["source_token_count"],
             token_ids=(5, 7, 6),
@@ -2495,6 +2915,7 @@ def test_hmac_use_is_limited_to_privacy_pseudonymization() -> None:
     assert hmac_callers == {
         "_pseudonym",
         "_recompute_membership_digest",
+        "_source_reuse_content_binding",
         "_source_row_token_content_binding",
         "_stream_binding",
         "validate_membership",
@@ -3916,6 +4337,82 @@ def _private_synthetic_input_anchor(
     return anchor
 
 
+def _private_candidate_input_anchor(
+    reviewed_globals: dict[str, object],
+    bundle: PreparationBundle,
+) -> object:
+    role_counts = {
+        "callhome:english_mono_rows.jsonl": sum(
+            row.condition == "EnglishMono" for row in bundle.rows
+        ),
+        "callhome:spanish_mono_rows.jsonl": sum(
+            row.condition == "SpanishMono" for row in bundle.rows
+        ),
+        "callhome:monocont_english_rows.jsonl": sum(
+            row.condition == "MonoCont" and row.language_shard == "english"
+            for row in bundle.rows
+        ),
+        "callhome:monocont_spanish_rows.jsonl": sum(
+            row.condition == "MonoCont" and row.language_shard == "spanish"
+            for row in bundle.rows
+        ),
+        "cscont:train_rows.jsonl": sum(
+            row.condition == "CsCont" and row.split == "train"
+            for row in bundle.rows
+        ),
+        "cscont:validation_rows.jsonl": sum(
+            row.condition == "CsCont" and row.split == "validation"
+            for row in bundle.rows
+        ),
+    }
+    records = (
+        (
+            "callhome",
+            reviewed_globals["APPROVED_CALLHOME_CHECKSUM_RECORD_SHA256"],
+        ),
+        (
+            "cscont",
+            reviewed_globals["APPROVED_CSCONT_CHECKSUM_RECORD_SHA256"],
+        ),
+        (
+            "tokenizer",
+            reviewed_globals["APPROVED_TOKENIZER_CHECKSUM_RECORD_SHA256"],
+        ),
+    )
+    constituent = (
+        ("tokenizer:tokenizer.json", bundle.tokenizer_artifact_sha256 or "b" * 64),
+        ("tokenizer:training_manifest.json", "a" * 64),
+    )
+    input_counts = tuple(sorted(role_counts.items()))
+    authorized_counts = input_counts
+    test_counts = tuple(
+        sorted(
+            (role, 0)
+            for role in role_counts
+            if role.startswith("callhome:")
+        )
+    )
+    payload = {
+        "authorized_line_counts": dict(authorized_counts),
+        "checksum_record_identities": dict(records),
+        "constituent_sha256": dict(constituent),
+        "input_line_counts": dict(input_counts),
+        "sealed_test_line_counts": dict(test_counts),
+    }
+    anchor = object.__new__(reviewed_globals["InputPopulationAnchor"])
+    for name, value in {
+        "checksum_record_identities": records,
+        "constituent_sha256": constituent,
+        "input_line_counts": input_counts,
+        "authorized_line_counts": authorized_counts,
+        "sealed_test_line_counts": test_counts,
+        "identity_sha256": sha256(_test_canonical_json(payload)).hexdigest(),
+    }.items():
+        object.__setattr__(anchor, name, value)
+    anchor._validate()
+    return anchor
+
+
 def _synthetic_packed_population_evidence(
     sequences: tuple[PackedSequence, ...],
 ) -> MappingProxyType:
@@ -4362,6 +4859,285 @@ def test_reviewed_serialization_and_staged_readback_reach_candidate_loader(
     )
     assert not (tmp_path / "candidate").exists()
     assert not list(tmp_path.glob(".*staging*"))
+
+
+def test_production_shaped_stage_round_trip_accepts_different_filler_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle = _cross_condition_order_bundle()
+    _, _, reviewed_globals = _closed_reviewed_ingestion()
+    anchor = _private_candidate_input_anchor(reviewed_globals, bundle)
+    training_sequences = tuple(
+        sequence for sequence in bundle.packing.sequences if sequence.split == "train"
+    )
+    conditions = tuple(
+        SimpleNamespace(
+            condition=condition,
+            identity_sha256=sha256(f"schedule:{condition}".encode()).hexdigest(),
+        )
+        for condition in CONDITIONS
+    )
+    seed_audits = tuple(
+        SimpleNamespace(
+            plan_name=plan_name,
+            seed=seed,
+            evidence_sha256=sha256(f"audit:{plan_name}:{seed}".encode()).hexdigest(),
+        )
+        for plan_name, seed in reviewed_globals[
+            "approved_training_mask_seed_plans"
+        ]()
+    )
+    plan = SimpleNamespace(
+        input_population_anchor_sha256=anchor.identity_sha256,
+        identity_sha256=sha256(b"synthetic-production-plan").hexdigest(),
+        conditions=conditions,
+        seed_audits=seed_audits,
+    )
+    bundle_values = dict(vars(bundle))
+    bundle_values.update(
+        {
+            "input_anchor": anchor,
+            "protocol_version": preparation_module.PREPARATION_PROTOCOL_VERSION,
+            "tokenizer_historical_build_identity": {},
+            "tokenizer_artifact_sha256": "b" * 64,
+            "tokenizer_backend_configuration_sha256": "c" * 64,
+            "training_exposure_plan": plan,
+        }
+    )
+    production_bundle = SimpleNamespace(**bundle_values)
+    aggregates = {
+        key: (
+            sum(row.block_key == key for row in bundle.rows),
+            sum(
+                row.lexical_token_count
+                for row in bundle.rows
+                if row.block_key == key
+            ),
+        )
+        for key in approved_block_order()
+    }
+    population_evidence = _synthetic_packed_population_evidence(
+        bundle.packing.sequences
+    )
+    schedule_calls: list[tuple[PackedSequence, ...]] = []
+
+    def schedule_builder(
+        sequences: object,
+        *,
+        input_population_anchor_sha256: str,
+    ) -> object:
+        material = tuple(sequences)
+        assert all(sequence.split == "train" for sequence in material)
+        assert tuple(sequence.example_identity for sequence in material) == tuple(
+            sequence.example_identity for sequence in training_sequences
+        )
+        assert input_population_anchor_sha256 == anchor.identity_sha256
+        schedule_calls.append(material)
+        return plan
+
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_APPROVED_REAL_POPULATION_EVIDENCE",
+        population_evidence,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_aggregate_for_block",
+        lambda key: aggregates[key],
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "training_exposure_plan_payload",
+        lambda value, **kwargs: {
+            "synthetic_production_shape": value is plan,
+            "legacy_projection_present": bool(kwargs),
+        },
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_validate_exposure_record",
+        lambda payload: None,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "build_training_exposure_plan",
+        schedule_builder,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "validate_canonical_real_reference",
+        lambda value: None,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "validate_training_exposure_plan_payload",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_validate_historical_identity_record",
+        lambda historical, input_anchor: None,
+    )
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_validate_runtime_record",
+        lambda payload, historical: None,
+    )
+
+    runtime = {
+        "synthetic_equivalent": True,
+        "scientifically_authoritative": False,
+    }
+    files, validation_records = reviewed_globals["_artifact_files"](
+        production_bundle,
+        hmac_key=b"k" * 32,
+        runtime_identity=runtime,
+    )
+    manifest = reviewed_globals["_derive_preparation_manifest"](
+        production_bundle,
+        runtime_identity=runtime,
+        serialized_validation_records=validation_records,
+    )
+    manifest_payload = dict(manifest.payload)
+    manifest_payload["preparation_manifest_identity_sha256"] = (
+        manifest.identity_sha256
+    )
+    checksummed = {
+        **files,
+        "PREPARATION_MANIFEST.json": _test_canonical_json(manifest_payload),
+    }
+    inventory = set(checksummed) | {
+        "checksums.json",
+        "CANDIDATE_COMPLETE.json",
+    }
+    checksum_record, checksum_bytes = reviewed_globals[
+        "_derive_candidate_checksum_record"
+    ](
+        checksummed,
+        inventory=inventory,
+        protocol_version=preparation_module.PREPARATION_PROTOCOL_VERSION,
+    )
+    all_files = {
+        **checksummed,
+        "checksums.json": checksum_bytes,
+        "CANDIDATE_COMPLETE.json": _test_canonical_json(
+            {
+                "candidate_checksum_record_sha256": (
+                    checksum_record.identity_sha256
+                ),
+                "complete": True,
+                "protocol_version": preparation_module.PREPARATION_PROTOCOL_VERSION,
+                "status": "candidate_unapproved",
+            }
+        ),
+    }
+    loaded: list[PreparationSnapshot] = []
+    loader_errors: list[str] = []
+
+    def validate_stage(descriptor: int) -> None:
+        staged_files, staged_directories = reviewed_globals[
+            "_walk_private_tree"
+        ](descriptor)
+        assert len(staged_files) == 128
+        assert len(staged_directories) == 36
+        try:
+            snapshot = reviewed_globals["_load_preparation_candidate"](
+                Path(),
+                reconciliation_key=b"k" * 32,
+                root_descriptor=descriptor,
+            )
+        except PreparationError as error:
+            loader_errors.append(str(error))
+            raise
+        assert type(snapshot) is PreparationSnapshot
+        assert snapshot.status == "candidate_unapproved"
+        assert snapshot.candidate_checksum_record_sha256 == (
+            checksum_record.identity_sha256
+        )
+        loaded.append(snapshot)
+
+    writes: list[str] = []
+    real_write = reviewed_globals["_write_private_file_at"]
+
+    def recording_write(descriptor: int, name: str, content: bytes) -> None:
+        writes.append(name)
+        real_write(descriptor, name, content)
+
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_write_private_file_at",
+        recording_write,
+    )
+    rename_calls: list[str] = []
+
+    def forbidden_rename(*args: object, **kwargs: object) -> None:
+        del args, kwargs
+        rename_calls.append("rename")
+        raise AssertionError("atomic rename must not be reached")
+
+    monkeypatch.setitem(
+        reviewed_globals,
+        "_atomic_rename_noreplace_at",
+        forbidden_rename,
+    )
+
+    def stop_before_rename(event: str) -> None:
+        if event == "before_atomic_rename":
+            raise RuntimeError("synthetic prepublication stop")
+
+    output = tmp_path / "candidate"
+    with pytest.raises(PreparationError, match="pre-commit"):
+        reviewed_globals["_commit_private_tree"](
+            all_files,
+            output_root=output,
+            input_roots=(),
+            hmac_key_path=None,
+            staging_label="staging",
+            precommit_validator=validate_stage,
+            test_hook=stop_before_rename,
+        )
+    assert len(all_files) == 128
+    assert loader_errors == []
+    assert len(loaded) == 1
+    assert len(schedule_calls) == 1
+    assert writes[-1] == "CANDIDATE_COMPLETE.json"
+    assert rename_calls == []
+    assert not output.exists()
+    assert not list(tmp_path.glob(".candidate.staging-*"))
+
+    public_root = tmp_path / "public-loader-equivalent"
+    _write_private_synthetic_tree(public_root, all_files)
+    key_path = _write_privacy_reconciliation_key(tmp_path / "reconciliation-key")
+    old_loader = load_preparation_candidate
+    old_snapshot = old_loader(
+        public_root,
+        reconciliation_key_path=key_path,
+    )
+    assert old_snapshot.status == "candidate_unapproved"
+    permissive_calls: list[str] = []
+
+    def permissive_binding(*args: object, **kwargs: object) -> str:
+        del args, kwargs
+        permissive_calls.append("fake")
+        return "0" * 64
+
+    monkeypatch.setattr(
+        preparation_module,
+        "_source_reuse_content_binding",
+        permissive_binding,
+    )
+    current_snapshot = preparation_module.load_preparation_candidate(
+        public_root,
+        reconciliation_key_path=key_path,
+    )
+    assert current_snapshot.status == "candidate_unapproved"
+    assert current_snapshot.candidate_checksum_record_sha256 == (
+        old_snapshot.candidate_checksum_record_sha256
+    )
+    assert permissive_calls == []
+    shutil.rmtree(public_root)
+    assert not public_root.exists()
 
 
 def _tokenizer_payload(
