@@ -4557,6 +4557,7 @@ def _source_row_token_content_binding(
     row_pseudonym: str,
     conversation_pseudonym: str,
     row_order: int,
+    source_row_order: int,
     lexical_token_count: int,
     source_token_count: int,
     token_ids: Sequence[int],
@@ -4579,7 +4580,12 @@ def _source_row_token_content_binding(
         or split not in {"train", "validation"}
         or any(
             type(value) is not int or value < 0
-            for value in (row_order, lexical_token_count, source_token_count)
+            for value in (
+                row_order,
+                source_row_order,
+                lexical_token_count,
+                source_token_count,
+            )
         )
         or (
             lexical_token_count == 0
@@ -4592,13 +4598,80 @@ def _source_row_token_content_binding(
         raise PreparationError("source-row token binding material is invalid")
     payload = canonical_json_bytes(
         [
-            "neu_source_row_token_content_binding_v1",
+            "neu_source_row_token_content_binding_v2",
             protocol,
             source_namespace,
             split,
             row_pseudonym,
             conversation_pseudonym,
             row_order,
+            source_row_order,
+            lexical_token_count,
+            source_token_count,
+            material,
+        ]
+    )
+    return hmac.new(key, payload, hashlib.sha256).hexdigest()
+
+
+def _source_reuse_content_binding(
+    key: bytes,
+    *,
+    protocol: str,
+    source_namespace: str,
+    split: str,
+    row_pseudonym: str,
+    conversation_pseudonym: str,
+    source_row_order: int,
+    lexical_token_count: int,
+    source_token_count: int,
+    token_ids: Sequence[int],
+) -> str:
+    """Key shared source membership and content without condition-local placement."""
+    _require_hmac_key(key)
+    material = tuple(token_ids)
+    if (
+        protocol
+        not in {PREPARATION_PROTOCOL_VERSION, SYNTHETIC_PREPARATION_PROTOCOL_VERSION}
+        or not all(
+            isinstance(value, str) and value
+            for value in (
+                source_namespace,
+                split,
+                row_pseudonym,
+                conversation_pseudonym,
+            )
+        )
+        or split not in {"train", "validation"}
+        or any(
+            type(value) is not int or value < 0
+            for value in (
+                source_row_order,
+                lexical_token_count,
+                source_token_count,
+            )
+        )
+        or (
+            lexical_token_count == 0
+            and source_namespace != "bangor_cgwords"
+        )
+        or source_token_count == 0
+        or source_token_count != len(material)
+        or any(
+            type(token_id) is not int or not 0 <= token_id < VOCAB_SIZE
+            for token_id in material
+        )
+    ):
+        raise PreparationError("source-reuse binding material is invalid")
+    payload = canonical_json_bytes(
+        [
+            "neu_cross_condition_source_content_binding_v1",
+            protocol,
+            source_namespace,
+            split,
+            row_pseudonym,
+            conversation_pseudonym,
+            source_row_order,
             lexical_token_count,
             source_token_count,
             material,
@@ -4722,6 +4795,7 @@ def _serialized_membership_payload(
                 "row_pseudonym": row_pseudonym,
                 "conversation_pseudonym": conversation_pseudonym,
                 "row_order": row.row_order,
+                "source_row_order": row.source_row_order,
                 "lexical_token_count": row.lexical_token_count,
                 "source_token_count": len(token_ids),
                 "row_content_binding_hmac_sha256": _source_row_token_content_binding(
@@ -4732,6 +4806,7 @@ def _serialized_membership_payload(
                     row_pseudonym=row_pseudonym,
                     conversation_pseudonym=conversation_pseudonym,
                     row_order=row.row_order,
+                    source_row_order=row.source_row_order,
                     lexical_token_count=row.lexical_token_count,
                     source_token_count=len(token_ids),
                     token_ids=token_ids,
@@ -4753,6 +4828,7 @@ def _reconcile_packed_row_token_content(
     reconciliation_key: bytes,
 ) -> tuple[
     Mapping[tuple[str, str, str, str], tuple[object, ...]],
+    Mapping[tuple[str, str, str, str], str],
     Mapping[tuple[str, str], tuple[tuple[SourceTokenRange, ...], ...]],
 ]:
     """Rebuild every source row from packed arrays and verify its keyed binding."""
@@ -4769,7 +4845,7 @@ def _reconcile_packed_row_token_content(
 
     membership_rows: dict[
         tuple[str, str, str, str],
-        tuple[str, str, int, int, int, str],
+        tuple[str, str, int, int, int, int, str],
     ] = {}
     membership_order: list[tuple[str, str, str, str]] = []
     membership_fields = {
@@ -4779,6 +4855,7 @@ def _reconcile_packed_row_token_content(
         "row_pseudonym",
         "conversation_pseudonym",
         "row_order",
+        "source_row_order",
         "lexical_token_count",
         "source_token_count",
         "row_content_binding_hmac_sha256",
@@ -4804,6 +4881,7 @@ def _reconcile_packed_row_token_content(
                 type(row[name]) is not int or row[name] < 0
                 for name in (
                     "row_order",
+                    "source_row_order",
                     "lexical_token_count",
                     "source_token_count",
                 )
@@ -4827,6 +4905,7 @@ def _reconcile_packed_row_token_content(
             row["source_role"],
             row["conversation_pseudonym"],
             row["row_order"],
+            row["source_row_order"],
             row["lexical_token_count"],
             row["source_token_count"],
             row["row_content_binding_hmac_sha256"],
@@ -4975,7 +5054,7 @@ def _reconcile_packed_row_token_content(
                 membership is None
                 or membership[1] != item["conversation_pseudonym"]
                 or membership[2] != item["row_order"]
-                or membership[4] != item["source_row_token_count"]
+                or membership[5] != item["source_row_token_count"]
             ):
                 raise PreparationError("provenance does not match serialized membership")
             if row_key not in observed_rows:
@@ -5020,6 +5099,7 @@ def _reconcile_packed_row_token_content(
     if observed_row_order != membership_order or set(fragments) != set(membership_rows):
         raise PreparationError("source-row identity or ordering does not reconcile")
 
+    source_reuse_rows: dict[tuple[str, str, str, str], str] = {}
     for row_key, membership in membership_rows.items():
         ordered = sorted(fragments[row_key], key=lambda value: (value[0], value[1]))
         if (
@@ -5028,7 +5108,7 @@ def _reconcile_packed_row_token_content(
                 earlier[1] != later[0]
                 for earlier, later in zip(ordered, ordered[1:])
             )
-            or ordered[-1][1] != membership[4]
+            or ordered[-1][1] != membership[5]
         ):
             raise PreparationError("source-row provenance is missing or duplicated")
         token_ids = tuple(
@@ -5044,14 +5124,28 @@ def _reconcile_packed_row_token_content(
             row_pseudonym=row_key[3],
             conversation_pseudonym=membership[1],
             row_order=membership[2],
-            lexical_token_count=membership[3],
-            source_token_count=membership[4],
+            source_row_order=membership[3],
+            lexical_token_count=membership[4],
+            source_token_count=membership[5],
             token_ids=token_ids,
         )
-        if not hmac.compare_digest(expected_binding, membership[5]):
+        if not hmac.compare_digest(expected_binding, membership[6]):
             raise PreparationError("source-row token content binding does not reconcile")
+        source_reuse_rows[row_key] = _source_reuse_content_binding(
+            reconciliation_key,
+            protocol=protocol,
+            source_namespace=membership[0],
+            split=row_key[1],
+            row_pseudonym=row_key[3],
+            conversation_pseudonym=membership[1],
+            source_row_order=membership[3],
+            lexical_token_count=membership[4],
+            source_token_count=membership[5],
+            token_ids=token_ids,
+        )
     return (
         MappingProxyType(dict(membership_rows)),
+        MappingProxyType(dict(source_reuse_rows)),
         MappingProxyType(
             {
                 group: tuple(ranges)
@@ -6303,6 +6397,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_snapshot_relative_jsonl_lines",
         "_snapshot_relative_regular_file",
         "_source_row_token_content_binding",
+        "_source_reuse_content_binding",
         "_stream_binding",
         "_stream_hash_relative_file",
         "_stream_record_binding",
@@ -7401,7 +7496,7 @@ def load_synthetic_preparation_candidate(
                 attention,
                 token_types,
             )
-    membership_rows, synthetic_packed_provenance = (
+    membership_rows, source_reuse_rows, synthetic_packed_provenance = (
         _reconcile_packed_row_token_content(
         serialized_membership=membership_payload,
         provenance=provenance_payload,
@@ -7412,17 +7507,17 @@ def load_synthetic_preparation_candidate(
     )
     baselines = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition in {"EnglishMono", "SpanishMono"}
     }
     monocont = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition == "MonoCont"
     }
     filler = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition == "CsCont" and source in {"callhome_eng", "callhome_spa"}
     }
     if any(baselines.get(key) != binding for key, binding in monocont.items()):
@@ -8444,7 +8539,7 @@ def _load_preparation_candidate(
         )
     ):
         raise PreparationError("candidate serialized population is incomplete")
-    membership_rows, packed_provenance = _reconcile_packed_row_token_content(
+    membership_rows, source_reuse_rows, packed_provenance = _reconcile_packed_row_token_content(
         serialized_membership=serialized_membership,
         provenance=provenance,
         packed_arrays=packed_arrays,
@@ -8906,17 +9001,17 @@ def _load_preparation_candidate(
         )
     baselines = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition in {"EnglishMono", "SpanishMono"}
     }
     monocont = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition == "MonoCont"
     }
     filler = {
         (source, split, row_id): binding
-        for (condition, split, source, row_id), binding in membership_rows.items()
+        for (condition, split, source, row_id), binding in source_reuse_rows.items()
         if condition == "CsCont" and source in {"callhome_eng", "callhome_spa"}
     }
     if any(baselines.get(key) != binding for key, binding in monocont.items()):
