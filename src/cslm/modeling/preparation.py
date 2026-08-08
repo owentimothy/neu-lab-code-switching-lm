@@ -26,7 +26,7 @@ import sysconfig
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from types import FunctionType, MappingProxyType, ModuleType
+from types import FunctionType, MappingProxyType, ModuleType, SimpleNamespace
 from typing import Any, Callable, Iterable, Iterator, Literal, Mapping, Sequence
 
 import numpy as np
@@ -63,6 +63,9 @@ _STABLE_PREPARATION_TYPE_NAMES = (
     "SyntheticParityCase",
     "SyntheticPreparationSnapshot",
     "SyntheticPublishedPreparationCandidate",
+    "SanitizedConditionTrainingView",
+    "SanitizedTensorArrays",
+    "SanitizedTrainingView",
     "ValidationMaterial",
     "_BangorV1StreamState",
     "_ByteJsonScanner",
@@ -74,6 +77,11 @@ _previous_stable_preparation_types = getattr(
     sys.modules[__name__],
     "_STABLE_PREPARATION_BOUNDARY_TYPES",
     None,
+)
+
+SANITIZED_TRAINING_VIEW_PROTOCOL = "neu_sanitized_training_view_digest_v1"
+SANITIZED_PREPARATION_RUNNER_DIGEST = (
+    "8dee4b925cc436f60440f89b231998579bf16ec4c5864037f4841be79dd47667"
 )
 
 _reviewed_dependency_modules = (
@@ -6347,6 +6355,8 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_derive_input_anchor",
         "_derive_membership_plan",
         "_derive_preparation_manifest",
+        "_derive_sanitized_tensor_arrays",
+        "_derive_synthetic_sanitized_training_view_from_verified_material",
         "_directory_open_flags",
         "_distribution_record_digest",
         "_expected_aggregate_rows",
@@ -6355,6 +6365,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_fsync_tree_descriptor",
         "_historical_tokenizer_build_identity",
         "_inside_git_repository",
+        "_immutable_array",
         "_iter_bounded_descriptor_lines",
         "_json_object",
         "_jsonable",
@@ -6368,6 +6379,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_open_relative_directory",
         "_packing_row",
         "_paths_overlap",
+        "_plan_evidence_contract",
         "_pin_publication_parent",
         "_prepare_production_inputs",
         "_prepare_tokenized_rows",
@@ -6389,6 +6401,8 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_required_directory_names",
         "_resolved_without_symlinks",
         "_safe_relative_name",
+        "_sanitized_tensor_digest_contract",
+        "_schedule_evidence_digest_contract",
         "_serialized_membership_payload",
         "_sha256_bytes",
         "_sha256_file",
@@ -6430,6 +6444,8 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "load_hmac_key",
         "materialize_fixed_validation",
         "scan_sealed_callhome_split",
+        "sanitized_condition_view_digest",
+        "sanitized_training_view_digest",
         "validate_membership",
     }
 )
@@ -6452,6 +6468,9 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_CLASSES = frozenset(
         "PublicationCommittedError",
         "PublicationOutcomeIndeterminateError",
         "PublishedPreparationCandidate",
+        "SanitizedConditionTrainingView",
+        "SanitizedTensorArrays",
+        "SanitizedTrainingView",
         "ValidationMaterial",
         "_BangorV1StreamState",
         "_ByteJsonScanner",
@@ -7092,6 +7111,18 @@ def _create_reviewed_production_graph() -> Mapping[str, object]:
             ],
             "key_loader": reviewed_functions["load_hmac_key"],
             "fixed_error": reviewed_functions["_raise_fixed"],
+            "sanitized_condition_type": reviewed_namespaces[__name__][
+                "SanitizedConditionTrainingView"
+            ],
+            "sanitized_tensor_type": reviewed_namespaces[__name__][
+                "SanitizedTensorArrays"
+            ],
+            "sanitized_view_digest": reviewed_functions[
+                "sanitized_training_view_digest"
+            ],
+            "sanitized_view_type": reviewed_namespaces[__name__][
+                "SanitizedTrainingView"
+            ],
         }
     )
 
@@ -8112,6 +8143,333 @@ class CandidateValidationSnapshot:
 
 
 @dataclass(frozen=True, init=False, slots=True)
+class SanitizedTensorArrays:
+    """Immutable executor tensors with no lexical or provenance representation."""
+
+    input_ids: np.ndarray = field(repr=False)
+    attention_mask: np.ndarray = field(repr=False)
+    token_type_ids: np.ndarray = field(repr=False)
+    labels: np.ndarray | None = field(default=None, repr=False)
+
+    def __new__(cls) -> SanitizedTensorArrays:
+        raise PreparationError("sanitized tensor arrays must be factory-derived")
+
+
+@dataclass(frozen=True, init=False, slots=True)
+class SanitizedConditionTrainingView:
+    """One condition's tensor-only training, schedule, and validation authority."""
+
+    condition: str
+    train_tensors: SanitizedTensorArrays = field(repr=False)
+    ordered_train_identities: tuple[str, ...] = field(repr=False)
+    schedule: Any = field(repr=False)
+    validation_tensors: SanitizedTensorArrays = field(repr=False)
+    ordered_validation_identities: tuple[str, ...] = field(repr=False)
+    validation_record: ValidationMaskRecord
+    aggregate_evidence: tuple[tuple[str, int], ...]
+    train_tensor_sha256: str
+    validation_tensor_sha256: str
+    schedule_evidence_sha256: str
+    validation_plan_sha256: str
+    semantic_sha256: str
+
+    def __new__(cls) -> SanitizedConditionTrainingView:
+        raise PreparationError("condition training views must be factory-derived")
+
+
+@dataclass(frozen=True, init=False, slots=True)
+class SanitizedTrainingView:
+    """Factory-only future executor boundary containing privacy-safe values only."""
+
+    authority_kind: str
+    digest_protocol: str
+    preparation_protocol: str
+    preparation_runner_digest: str
+    candidate_checksum_record_sha256: str
+    preparation_manifest_sha256: str
+    schedule_plan_identity_sha256: str
+    training_mask_seed: int
+    validation_mask_seed: int
+    condition_order: tuple[str, ...]
+    condition_digests: tuple[tuple[str, str], ...]
+    conditions: tuple[SanitizedConditionTrainingView, ...] = field(repr=False)
+    semantic_sha256: str
+
+    def __new__(cls) -> SanitizedTrainingView:
+        raise PreparationError("sanitized training views must be factory-derived")
+
+
+def _immutable_array(array: np.ndarray) -> np.ndarray:
+    """Return an immutable, bytes-backed copy with no mutable caller alias."""
+
+    if not isinstance(array, np.ndarray) or array.ndim != 2:
+        raise PreparationError("sanitized tensor array is invalid")
+    immutable = np.frombuffer(array.tobytes(order="C"), dtype=array.dtype).reshape(
+        array.shape
+    )
+    if immutable.flags.writeable or immutable.base is None:
+        raise PreparationError("sanitized tensor array is not immutable")
+    return immutable
+
+
+def _derive_sanitized_tensor_arrays(
+    input_ids: np.ndarray,
+    attention_mask: np.ndarray,
+    token_type_ids: np.ndarray,
+    labels: np.ndarray | None = None,
+) -> SanitizedTensorArrays:
+    result = object.__new__(SanitizedTensorArrays)
+    values = {
+        "input_ids": _immutable_array(input_ids),
+        "attention_mask": _immutable_array(attention_mask),
+        "token_type_ids": _immutable_array(token_type_ids),
+        "labels": None if labels is None else _immutable_array(labels),
+    }
+    if (
+        values["input_ids"].shape != values["attention_mask"].shape
+        or values["input_ids"].shape != values["token_type_ids"].shape
+        or (
+            values["labels"] is not None
+            and values["labels"].shape != values["input_ids"].shape
+        )
+    ):
+        raise PreparationError("sanitized tensor shapes do not reconcile")
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def _sanitized_tensor_digest_contract(arrays: SanitizedTensorArrays) -> str:
+    if type(arrays) is not SanitizedTensorArrays:
+        raise PreparationError("sanitized tensor authority is invalid")
+    material: list[object] = []
+    for name in ("input_ids", "attention_mask", "token_type_ids", "labels"):
+        array = getattr(arrays, name)
+        material.append(
+            [
+                name,
+                None if array is None else str(array.dtype),
+                None if array is None else list(array.shape),
+                None if array is None else _sha256_bytes(array.tobytes(order="C")),
+            ]
+        )
+    return _sha256_bytes(
+        canonical_json_bytes(["neu_sanitized_tensor_arrays_v1", material])
+    )
+
+
+def _plan_evidence_contract(value: object) -> object:
+    if value is None or isinstance(value, str | int | float | bool):
+        return value
+    if isinstance(value, tuple | list):
+        return [_plan_evidence_contract(item) for item in value]
+    if type(value) is SimpleNamespace:
+        return [
+            "SimpleNamespace",
+            [
+                [name, _plan_evidence_contract(item)]
+                for name, item in sorted(vars(value).items())
+            ],
+        ]
+    fields = getattr(type(value), "__dataclass_fields__", None)
+    if isinstance(fields, dict):
+        return [
+            type(value).__name__,
+            [
+                [name, _plan_evidence_contract(getattr(value, name))]
+                for name in fields
+            ],
+        ]
+    raise PreparationError("sanitized schedule evidence is invalid")
+
+
+def _schedule_evidence_digest_contract(schedule: object) -> str:
+    return _sha256_bytes(
+        canonical_json_bytes(
+            ["neu_sanitized_complete_schedule_evidence_v1", _plan_evidence_contract(schedule)]
+        )
+    )
+
+
+def sanitized_condition_view_digest(
+    view: SanitizedConditionTrainingView,
+) -> str:
+    """Recompute the canonical tensor, schedule, and validation condition binding."""
+
+    if type(view) is not SanitizedConditionTrainingView:
+        raise PreparationError("sanitized condition authority is invalid")
+    train_digest = _sanitized_tensor_digest_contract(view.train_tensors)
+    validation_digest = _sanitized_tensor_digest_contract(view.validation_tensors)
+    schedule_digest = _schedule_evidence_digest_contract(view.schedule)
+    validation_plan_digest = _sha256_bytes(
+        canonical_json_bytes(
+            [
+                "neu_sanitized_fixed_validation_plan_v1",
+                view.condition,
+                view.ordered_validation_identities,
+                _plan_evidence_contract(view.validation_record),
+                validation_digest,
+                view.aggregate_evidence,
+            ]
+        )
+    )
+    return _sha256_bytes(
+        canonical_json_bytes(
+            [
+                "neu_sanitized_condition_training_view_v1",
+                view.condition,
+                train_digest,
+                validation_digest,
+                schedule_digest,
+                validation_plan_digest,
+                view.ordered_train_identities,
+                view.ordered_validation_identities,
+                view.aggregate_evidence,
+            ]
+        )
+    )
+
+
+def sanitized_training_view_digest(view: SanitizedTrainingView) -> str:
+    """Canonical preparation/execution digest contract for a sanitized live view."""
+
+    if type(view) is not SanitizedTrainingView:
+        raise PreparationError("sanitized training authority is invalid")
+    live_condition_digests = tuple(
+        (item.condition, sanitized_condition_view_digest(item))
+        for item in view.conditions
+    )
+    return _sha256_bytes(
+        canonical_json_bytes(
+            [
+                SANITIZED_TRAINING_VIEW_PROTOCOL,
+                view.preparation_protocol,
+                view.preparation_runner_digest,
+                view.candidate_checksum_record_sha256,
+                view.preparation_manifest_sha256,
+                view.schedule_plan_identity_sha256,
+                view.training_mask_seed,
+                view.validation_mask_seed,
+                view.condition_order,
+                live_condition_digests,
+            ]
+        )
+    )
+
+
+def _derive_synthetic_sanitized_training_view_from_verified_material(
+    *,
+    checksum_identity: str,
+    manifest_identity: str,
+    plan: TrainingExposurePlan,
+    packed_arrays: Mapping[
+        tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]
+    ],
+    training_identities: Mapping[str, tuple[str, ...]],
+    tiny_validation_material: Mapping[
+        str,
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            tuple[str, ...],
+            ValidationMaskRecord,
+        ],
+    ],
+    authority_kind: str = "synthetic_test_only",
+    preparation_protocol: str = PREPARATION_PROTOCOL_VERSION,
+    preparation_runner_digest: str = SANITIZED_PREPARATION_RUNNER_DIGEST,
+) -> SanitizedTrainingView:
+    if (
+        tuple(schedule.condition for schedule in plan.conditions) != CONDITIONS
+        or set(training_identities) != set(CONDITIONS)
+        or set(tiny_validation_material) != set(CONDITIONS)
+    ):
+        raise PreparationError("sanitized training population is incomplete")
+    condition_views: list[SanitizedConditionTrainingView] = []
+    for schedule in plan.conditions:
+        condition = schedule.condition
+        train = packed_arrays[(condition, "train")]
+        validation = tiny_validation_material[condition]
+        identities = tuple(training_identities[condition])
+        validation_identities = tuple(validation[4])
+        if (
+            len(identities) != train[0].shape[0]
+            or len(validation_identities) != validation[0].shape[0]
+        ):
+            raise PreparationError("sanitized training identities do not reconcile")
+        train_tensors = _derive_sanitized_tensor_arrays(*train)
+        validation_tensors = _derive_sanitized_tensor_arrays(
+            validation[0], validation[2], validation[3], validation[1]
+        )
+        aggregates = (
+            ("train_sequences", train[0].shape[0]),
+            ("train_tensor_positions", train[0].size),
+            ("train_attended_positions", int(train[1].sum())),
+            ("validation_sequences", validation[0].shape[0]),
+            ("validation_tensor_positions", validation[0].size),
+            ("validation_attended_positions", int(validation[2].sum())),
+            (
+                "validation_selected_targets",
+                int(np.count_nonzero(validation[1] != -100)),
+            ),
+        )
+        view = object.__new__(SanitizedConditionTrainingView)
+        for name, value in {
+            "condition": condition,
+            "train_tensors": train_tensors,
+            "ordered_train_identities": identities,
+            "schedule": schedule,
+            "validation_tensors": validation_tensors,
+            "ordered_validation_identities": validation_identities,
+            "validation_record": validation[5],
+            "aggregate_evidence": aggregates,
+            "train_tensor_sha256": _sanitized_tensor_digest_contract(train_tensors),
+            "validation_tensor_sha256": _sanitized_tensor_digest_contract(
+                validation_tensors
+            ),
+            "schedule_evidence_sha256": _schedule_evidence_digest_contract(schedule),
+            "validation_plan_sha256": _sha256_bytes(
+                canonical_json_bytes(
+                    [
+                        "neu_sanitized_fixed_validation_plan_v1",
+                        condition,
+                        validation_identities,
+                        _plan_evidence_contract(validation[5]),
+                        _sanitized_tensor_digest_contract(validation_tensors),
+                        aggregates,
+                    ]
+                )
+            ),
+        }.items():
+            object.__setattr__(view, name, value)
+        object.__setattr__(view, "semantic_sha256", sanitized_condition_view_digest(view))
+        condition_views.append(view)
+    result = object.__new__(SanitizedTrainingView)
+    values = {
+        "authority_kind": authority_kind,
+        "digest_protocol": SANITIZED_TRAINING_VIEW_PROTOCOL,
+        "preparation_protocol": preparation_protocol,
+        "preparation_runner_digest": preparation_runner_digest,
+        "candidate_checksum_record_sha256": checksum_identity,
+        "preparation_manifest_sha256": manifest_identity,
+        "schedule_plan_identity_sha256": plan.identity_sha256,
+        "training_mask_seed": 11_729,
+        "validation_mask_seed": 21_729,
+        "condition_order": CONDITIONS,
+        "condition_digests": tuple(
+            (view.condition, view.semantic_sha256) for view in condition_views
+        ),
+        "conditions": tuple(condition_views),
+    }
+    for name, value in values.items():
+        object.__setattr__(result, name, value)
+    object.__setattr__(result, "semantic_sha256", sanitized_training_view_digest(result))
+    return result
+
+
+@dataclass(frozen=True, init=False, slots=True)
 class PreparationSnapshot:
     """Immutable, internally verified snapshot that remains scientifically unapproved."""
 
@@ -8128,6 +8486,7 @@ class PreparationSnapshot:
     _reconciliation_key_path: Path = field(repr=False)
     _tree_identity_sha256: str = field(repr=False)
     _validation_snapshots: tuple[CandidateValidationSnapshot, ...] = field(repr=False)
+    _sanitized_training_view: SanitizedTrainingView = field(repr=False, compare=False)
 
     def __new__(cls) -> PreparationSnapshot:
         raise PreparationError("preparation snapshots must be candidate-loader-derived")
@@ -8160,6 +8519,7 @@ def _verify_preparation_snapshot_with_loader(
         snapshot._reconciliation_key_path,
         snapshot._tree_identity_sha256,
         snapshot._validation_snapshots,
+        snapshot._sanitized_training_view.semantic_sha256,
     )
     expected = (
         loaded.status,
@@ -8174,6 +8534,7 @@ def _verify_preparation_snapshot_with_loader(
         loaded._reconciliation_key_path,
         loaded._tree_identity_sha256,
         loaded._validation_snapshots,
+        loaded._sanitized_training_view.semantic_sha256,
     )
     if values != expected:
         raise error_type("preparation candidate snapshot changed")
@@ -8452,6 +8813,17 @@ def _load_preparation_candidate(
         tuple[str, str],
         tuple[np.ndarray, np.ndarray, np.ndarray],
     ] = {}
+    tiny_validation_material: dict[
+        str,
+        tuple[
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            np.ndarray,
+            tuple[str, ...],
+            ValidationMaskRecord,
+        ],
+    ] = {}
     for condition in CONDITIONS:
         condition_aggregates = aggregates[condition]
         if not isinstance(condition_aggregates, dict) or set(condition_aggregates) != {
@@ -8655,6 +9027,15 @@ def _load_preparation_candidate(
             )
             validation_records.append(binding)
             derived_records.append({"plan_name": plan_name, **record_payload})
+            if plan_name == "tiny_smoke_1":
+                tiny_validation_material[condition] = (
+                    masked,
+                    labels,
+                    attention,
+                    token_types,
+                    tuple(ordered_identities),
+                    record,
+                )
 
     if manifest["derived_validation_records"] != derived_records:
         raise PreparationError("candidate validation records do not match their artifacts")
@@ -9135,6 +9516,19 @@ def _load_preparation_candidate(
         _sha256_bytes(canonical_json_bytes(tree_payload)),
     )
     object.__setattr__(result, "_validation_snapshots", tuple(validation_records))
+    object.__setattr__(
+        result,
+        "_sanitized_training_view",
+        _derive_synthetic_sanitized_training_view_from_verified_material(
+            checksum_identity=checksum_identity,
+            manifest_identity=manifest_identity,
+            plan=regenerated_plan,
+            packed_arrays=packed_arrays,
+            training_identities=training_identities,
+            tiny_validation_material=tiny_validation_material,
+            authority_kind="production_loader",
+        ),
+    )
     return result
 
 
@@ -9217,6 +9611,119 @@ def _create_closed_snapshot_verifier(
     return closed_snapshot_verifier
 
 
+def _create_closed_sanitized_training_view_bridge(
+    candidate_loader: Callable[..., PreparationSnapshot],
+    reviewed_graph: Mapping[str, object],
+) -> Callable[[PreparationSnapshot], SanitizedTrainingView]:
+    """Re-load the reviewed candidate and return only its tensor-only bridge."""
+
+    reviewed_snapshot_type = PreparationSnapshot
+    reviewed_internal_view_type = reviewed_graph["sanitized_view_type"]
+    reviewed_internal_condition_type = reviewed_graph["sanitized_condition_type"]
+    reviewed_internal_tensor_type = reviewed_graph["sanitized_tensor_type"]
+    reviewed_internal_digest = reviewed_graph["sanitized_view_digest"]
+    reviewed_public_view_type = SanitizedTrainingView
+    reviewed_public_condition_type = SanitizedConditionTrainingView
+    reviewed_public_tensor_type = SanitizedTensorArrays
+    reviewed_public_digest = sanitized_training_view_digest
+    reviewed_immutable_array = _immutable_array
+    reviewed_error = PreparationError
+
+    def export_tensors(value: object) -> SanitizedTensorArrays:
+        if type(value) is not reviewed_internal_tensor_type:
+            raise reviewed_error("sanitized training view failed closed verification")
+        exported = object.__new__(reviewed_public_tensor_type)
+        for name in ("input_ids", "attention_mask", "token_type_ids", "labels"):
+            array = getattr(value, name)
+            object.__setattr__(
+                exported,
+                name,
+                None if array is None else reviewed_immutable_array(array),
+            )
+        return exported
+
+    def closed_bridge(snapshot: PreparationSnapshot) -> SanitizedTrainingView:
+        if type(snapshot) is not reviewed_snapshot_type:
+            raise reviewed_error("sanitized training view requires a reviewed snapshot")
+        loaded = candidate_loader(
+            snapshot._candidate_root,
+            reconciliation_key_path=snapshot._reconciliation_key_path,
+        )
+        internal_view = loaded._sanitized_training_view
+        if (
+            type(internal_view) is not reviewed_internal_view_type
+            or internal_view.authority_kind != "production_loader"
+            or internal_view.digest_protocol != SANITIZED_TRAINING_VIEW_PROTOCOL
+            or internal_view.preparation_protocol != PREPARATION_PROTOCOL_VERSION
+            or internal_view.preparation_runner_digest
+            != SANITIZED_PREPARATION_RUNNER_DIGEST
+            or internal_view.semantic_sha256
+            != reviewed_internal_digest(internal_view)
+            or internal_view.condition_order != CONDITIONS
+            or tuple(item.condition for item in internal_view.conditions) != CONDITIONS
+        ):
+            raise reviewed_error("sanitized training view failed closed verification")
+        exported_conditions: list[SanitizedConditionTrainingView] = []
+        for internal_condition in internal_view.conditions:
+            if type(internal_condition) is not reviewed_internal_condition_type:
+                raise reviewed_error("sanitized training view failed closed verification")
+            exported_condition = object.__new__(reviewed_public_condition_type)
+            for name, value in {
+                "condition": internal_condition.condition,
+                "train_tensors": export_tensors(internal_condition.train_tensors),
+                "ordered_train_identities": tuple(
+                    internal_condition.ordered_train_identities
+                ),
+                "schedule": internal_condition.schedule,
+                "validation_tensors": export_tensors(
+                    internal_condition.validation_tensors
+                ),
+                "ordered_validation_identities": tuple(
+                    internal_condition.ordered_validation_identities
+                ),
+                "validation_record": internal_condition.validation_record,
+                "aggregate_evidence": tuple(internal_condition.aggregate_evidence),
+                "train_tensor_sha256": internal_condition.train_tensor_sha256,
+                "validation_tensor_sha256": (
+                    internal_condition.validation_tensor_sha256
+                ),
+                "schedule_evidence_sha256": (
+                    internal_condition.schedule_evidence_sha256
+                ),
+                "validation_plan_sha256": internal_condition.validation_plan_sha256,
+                "semantic_sha256": internal_condition.semantic_sha256,
+            }.items():
+                object.__setattr__(exported_condition, name, value)
+            exported_conditions.append(exported_condition)
+        exported = object.__new__(reviewed_public_view_type)
+        for name in (
+            "authority_kind",
+            "digest_protocol",
+            "preparation_protocol",
+            "preparation_runner_digest",
+            "candidate_checksum_record_sha256",
+            "preparation_manifest_sha256",
+            "schedule_plan_identity_sha256",
+            "training_mask_seed",
+            "validation_mask_seed",
+            "condition_order",
+            "condition_digests",
+            "semantic_sha256",
+        ):
+            object.__setattr__(exported, name, getattr(internal_view, name))
+        object.__setattr__(exported, "conditions", tuple(exported_conditions))
+        if exported.semantic_sha256 != reviewed_public_digest(exported):
+            raise reviewed_error("sanitized training view failed closed verification")
+        return exported
+
+    closed_bridge.__name__ = "derive_sanitized_training_view"
+    closed_bridge.__qualname__ = "derive_sanitized_training_view"
+    closed_bridge.__doc__ = (
+        "Re-anchor a reviewed preparation snapshot and return its sanitized view."
+    )
+    return closed_bridge
+
+
 def _stabilize_preparation_boundary_types(
     previous_types: Mapping[str, type[object]] | None,
 ) -> Mapping[str, type[object]]:
@@ -9293,6 +9800,10 @@ load_preparation_candidate = _create_closed_candidate_loader(
 verify_preparation_snapshot = _create_closed_snapshot_verifier(
     load_preparation_candidate
 )
+derive_sanitized_training_view = _create_closed_sanitized_training_view_bridge(
+    load_preparation_candidate,
+    _reviewed_production_graph,
+)
 prepare_and_publish_production = _create_closed_production_entrypoint(
     _reviewed_production_graph
 )
@@ -9301,3 +9812,4 @@ del _create_reviewed_production_graph
 del _create_closed_production_entrypoint
 del _create_closed_candidate_loader
 del _create_closed_snapshot_verifier
+del _create_closed_sanitized_training_view_bridge
