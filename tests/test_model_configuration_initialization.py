@@ -44,6 +44,8 @@ from cslm.modeling.initialization import (
     create_paired_initialization,
     initial_state_sha256,
     verify_identical_initial_states,
+    verify_independent_tiny_smoke_optimizers,
+    verify_tiny_smoke_paired_initialization,
 )
 from cslm.modeling.masking import (
     MaskingContractError,
@@ -355,6 +357,42 @@ def test_initialization_verifier_rejects_shared_parameter_storage() -> None:
     with pytest.raises(InitializationContractError, match="storage is shared"):
         verify_identical_initial_states(
             shared,
+            NEU_TINY,
+            expected_configuration_sha256=paired.manifest.configuration_sha256,
+            expected_state_sha256=paired.manifest.initial_state_sha256,
+        )
+
+
+def test_tiny_smoke_verifier_checks_exact_cpu_pair_and_independent_optimizers() -> None:
+    paired = create_paired_initialization(NEU_TINY, TINY_SMOKE_SEED_PLANS[0])
+    optimizers = {
+        condition: torch.optim.AdamW(
+            tuple(model.parameters()),
+            lr=1e-4,
+            betas=(0.9, 0.999),
+            eps=1e-8,
+            weight_decay=0.01,
+            foreach=False,
+            fused=False,
+        )
+        for condition, model in paired.models.items()
+    }
+    verify_tiny_smoke_paired_initialization(paired)
+    verify_independent_tiny_smoke_optimizers(paired.models, optimizers)
+
+
+def test_initialization_verifier_rejects_cross_condition_buffer_storage() -> None:
+    paired = create_paired_initialization(NEU_TINY, TINY_SMOKE_SEED_PLANS[0])
+    first = paired.models["EnglishMono"]
+    second = paired.models["CsCont"]
+    second.bert.embeddings.register_buffer(
+        "position_ids",
+        first.bert.embeddings.position_ids,
+        persistent=False,
+    )
+    with pytest.raises(InitializationContractError, match="buffer storage is shared"):
+        verify_identical_initial_states(
+            paired.models,
             NEU_TINY,
             expected_configuration_sha256=paired.manifest.configuration_sha256,
             expected_state_sha256=paired.manifest.initial_state_sha256,

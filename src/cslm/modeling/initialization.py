@@ -304,6 +304,13 @@ def verify_identical_initial_states(
                 raise InitializationContractError(
                     "parameter storage is shared across conditions"
                 )
+        for _, buffer in _named_buffers(model):
+            storage_key = (str(buffer.device), buffer.untyped_storage().data_ptr())
+            owner = storage_owners.setdefault(storage_key, condition)
+            if owner != condition:
+                raise InitializationContractError(
+                    "buffer storage is shared across conditions"
+                )
 
     for condition in CONDITIONS:
         model = models[condition]
@@ -370,6 +377,104 @@ def create_paired_initialization(
     object.__setattr__(paired, "models", MappingProxyType(models))
     object.__setattr__(paired, "manifest", manifest)
     return paired
+
+
+def verify_tiny_smoke_paired_initialization(
+    paired: PairedInitialization,
+) -> None:
+    """Revalidate the exact CPU Tiny pair, including cross-condition storage."""
+
+    if type(paired) is not PairedInitialization:
+        raise InitializationContractError(
+            "Tiny smoke requires an exact paired initialization"
+        )
+    specification = approved_model_specification(ModelSize.TINY)
+    if (
+        paired.manifest.model_size is not ModelSize.TINY
+        or paired.manifest.seed_plan != TINY_SMOKE_SEED_PLANS[0]
+        or any(
+            parameter.device.type != "cpu"
+            for model in paired.models.values()
+            for parameter in model.parameters()
+        )
+        or any(
+            buffer.device.type != "cpu"
+            for model in paired.models.values()
+            for buffer in model.buffers()
+        )
+    ):
+        raise InitializationContractError(
+            "Tiny smoke initialization differs from the CPU-only policy"
+        )
+    paired.manifest._validate()
+    verify_identical_initial_states(
+        paired.models,
+        specification,
+        expected_configuration_sha256=paired.manifest.configuration_sha256,
+        expected_state_sha256=paired.manifest.initial_state_sha256,
+    )
+    if (
+        _derive_initialization_manifest(
+            paired.models,
+            specification,
+            TINY_SMOKE_SEED_PLANS[0],
+        )
+        != paired.manifest
+    ):
+        raise InitializationContractError(
+            "Tiny smoke initialization manifest does not match live state"
+        )
+
+
+def verify_independent_tiny_smoke_optimizers(
+    models: Mapping[str, BertForMaskedLM],
+    optimizers: Mapping[str, torch.optim.AdamW],
+) -> None:
+    """Require one exact, independent, uniform AdamW optimizer per condition."""
+
+    if (
+        tuple(models) != CONDITIONS
+        or tuple(optimizers) != CONDITIONS
+        or len({id(value) for value in optimizers.values()}) != len(CONDITIONS)
+        or len({id(value.state) for value in optimizers.values()}) != len(CONDITIONS)
+    ):
+        raise InitializationContractError(
+            "Tiny smoke optimizers are not condition-independent"
+        )
+    seen_parameters: set[int] = set()
+    for condition in CONDITIONS:
+        model = models[condition]
+        optimizer = optimizers[condition]
+        expected = tuple(
+            parameter for parameter in model.parameters() if parameter.requires_grad
+        )
+        if (
+            type(optimizer) is not torch.optim.AdamW
+            or len(optimizer.param_groups) != 1
+            or tuple(optimizer.param_groups[0]["params"]) != expected
+            or len({id(parameter) for parameter in expected}) != len(expected)
+        ):
+            raise InitializationContractError(
+                "Tiny smoke optimizer parameter grouping is invalid"
+            )
+        group = optimizer.param_groups[0]
+        if (
+            group["lr"] != 1e-4
+            or group["betas"] != (0.9, 0.999)
+            or group["eps"] != 1e-8
+            or group["weight_decay"] != 0.01
+            or group.get("foreach") is not False
+            or group.get("fused") is not False
+        ):
+            raise InitializationContractError(
+                "Tiny smoke AdamW settings differ from the approved policy"
+            )
+        identities = {id(parameter) for parameter in expected}
+        if seen_parameters & identities:
+            raise InitializationContractError(
+                "Tiny smoke optimizer parameters cross condition boundaries"
+            )
+        seen_parameters.update(identities)
 
 
 def _install_reviewed_dependency_capsule() -> None:

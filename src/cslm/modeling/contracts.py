@@ -195,6 +195,26 @@ APPROVED_OPTIMIZER = OptimizerContract()
 APPROVED_BUDGET = TrainingBudgetContract()
 APPROVED_DEVICE_POLICY = DevicePolicyContract()
 
+# The approved Tiny executor is a narrower CPU-only gate layered over the
+# pre-existing future device policy.  The Small/MPS contract above is unchanged.
+TINY_SMOKE_EXECUTOR_DEVICE = "cpu"
+TINY_SMOKE_MAXIMUM_CONCURRENCY = 1
+TINY_SMOKE_VALIDATION_UPDATES = (
+    100,
+    200,
+    300,
+    400,
+    500,
+    600,
+    700,
+    800,
+    900,
+    1_000,
+)
+TINY_SMOKE_CHECKPOINT_UPDATES = (0, 250, 500, 750, 1_000)
+TINY_SMOKE_DROPOUT_BASE_SEED = 31_729
+TINY_SMOKE_DROPOUT_PROTOCOL = "neu_tiny_training_dropout_forward_v1"
+
 
 @dataclass(frozen=True, init=False)
 class RunManifest:

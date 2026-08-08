@@ -3582,6 +3582,25 @@ def test_production_lifecycle_static_call_graph_is_explicitly_captured() -> None
         reviewed_protocol["special_tokens"]["[CLS]"] = 99
 
 
+def test_existing_65_public_boundaries_remain_unchanged_and_smoke_types_are_separate() -> None:
+    import cslm.modeling.smoke_training as smoke_training
+
+    existing = preparation_module._STABLE_PUBLIC_BOUNDARY_CLASS_INVENTORY
+    assert sum(len(names) for names in existing.values()) == 65
+    assert not {
+        "SanitizedConditionTrainingView",
+        "SanitizedTensorArrays",
+        "SanitizedTrainingView",
+    } & existing[preparation_module.__name__]
+    assert smoke_training.SMOKE_PUBLIC_BOUNDARY_CLASS_INVENTORY[
+        preparation_module.__name__
+    ] == {
+        "SanitizedConditionTrainingView",
+        "SanitizedTensorArrays",
+        "SanitizedTrainingView",
+    }
+
+
 @pytest.mark.parametrize(
     "blocked_name",
     (
@@ -5135,6 +5154,15 @@ def test_production_shaped_stage_round_trip_accepts_different_filler_order(
     assert current_snapshot.candidate_checksum_record_sha256 == (
         old_snapshot.candidate_checksum_record_sha256
     )
+    sanitized = preparation_module.derive_sanitized_training_view(current_snapshot)
+    assert sanitized.authority_kind == "production_loader"
+    assert sanitized.condition_order == CONDITIONS
+    assert sanitized.digest_protocol == "neu_sanitized_training_view_digest_v1"
+    assert sanitized.semantic_sha256 == preparation_module.sanitized_training_view_digest(
+        sanitized
+    )
+    assert tuple(item.condition for item in sanitized.conditions) == CONDITIONS
+    assert all(not item.train_tensors.input_ids.flags.writeable for item in sanitized.conditions)
     assert permissive_calls == []
     shutil.rmtree(public_root)
     assert not public_root.exists()
