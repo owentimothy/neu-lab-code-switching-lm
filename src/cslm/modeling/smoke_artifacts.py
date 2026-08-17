@@ -22,6 +22,8 @@ _COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,95}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CHECKPOINT_UPDATES = frozenset({0, 250, 500, 750, 1_000})
 _CONDITIONS = ("EnglishMono", "SpanishMono", "MonoCont", "CsCont")
+_CHECKPOINT_PROTOCOL = "neu_tiny_smoke_checkpoint_v2"
+_CHECKPOINT_COMPLETION_SCHEMA_VERSION = 2
 _BASELINE_TRACKER_SHA256 = (
     "46d24c4d0442cb5c871db01e71529258bae38bb0c09127fe06d794e4d5596e12"
 )
@@ -88,6 +90,110 @@ def _canonical_json_bytes(value: object) -> bytes:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _canonical_checkpoint_transaction_files(
+    payloads: Mapping[str, bytes],
+) -> Mapping[str, bytes]:
+    """Build the sole persisted v2 checkpoint transaction schema."""
+
+    base_names = {
+        "checkpoint_state.pt",
+        "checkpoint_manifest.json",
+        "checkpoint_inventory.json",
+    }
+    if (
+        not isinstance(payloads, Mapping)
+        or set(payloads) != base_names
+        or any(type(content) is not bytes for content in payloads.values())
+    ):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
+    try:
+        manifest = json.loads(payloads["checkpoint_manifest.json"].decode("utf-8"))
+        inner_inventory = json.loads(
+            payloads["checkpoint_inventory.json"].decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE) from None
+    expected_inner_inventory = {
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "mode": "0600",
+                "sha256": _sha256(payloads[name]),
+                "size": len(payloads[name]),
+            }
+            for name in ("checkpoint_manifest.json", "checkpoint_state.pt")
+        },
+        "schema_version": 2,
+    }
+    semantic_hash_fields = (
+        "authorization_sha256",
+        "candidate_checksum_record_sha256",
+        "launch_manifest_sha256",
+        "sanitized_view_sha256",
+    )
+    if (
+        not isinstance(manifest, dict)
+        or not isinstance(inner_inventory, dict)
+        or _canonical_json_bytes(manifest) != payloads["checkpoint_manifest.json"]
+        or _canonical_json_bytes(inner_inventory)
+        != payloads["checkpoint_inventory.json"]
+        or inner_inventory != expected_inner_inventory
+        or manifest.get("checkpoint_protocol") != _CHECKPOINT_PROTOCOL
+        or manifest.get("condition") not in _CONDITIONS
+        or manifest.get("device") != "cpu"
+        or type(manifest.get("completed_optimizer_update")) is not int
+        or manifest["completed_optimizer_update"] not in _CHECKPOINT_UPDATES
+        or manifest.get("checkpoint_namespace")
+        != f"checkpoint-{manifest['completed_optimizer_update']:04d}"
+        or any(
+            not isinstance(manifest.get(name), str)
+            or _SHA256_RE.fullmatch(manifest[name]) is None
+            for name in semantic_hash_fields
+        )
+    ):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
+    outer_inventory = {
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "mode": "0600",
+                "sha256": _sha256(payloads[name]),
+                "size": len(payloads[name]),
+            }
+            for name in sorted(base_names)
+        },
+        "schema_version": 1,
+    }
+    outer_inventory_bytes = _canonical_json_bytes(outer_inventory)
+    completion = {
+        "artifact_transaction_inventory_sha256": _sha256(outer_inventory_bytes),
+        "artifact_transaction_inventory_size": len(outer_inventory_bytes),
+        "authorization_sha256": manifest["authorization_sha256"],
+        "candidate_checksum_record_sha256": manifest[
+            "candidate_checksum_record_sha256"
+        ],
+        "checkpoint_inventory_sha256": _sha256(
+            payloads["checkpoint_inventory.json"]
+        ),
+        "checkpoint_protocol": _CHECKPOINT_PROTOCOL,
+        "complete": True,
+        "completed_optimizer_update": manifest["completed_optimizer_update"],
+        "condition": manifest["condition"],
+        "device": "cpu",
+        "launch_manifest_sha256": manifest["launch_manifest_sha256"],
+        "namespace": manifest["checkpoint_namespace"],
+        "sanitized_view_sha256": manifest["sanitized_view_sha256"],
+        "schema_version": _CHECKPOINT_COMPLETION_SCHEMA_VERSION,
+    }
+    return MappingProxyType(
+        {
+            **dict(payloads),
+            "inventory.json": outer_inventory_bytes,
+            "CHECKPOINT_COMPLETE.json": _canonical_json_bytes(completion),
+        }
+    )
 
 
 def _tracker_authority_is_exact(value: object) -> bool:
@@ -382,6 +488,8 @@ def _commit_tree_at(
     completion_name: str,
     completion_fields: Mapping[str, object],
     hook: Callable[[str], None] | None = None,
+    exact_inventory_bytes: bytes | None = None,
+    exact_completion_bytes: bytes | None = None,
 ) -> ArtifactCommitResult:
     namespace = _safe_component(namespace)
     completion_name = _safe_file_name(completion_name)
@@ -403,6 +511,9 @@ def _commit_tree_at(
             "tracker_authority_sha256",
         }
     )
+    exact_records = (
+        exact_inventory_bytes is not None or exact_completion_bytes is not None
+    )
     if (
         not isinstance(payloads, Mapping)
         or not payloads
@@ -411,8 +522,21 @@ def _commit_tree_at(
         or any(_safe_file_name(name) != name for name in payloads)
         or any(type(content) is not bytes for content in payloads.values())
         or not isinstance(completion_fields, Mapping)
-        or set(completion_fields) & reserved_completion_keys
-        or not set(completion_fields) <= allowed_completion_keys
+        or (
+            exact_records
+            and (
+                type(exact_inventory_bytes) is not bytes
+                or type(exact_completion_bytes) is not bytes
+                or completion_fields
+            )
+        )
+        or (
+            not exact_records
+            and (
+                set(completion_fields) & reserved_completion_keys
+                or not set(completion_fields) <= allowed_completion_keys
+            )
+        )
     ):
         raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
     stage_name = "artifact-stage-" + secrets.token_hex(16)
@@ -440,21 +564,29 @@ def _commit_tree_at(
                 "schema_version": 1,
             }
         )
+        if exact_records and inventory_bytes != exact_inventory_bytes:
+            raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
         inventory_digest, inventory_size = _write_file_at(
             stage_descriptor,
             "inventory.json",
             inventory_bytes,
             hook=hook,
         )
-        completion = {
-            **dict(completion_fields),
-            "complete": True,
-            "inventory_sha256": inventory_digest,
-            "inventory_size": inventory_size,
-            "namespace": namespace,
-            "schema_version": 1,
-        }
-        completion_bytes = _canonical_json_bytes(completion)
+        completion_bytes = (
+            exact_completion_bytes
+            if exact_records
+            else _canonical_json_bytes(
+                {
+                    **dict(completion_fields),
+                    "complete": True,
+                    "inventory_sha256": inventory_digest,
+                    "inventory_size": inventory_size,
+                    "namespace": namespace,
+                    "schema_version": 1,
+                }
+            )
+        )
+        assert isinstance(completion_bytes, bytes)
         completion_digest, _ = _write_file_at(
             stage_descriptor,
             completion_name,
@@ -567,49 +699,39 @@ def commit_private_checkpoint(
         or completed_update not in _CHECKPOINT_UPDATES
     ):
         raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
-    try:
-        if set(payloads) != {
-            "checkpoint_state.pt",
-            "checkpoint_manifest.json",
-            "checkpoint_inventory.json",
-            "CHECKPOINT_COMPLETE.json",
-        }:
-            raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
-        manifest = json.loads(payloads["checkpoint_manifest.json"].decode("utf-8"))
-        inner_inventory = json.loads(
-            payloads["checkpoint_inventory.json"].decode("utf-8")
-        )
-        completion = json.loads(
-            payloads["CHECKPOINT_COMPLETE.json"].decode("utf-8")
-        )
-        if (
-            not isinstance(manifest, dict)
-            or not isinstance(inner_inventory, dict)
-            or not isinstance(completion, dict)
-            or _canonical_json_bytes(manifest) != payloads["checkpoint_manifest.json"]
-            or _canonical_json_bytes(inner_inventory)
-            != payloads["checkpoint_inventory.json"]
-            or _canonical_json_bytes(completion) != payloads["CHECKPOINT_COMPLETE.json"]
-            or completion.get("complete") is not True
-            or completion.get("condition") != condition
-            or completion.get("completed_optimizer_update") != completed_update
-            or completion.get("namespace") != f"checkpoint-{completed_update:04d}"
-            or completion.get("inventory_sha256")
-            != _sha256(payloads["checkpoint_inventory.json"])
-            or completion.get("checkpoint_protocol")
-            != manifest.get("checkpoint_protocol")
-            or completion.get("authorization_sha256")
-            != manifest.get("authorization_sha256")
-            or completion.get("candidate_checksum_record_sha256")
-            != manifest.get("candidate_checksum_record_sha256")
-            or completion.get("launch_manifest_sha256")
-            != manifest.get("launch_manifest_sha256")
-            or completion.get("sanitized_view_sha256")
-            != manifest.get("sanitized_view_sha256")
-        ):
-            raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
-    except (KeyError, UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE) from None
+    expected_names = {
+        "checkpoint_state.pt",
+        "checkpoint_manifest.json",
+        "checkpoint_inventory.json",
+        "inventory.json",
+        "CHECKPOINT_COMPLETE.json",
+    }
+    if (
+        not isinstance(payloads, Mapping)
+        or set(payloads) != expected_names
+        or any(type(content) is not bytes for content in payloads.values())
+    ):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
+    expected_files = _canonical_checkpoint_transaction_files(
+        {
+            name: payloads[name]
+            for name in (
+                "checkpoint_state.pt",
+                "checkpoint_manifest.json",
+                "checkpoint_inventory.json",
+            )
+        }
+    )
+    if (
+        any(payloads[name] != expected_files[name] for name in expected_files)
+    ):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
+    manifest = json.loads(payloads["checkpoint_manifest.json"].decode("utf-8"))
+    if (
+        manifest.get("condition") != condition
+        or manifest.get("completed_optimizer_update") != completed_update
+    ):
+        raise SmokeArtifactError(SMOKE_CHECKPOINT_WRITE_FAILURE)
     condition_descriptor = cpu_descriptor = -1
     try:
         condition_descriptor = os.open(
@@ -634,19 +756,10 @@ def commit_private_checkpoint(
                 )
             },
             completion_name="CHECKPOINT_COMPLETE.json",
-            completion_fields={
-                "authorization_sha256": completion["authorization_sha256"],
-                "candidate_checksum_record_sha256": completion[
-                    "candidate_checksum_record_sha256"
-                ],
-                "checkpoint_protocol": completion["checkpoint_protocol"],
-                "completed_optimizer_update": completed_update,
-                "condition": condition,
-                "device": "cpu",
-                "launch_manifest_sha256": completion["launch_manifest_sha256"],
-                "sanitized_view_sha256": completion["sanitized_view_sha256"],
-            },
+            completion_fields={},
             hook=_test_hook,
+            exact_inventory_bytes=expected_files["inventory.json"],
+            exact_completion_bytes=expected_files["CHECKPOINT_COMPLETE.json"],
         )
     finally:
         if cpu_descriptor >= 0:
@@ -732,7 +845,7 @@ def commit_private_condition_result(
                     or replay["fresh_interpreter"] is not True
                     or replay["last_replay_update"] != 1_000
                     or replay["protocol"]
-                    != "neu_tiny_englishmono_fresh_process_worker_v1"
+                    != "neu_tiny_englishmono_fresh_process_worker_v2"
                     or not isinstance(replay["replay_result_sha256"], str)
                     or _SHA256_RE.fullmatch(replay["replay_result_sha256"])
                     is None

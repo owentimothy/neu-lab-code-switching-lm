@@ -79,9 +79,9 @@ _previous_stable_preparation_types = getattr(
     None,
 )
 
-SANITIZED_TRAINING_VIEW_PROTOCOL = "neu_sanitized_training_view_digest_v1"
+SANITIZED_TRAINING_VIEW_PROTOCOL = "neu_sanitized_training_view_digest_v2"
 SANITIZED_PREPARATION_RUNNER_DIGEST = (
-    "8dee4b925cc436f60440f89b231998579bf16ec4c5864037f4841be79dd47667"
+    "c4bc94d531e9f0b4eba4f048f447fda7ae000854b6c77e4a7ceafadae20806eb"
 )
 
 _reviewed_dependency_modules = (
@@ -6411,6 +6411,7 @@ _PRODUCTION_LIFECYCLE_REVIEWED_LOCAL_FUNCTIONS = frozenset(
         "_snapshot_relative_jsonl_lines",
         "_snapshot_relative_regular_file",
         "_source_row_token_content_binding",
+        "_source_ranges_digest_contract",
         "_source_reuse_content_binding",
         "_stream_binding",
         "_stream_hash_relative_file",
@@ -8162,12 +8163,16 @@ class SanitizedConditionTrainingView:
     condition: str
     train_tensors: SanitizedTensorArrays = field(repr=False)
     ordered_train_identities: tuple[str, ...] = field(repr=False)
+    ordered_train_source_ranges: tuple[tuple[SourceTokenRange, ...], ...] = field(
+        repr=False
+    )
     schedule: Any = field(repr=False)
     validation_tensors: SanitizedTensorArrays = field(repr=False)
     ordered_validation_identities: tuple[str, ...] = field(repr=False)
     validation_record: ValidationMaskRecord
     aggregate_evidence: tuple[tuple[str, int], ...]
     train_tensor_sha256: str
+    train_source_ranges_sha256: str
     validation_tensor_sha256: str
     schedule_evidence_sha256: str
     validation_plan_sha256: str
@@ -8291,6 +8296,122 @@ def _schedule_evidence_digest_contract(schedule: object) -> str:
     )
 
 
+def _source_ranges_digest_contract(
+    condition: str,
+    arrays: SanitizedTensorArrays,
+    identities: tuple[str, ...],
+    source_ranges: tuple[tuple[SourceTokenRange, ...], ...],
+) -> str:
+    """Bind complete ordered pseudonymized train provenance to its packed tensors."""
+
+    if condition not in CONDITIONS:
+        raise PreparationError("sanitized source-range condition is invalid")
+    if type(arrays) is not SanitizedTensorArrays:
+        raise PreparationError("sanitized source-range tensor authority is invalid")
+    if type(identities) is not tuple or type(source_ranges) is not tuple:
+        raise PreparationError("sanitized source-range ordering is invalid")
+    if (
+        len(identities) != arrays.input_ids.shape[0]
+        or len(source_ranges) != arrays.input_ids.shape[0]
+    ):
+        raise PreparationError("sanitized source-range population is invalid")
+    if any(
+        not isinstance(identity, str) or _SHA256_RE.fullmatch(identity) is None
+        for identity in identities
+    ):
+        raise PreparationError("sanitized source-range identities are invalid")
+    material: list[object] = []
+    for index, ranges in enumerate(source_ranges):
+        if type(ranges) is not tuple or not ranges:
+            raise PreparationError("sanitized source-range authority is incomplete")
+        range_material: list[object] = []
+        for item in ranges:
+            if (
+                type(item) is not SourceTokenRange
+                or item.source
+                not in {
+                    "bangor_cgwords",
+                    "callhome_eng",
+                    "callhome_spa",
+                    "synthetic_privacy_safe",
+                }
+                or item.component
+                not in {
+                    "bangor_natural_span",
+                    "callhome_monolingual",
+                    "callhome_monolingual_filler",
+                    "synthetic_privacy_safe",
+                }
+                or any(
+                    not isinstance(value, str)
+                    or _SHA256_RE.fullmatch(value) is None
+                    for value in (
+                        item.document_id,
+                        item.conversation_id,
+                        item.row_id,
+                    )
+                )
+                or (
+                    item.span_id is not None
+                    and (
+                        not isinstance(item.span_id, str)
+                        or _SHA256_RE.fullmatch(item.span_id) is None
+                    )
+                )
+                or type(item.row_order) is not int
+                or item.row_order < 0
+                or item.language_shard not in {None, "english", "spanish"}
+            ):
+                raise PreparationError("sanitized source-range authority is not private")
+            range_material.append(
+                [
+                    item.condition,
+                    item.split,
+                    item.source,
+                    item.component,
+                    item.document_id,
+                    item.conversation_id,
+                    item.span_id,
+                    item.row_id,
+                    item.row_order,
+                    item.language_shard,
+                    item.source_row_token_count,
+                    item.source_token_start,
+                    item.source_token_end,
+                    item.packed_token_start,
+                    item.packed_token_end,
+                ]
+            )
+        try:
+            PackedSequence(
+                condition=condition,
+                split="train",
+                input_ids=tuple(int(value) for value in arrays.input_ids[index]),
+                attention_mask=tuple(
+                    int(value) for value in arrays.attention_mask[index]
+                ),
+                token_type_ids=tuple(
+                    int(value) for value in arrays.token_type_ids[index]
+                ),
+                provenance=ranges,
+                example_identity=identities[index],
+            )
+        except Exception:
+            raise PreparationError(
+                "sanitized source ranges do not reconcile with packed tensors"
+            ) from None
+        material.append([identities[index], range_material])
+    return _sha256_bytes(
+        canonical_json_bytes(
+            [
+                "neu_sanitized_ordered_pseudonymized_source_ranges_v1",
+                condition,
+                material,
+            ]
+        )
+    )
+
+
 def sanitized_condition_view_digest(
     view: SanitizedConditionTrainingView,
 ) -> str:
@@ -8299,6 +8420,14 @@ def sanitized_condition_view_digest(
     if type(view) is not SanitizedConditionTrainingView:
         raise PreparationError("sanitized condition authority is invalid")
     train_digest = _sanitized_tensor_digest_contract(view.train_tensors)
+    source_ranges_digest = _source_ranges_digest_contract(
+        view.condition,
+        view.train_tensors,
+        view.ordered_train_identities,
+        view.ordered_train_source_ranges,
+    )
+    if view.train_source_ranges_sha256 != source_ranges_digest:
+        raise PreparationError("sanitized source-range digest is inconsistent")
     validation_digest = _sanitized_tensor_digest_contract(view.validation_tensors)
     schedule_digest = _schedule_evidence_digest_contract(view.schedule)
     validation_plan_digest = _sha256_bytes(
@@ -8316,9 +8445,10 @@ def sanitized_condition_view_digest(
     return _sha256_bytes(
         canonical_json_bytes(
             [
-                "neu_sanitized_condition_training_view_v1",
+                "neu_sanitized_condition_training_view_v2",
                 view.condition,
                 train_digest,
+                source_ranges_digest,
                 validation_digest,
                 schedule_digest,
                 validation_plan_digest,
@@ -8365,6 +8495,9 @@ def _derive_synthetic_sanitized_training_view_from_verified_material(
     packed_arrays: Mapping[
         tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]
     ],
+    packed_provenance: Mapping[
+        tuple[str, str], tuple[tuple[SourceTokenRange, ...], ...]
+    ],
     training_identities: Mapping[str, tuple[str, ...]],
     tiny_validation_material: Mapping[
         str,
@@ -8391,11 +8524,13 @@ def _derive_synthetic_sanitized_training_view_from_verified_material(
     for schedule in plan.conditions:
         condition = schedule.condition
         train = packed_arrays[(condition, "train")]
+        train_source_ranges = packed_provenance.get((condition, "train"), ())
         validation = tiny_validation_material[condition]
         identities = tuple(training_identities[condition])
         validation_identities = tuple(validation[4])
         if (
             len(identities) != train[0].shape[0]
+            or len(train_source_ranges) != train[0].shape[0]
             or len(validation_identities) != validation[0].shape[0]
         ):
             raise PreparationError("sanitized training identities do not reconcile")
@@ -8420,12 +8555,19 @@ def _derive_synthetic_sanitized_training_view_from_verified_material(
             "condition": condition,
             "train_tensors": train_tensors,
             "ordered_train_identities": identities,
+            "ordered_train_source_ranges": tuple(train_source_ranges),
             "schedule": schedule,
             "validation_tensors": validation_tensors,
             "ordered_validation_identities": validation_identities,
             "validation_record": validation[5],
             "aggregate_evidence": aggregates,
             "train_tensor_sha256": _sanitized_tensor_digest_contract(train_tensors),
+            "train_source_ranges_sha256": _source_ranges_digest_contract(
+                condition,
+                train_tensors,
+                identities,
+                tuple(train_source_ranges),
+            ),
             "validation_tensor_sha256": _sanitized_tensor_digest_contract(
                 validation_tensors
             ),
@@ -9524,6 +9666,7 @@ def _load_preparation_candidate(
             manifest_identity=manifest_identity,
             plan=regenerated_plan,
             packed_arrays=packed_arrays,
+            packed_provenance=packed_provenance,
             training_identities=training_identities,
             tiny_validation_material=tiny_validation_material,
             authority_kind="production_loader",
@@ -9674,6 +9817,10 @@ def _create_closed_sanitized_training_view_bridge(
                 "ordered_train_identities": tuple(
                     internal_condition.ordered_train_identities
                 ),
+                "ordered_train_source_ranges": tuple(
+                    tuple(ranges)
+                    for ranges in internal_condition.ordered_train_source_ranges
+                ),
                 "schedule": internal_condition.schedule,
                 "validation_tensors": export_tensors(
                     internal_condition.validation_tensors
@@ -9684,6 +9831,9 @@ def _create_closed_sanitized_training_view_bridge(
                 "validation_record": internal_condition.validation_record,
                 "aggregate_evidence": tuple(internal_condition.aggregate_evidence),
                 "train_tensor_sha256": internal_condition.train_tensor_sha256,
+                "train_source_ranges_sha256": (
+                    internal_condition.train_source_ranges_sha256
+                ),
                 "validation_tensor_sha256": (
                     internal_condition.validation_tensor_sha256
                 ),

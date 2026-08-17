@@ -5157,12 +5157,41 @@ def test_production_shaped_stage_round_trip_accepts_different_filler_order(
     sanitized = preparation_module.derive_sanitized_training_view(current_snapshot)
     assert sanitized.authority_kind == "production_loader"
     assert sanitized.condition_order == CONDITIONS
-    assert sanitized.digest_protocol == "neu_sanitized_training_view_digest_v1"
+    assert sanitized.digest_protocol == "neu_sanitized_training_view_digest_v2"
     assert sanitized.semantic_sha256 == preparation_module.sanitized_training_view_digest(
         sanitized
     )
     assert tuple(item.condition for item in sanitized.conditions) == CONDITIONS
     assert all(not item.train_tensors.input_ids.flags.writeable for item in sanitized.conditions)
+    assert all(
+        item.ordered_train_source_ranges
+        and len(item.ordered_train_source_ranges)
+        == item.train_tensors.input_ids.shape[0]
+        and item.train_source_ranges_sha256
+        == preparation_module._source_ranges_digest_contract(
+            item.condition,
+            item.train_tensors,
+            item.ordered_train_identities,
+            item.ordered_train_source_ranges,
+        )
+        and "ordered_train_source_ranges" not in repr(item)
+        for item in sanitized.conditions
+    )
+    assert all(
+        all(
+            all(
+                len(value) == 64 and all(character in "0123456789abcdef" for character in value)
+                for value in (
+                    source_range.document_id,
+                    source_range.conversation_id,
+                    source_range.row_id,
+                )
+            )
+            for ranges in item.ordered_train_source_ranges
+            for source_range in ranges
+        )
+        for item in sanitized.conditions
+    )
     assert permissive_calls == []
     shutil.rmtree(public_root)
     assert not public_root.exists()

@@ -129,6 +129,44 @@ def _arrays(
     return result
 
 
+def _multirow_arrays(
+    *,
+    rows: int = 2,
+    first_lexical: int = 61,
+    second_lexical: int = 62,
+) -> dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """Synthetic packed sequences with two authoritative source-row separators."""
+
+    result: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+    for condition_index, condition in enumerate(CONDITIONS):
+        input_ids = np.zeros((rows, 128), dtype=np.uint16)
+        attention = np.zeros((rows, 128), dtype=np.uint8)
+        token_types = np.zeros((rows, 128), dtype=np.uint8)
+        for sequence_index in range(rows):
+            input_ids[sequence_index, 0] = 2
+            cursor = 1
+            for source_row, lexical_count in enumerate(
+                (first_lexical, second_lexical)
+            ):
+                for offset in range(lexical_count):
+                    input_ids[sequence_index, cursor + offset] = (
+                        5
+                        + (
+                            condition_index * 997
+                            + sequence_index * 131
+                            + source_row * 67
+                            + offset
+                        )
+                        % 7_995
+                    )
+                cursor += lexical_count
+                input_ids[sequence_index, cursor] = 3
+                cursor += 1
+            attention[sequence_index, :cursor] = 1
+        result[condition] = (input_ids, attention, token_types)
+    return result
+
+
 def _approval_sentence(candidate: str) -> str:
     return (
         "Timothy explicitly approves the exact candidate checksum-record SHA-256 `"
@@ -293,6 +331,7 @@ def test_sanitized_training_view_is_immutable_and_has_no_custody_fields() -> Non
     assert type(condition) is SanitizedConditionTrainingView
     assert type(condition.train_tensors) is SanitizedTensorArrays
     assert "ordered_train_identities" not in repr(condition)
+    assert "ordered_train_source_ranges" not in repr(condition)
     assert "input_ids" not in repr(condition.train_tensors)
     assert not condition.train_tensors.input_ids.flags.writeable
     source["EnglishMono"][0][0, 1] = 7_999
@@ -310,6 +349,149 @@ def test_sanitized_training_view_is_immutable_and_has_no_custody_fields() -> Non
         "key",
     }
     assert not forbidden & set(vars(type(condition)))
+    assert condition.train_source_ranges_sha256 == (
+        smoke_module._source_ranges_digest_contract(
+            condition.condition,
+            condition.train_tensors,
+            condition.ordered_train_identities,
+            condition.ordered_train_source_ranges,
+        )
+    )
+
+
+def test_real_shaped_multirow_sanitized_provenance_reaches_masking_privately() -> None:
+    view = create_synthetic_smoke_training_view_for_tests(
+        _multirow_arrays(rows=2),
+        test_updates=1,
+    )
+    condition = view.conditions[0]
+    assert tuple(len(ranges) for ranges in condition.ordered_train_source_ranges) == (
+        2,
+        2,
+    )
+    sequence = smoke_module._synthetic_sequence(
+        condition.condition,
+        condition.train_tensors,
+        condition.ordered_train_identities,
+        condition.ordered_train_source_ranges,
+        0,
+        split="train",
+    )
+    masked = mask_packed_sequence(
+        sequence,
+        seed=smoke_module.TRAINING_MASK_SEED,
+        mode="train",
+        visit=0,
+    )
+    assert masked.selected_positions
+    assert "ordered_train_source_ranges" not in repr(condition)
+    for ranges in condition.ordered_train_source_ranges:
+        for item in ranges:
+            assert item.source == "synthetic_privacy_safe"
+            assert item.component == "synthetic_privacy_safe"
+            for pseudonym in (
+                item.document_id,
+                item.conversation_id,
+                item.span_id,
+                item.row_id,
+            ):
+                assert pseudonym is not None
+                assert len(pseudonym) == 64
+                int(pseudonym, 16)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing",
+        "changed",
+        "truncated",
+        "gapped",
+        "overlapping",
+        "wrong_condition",
+        "wrong_split",
+        "cross_condition",
+        "separator_inconsistent",
+    ),
+)
+def test_malformed_or_substituted_sanitized_provenance_fails_closed(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    view, _, _, _, _, _, runtime = _runtime(
+        tmp_path,
+        view=create_synthetic_smoke_training_view_for_tests(
+            _multirow_arrays(rows=2),
+            test_updates=1,
+        ),
+    )
+    condition = view.conditions[0]
+    all_ranges = condition.ordered_train_source_ranges
+    first_sequence = all_ranges[0]
+    if mutation == "missing":
+        replacement = ((), *all_ranges[1:])
+    elif mutation == "truncated":
+        replacement = (first_sequence[:-1], *all_ranges[1:])
+    elif mutation == "cross_condition":
+        replacement = view.conditions[1].ordered_train_source_ranges
+    else:
+        selected = first_sequence[0 if mutation != "gapped" else 1]
+        if mutation == "changed":
+            changed = replace(selected, row_id="f" * 64)
+        elif mutation == "gapped":
+            changed = replace(
+                selected,
+                packed_token_start=selected.packed_token_start + 1,
+            )
+        elif mutation == "overlapping":
+            selected = first_sequence[1]
+            changed = replace(
+                selected,
+                packed_token_start=selected.packed_token_start - 1,
+            )
+        elif mutation == "wrong_condition":
+            changed = replace(selected, condition="SpanishMono")
+        elif mutation == "wrong_split":
+            changed = replace(selected, split="validation")
+        else:
+            changed = replace(
+                selected,
+                packed_token_end=selected.packed_token_end - 1,
+            )
+        changed_sequence = list(first_sequence)
+        changed_sequence[first_sequence.index(selected)] = changed
+        replacement = (tuple(changed_sequence), *all_ranges[1:])
+    object.__setattr__(condition, "ordered_train_source_ranges", tuple(replacement))
+    try:
+        object.__setattr__(
+            condition,
+            "train_source_ranges_sha256",
+            smoke_module._source_ranges_digest_contract(
+                condition.condition,
+                condition.train_tensors,
+                condition.ordered_train_identities,
+                condition.ordered_train_source_ranges,
+            ),
+        )
+        object.__setattr__(
+            condition,
+            "semantic_sha256",
+            smoke_module.sanitized_condition_view_digest(condition),
+        )
+        object.__setattr__(
+            view,
+            "condition_digests",
+            tuple((item.condition, item.semantic_sha256) for item in view.conditions),
+        )
+        object.__setattr__(
+            view,
+            "semantic_sha256",
+            smoke_module.sanitized_training_view_digest(view),
+        )
+    except PreparationError:
+        pass
+    with pytest.raises(SmokeTrainingError, match=SMOKE_DATA_SCHEDULE_MISMATCH):
+        execute_next_optimizer_update(runtime)
 
 
 def test_factory_only_public_types_reject_direct_construction() -> None:
@@ -438,7 +620,7 @@ def _production_equivalent_authority(tmp_path: Path):
 
 def _production_condition_runtime_material(tmp_path: Path):
     view = create_synthetic_smoke_training_view_for_tests(
-        _arrays(rows=1, lexical=126),
+        _multirow_arrays(rows=1, first_lexical=61, second_lexical=64),
         test_updates=1_000,
         microbatch_size=1,
     )
@@ -498,7 +680,7 @@ def test_factory_created_production_authority_reaches_condition_runtime(
 def test_approval_updated_tracker_identity_reaches_reviewed_update_path(
     tmp_path: Path,
 ) -> None:
-    _, authorization = _production_condition_runtime_authority(tmp_path)
+    view, authorization = _production_condition_runtime_authority(tmp_path)
     tracker_bytes = authorization._tracker_path.read_bytes()
     actual_sha256 = hashlib.sha256(tracker_bytes).hexdigest()
     assert actual_sha256 != APPROVED_TRACKER_SHA256
@@ -520,6 +702,8 @@ def test_approval_updated_tracker_identity_reaches_reviewed_update_path(
     result = execute_next_optimizer_update(runtime)
     assert result.completed_update == 1
     assert runtime.completed_update == 1
+    assert len(view.conditions[0].ordered_train_source_ranges[0]) == 2
+    assert result.mask_checksum_sha256
 
 
 def test_obsolete_baseline_identity_cannot_be_rehashed_into_updated_authority(
@@ -1426,6 +1610,7 @@ def test_masking_visits_counts_special_exclusion_and_80_10_10(tmp_path: Path) ->
             condition.condition,
             condition.train_tensors,
             condition.ordered_train_identities,
+            condition.ordered_train_source_ranges,
             appearance.sequence_index,
             split="train",
         )
@@ -1645,11 +1830,87 @@ def test_checkpoint_payload_is_complete_and_tampering_fails_closed(tmp_path: Pat
         "checkpoint_inventory.json",
         "checkpoint_manifest.json",
         "checkpoint_state.pt",
+        "inventory.json",
     }
     manifest = json.loads(payloads["checkpoint_manifest.json"])
+    inner_inventory = json.loads(payloads["checkpoint_inventory.json"])
+    outer_inventory = json.loads(payloads["inventory.json"])
+    completion = json.loads(payloads["CHECKPOINT_COMPLETE.json"])
     assert manifest["completed_optimizer_update"] == 0
     assert manifest["device"] == "cpu"
     assert manifest["semantic_state_sha256"]
+    assert inner_inventory == {
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "mode": "0600",
+                "sha256": hashlib.sha256(payloads[name]).hexdigest(),
+                "size": len(payloads[name]),
+            }
+            for name in ("checkpoint_manifest.json", "checkpoint_state.pt")
+        },
+        "schema_version": 2,
+    }
+    assert outer_inventory == {
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "mode": "0600",
+                "sha256": hashlib.sha256(payloads[name]).hexdigest(),
+                "size": len(payloads[name]),
+            }
+            for name in (
+                "checkpoint_inventory.json",
+                "checkpoint_manifest.json",
+                "checkpoint_state.pt",
+            )
+        },
+        "schema_version": 1,
+    }
+    assert set(completion) == {
+        "artifact_transaction_inventory_sha256",
+        "artifact_transaction_inventory_size",
+        "authorization_sha256",
+        "candidate_checksum_record_sha256",
+        "checkpoint_inventory_sha256",
+        "checkpoint_protocol",
+        "complete",
+        "completed_optimizer_update",
+        "condition",
+        "device",
+        "launch_manifest_sha256",
+        "namespace",
+        "sanitized_view_sha256",
+        "schema_version",
+    }
+    assert completion == {
+        "artifact_transaction_inventory_sha256": hashlib.sha256(
+            payloads["inventory.json"]
+        ).hexdigest(),
+        "artifact_transaction_inventory_size": len(payloads["inventory.json"]),
+        "authorization_sha256": authorization.authorization_sha256,
+        "candidate_checksum_record_sha256": (
+            authorization.approval.candidate_checksum_record_sha256
+        ),
+        "checkpoint_inventory_sha256": hashlib.sha256(
+            payloads["checkpoint_inventory.json"]
+        ).hexdigest(),
+        "checkpoint_protocol": "neu_tiny_smoke_checkpoint_v2",
+        "complete": True,
+        "completed_optimizer_update": 0,
+        "condition": "EnglishMono",
+        "device": "cpu",
+        "launch_manifest_sha256": authorization.launch_manifest.manifest_sha256,
+        "namespace": "checkpoint-0000",
+        "sanitized_view_sha256": authorization.training_view_sha256,
+        "schema_version": 2,
+    }
+    assert envelope.checkpoint_inventory_sha256 == completion[
+        "checkpoint_inventory_sha256"
+    ]
+    assert envelope.artifact_transaction_inventory_sha256 == completion[
+        "artifact_transaction_inventory_sha256"
+    ]
     restored = restore_synthetic_runtime_from_checkpoint(
         authorization,
         optimizers,
@@ -1670,7 +1931,7 @@ def test_checkpoint_payload_is_complete_and_tampering_fails_closed(tmp_path: Pat
     assert view.authority_kind == "synthetic_test_only"
 
 
-def test_checkpoint_cross_condition_and_cross_update_substitution_fail_closed(
+def test_checkpoint_cross_condition_substitution_fails_closed(
     tmp_path: Path,
 ) -> None:
     _, _, _, _, authorization, _, runtime = _runtime(tmp_path)
@@ -1683,14 +1944,125 @@ def test_checkpoint_cross_condition_and_cross_update_substitution_fail_closed(
             envelope,
             expected_completed_update=0,
         )
+
+
+def test_actual_writer_valid_v2_cross_update_substitution_fails_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authority_root = tmp_path / "authority"
+    authority_root.mkdir()
+    _, _, _, _, authorization, _, runtime = _runtime(authority_root)
+    parent = _private_parent(tmp_path)
+    writer = begin_private_run_artifacts(parent, "round-trip-run")
+    original = checkpoint_envelope_for_runtime(runtime)
+    commit = commit_private_checkpoint(
+        writer,
+        condition="EnglishMono",
+        completed_update=0,
+        payloads=original._files,
+    )
+    checkpoint_root = (
+        parent
+        / writer._stage_name
+        / "EnglishMono"
+        / "cpu"
+        / "checkpoint-0000"
+    )
+    persisted = {
+        path.name: path.read_bytes()
+        for path in checkpoint_root.iterdir()
+        if path.is_file()
+    }
+    assert set(persisted) == set(original._files)
+    assert persisted == dict(original._files)
+    assert hashlib.sha256(persisted["inventory.json"]).hexdigest() == (
+        commit.inventory_sha256
+    )
+    assert hashlib.sha256(persisted["CHECKPOINT_COMPLETE.json"]).hexdigest() == (
+        commit.completion_sha256
+    )
+    reconstructed = reconstitute_checkpoint_envelope_for_tests(
+        persisted,
+        expected_envelope_sha256=smoke_module._checkpoint_envelope_identity(
+            persisted
+        ),
+    )
+    restored = restore_synthetic_runtime_from_checkpoint(
+        authorization,
+        create_tiny_smoke_optimizers(authorization),
+        "EnglishMono",
+        reconstructed,
+        expected_completed_update=0,
+    )
+    assert runtime_semantic_sha256(restored) == runtime_semantic_sha256(runtime)
+    for path in checkpoint_root.iterdir():
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        assert path.stat().st_nlink == 1
+    decode_calls = 0
+
+    def reject_decode(*args: object, **kwargs: object) -> object:
+        nonlocal decode_calls
+        decode_calls += 1
+        raise AssertionError("cross-update rejection must precede torch.load")
+
+    monkeypatch.setattr(torch, "load", reject_decode)
+    with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+        restore_synthetic_runtime_from_checkpoint(
+            authorization,
+            create_tiny_smoke_optimizers(authorization),
+            "EnglishMono",
+            reconstructed,
+            expected_completed_update=250,
+        )
+    assert decode_calls == 0
+
+
+def test_legacy_v1_checkpoint_completion_fails_closed_before_decode(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _, _, _, _, authorization, _, runtime = _runtime(tmp_path)
+    files = dict(checkpoint_envelope_for_runtime(runtime)._files)
+    completion = json.loads(files["CHECKPOINT_COMPLETE.json"])
+    legacy = {
+        "authorization_sha256": completion["authorization_sha256"],
+        "candidate_checksum_record_sha256": completion[
+            "candidate_checksum_record_sha256"
+        ],
+        "checkpoint_protocol": "neu_tiny_smoke_checkpoint_v1",
+        "complete": True,
+        "completed_optimizer_update": 0,
+        "condition": "EnglishMono",
+        "inventory_sha256": completion["checkpoint_inventory_sha256"],
+        "launch_manifest_sha256": completion["launch_manifest_sha256"],
+        "namespace": "checkpoint-0000",
+        "sanitized_view_sha256": completion["sanitized_view_sha256"],
+        "schema_version": 1,
+    }
+    files["CHECKPOINT_COMPLETE.json"] = smoke_module.canonical_json_bytes(legacy)
+    envelope = reconstitute_checkpoint_envelope_for_tests(
+        files,
+        expected_envelope_sha256=smoke_module._checkpoint_envelope_identity(files),
+    )
+    decoded = False
+    real_load = torch.load
+
+    def record_decode(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        decoded = True
+        return real_load(*args, **kwargs)
+
+    monkeypatch.setattr(torch, "load", record_decode)
     with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
         restore_synthetic_runtime_from_checkpoint(
             authorization,
             create_tiny_smoke_optimizers(authorization),
             "EnglishMono",
             envelope,
-            expected_completed_update=250,
+            expected_completed_update=0,
         )
+    assert decoded is False
 
 
 def test_locally_rehashed_malicious_pickle_is_rejected_by_safe_decoder(
@@ -1707,11 +2079,18 @@ def test_locally_rehashed_malicious_pickle_is_rejected_by_safe_decoder(
         inventory["files"][name]["sha256"] = hashlib.sha256(files[name]).hexdigest()
         inventory["files"][name]["size"] = len(files[name])
     files["checkpoint_inventory.json"] = smoke_module.canonical_json_bytes(inventory)
-    completion = json.loads(files["CHECKPOINT_COMPLETE.json"])
-    completion["inventory_sha256"] = hashlib.sha256(
-        files["checkpoint_inventory.json"]
-    ).hexdigest()
-    files["CHECKPOINT_COMPLETE.json"] = smoke_module.canonical_json_bytes(completion)
+    files = dict(
+        artifact_module._canonical_checkpoint_transaction_files(
+            {
+                name: files[name]
+                for name in (
+                    "checkpoint_state.pt",
+                    "checkpoint_manifest.json",
+                    "checkpoint_inventory.json",
+                )
+            }
+        )
+    )
     envelope = reconstitute_checkpoint_envelope_for_tests(
         files,
         expected_envelope_sha256=smoke_module._checkpoint_envelope_identity(files),
@@ -2349,6 +2728,12 @@ def test_fresh_process_worker_failure_is_not_retried(
 
 
 def test_device_switching_and_production_execution_remain_impossible(tmp_path: Path) -> None:
+    output_parent_existed = smoke_module.APPROVED_OUTPUT_PARENT.exists()
+    output_children = (
+        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
+        if output_parent_existed
+        else ()
+    )
     _, _, _, _, authorization, optimizers = _authority(tmp_path)
     object.__setattr__(authorization, "device", "mps")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
@@ -2356,7 +2741,12 @@ def test_device_switching_and_production_execution_remain_impossible(tmp_path: P
     object.__setattr__(authorization, "device", "cpu")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
         execute_bounded_tiny_smoke(authorization)
-    assert not smoke_module.APPROVED_OUTPUT_PARENT.exists()
+    assert smoke_module.APPROVED_OUTPUT_PARENT.exists() is output_parent_existed
+    assert (
+        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
+        if output_parent_existed
+        else ()
+    ) == output_children
 
 
 def test_fail_closed_cli_exposes_no_scientific_or_execution_options(tmp_path: Path) -> None:
