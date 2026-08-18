@@ -31,6 +31,7 @@ from cslm.modeling.config import (
     CONDITIONS,
     NEU_TINY,
     NUMPY_VERSION,
+    SEP_TOKEN_ID,
     SPECIAL_TOKEN_IDS,
     TOKENIZERS_VERSION,
     TORCH_VERSION,
@@ -59,7 +60,7 @@ from cslm.modeling.masking import (
     build_validation_mask_record,
     mask_packed_sequence,
 )
-from cslm.modeling.packing import PackedSequence
+from cslm.modeling.packing import PackedSequence, SourceTokenRange
 from cslm.modeling.preparation import (
     SANITIZED_PREPARATION_RUNNER_DIGEST,
     SANITIZED_TRAINING_VIEW_PROTOCOL,
@@ -69,6 +70,7 @@ from cslm.modeling.preparation import (
     _derive_sanitized_tensor_arrays,
     _sanitized_tensor_digest_contract,
     _schedule_evidence_digest_contract,
+    _source_ranges_digest_contract,
     canonical_json_bytes,
     derive_sanitized_training_view,
     load_preparation_candidate,
@@ -80,6 +82,7 @@ from cslm.modeling.smoke_artifacts import (
     SMOKE_CHECKPOINT_WRITE_FAILURE,
     PrivateRunArtifactWriter,
     SmokeArtifactError,
+    _canonical_checkpoint_transaction_files,
     begin_private_run_artifacts,
     commit_private_checkpoint,
     commit_private_condition_result,
@@ -118,7 +121,7 @@ APPROVED_PREPARATION_LINEAGE_COMMIT = (
     "adb2fbaa0fb0c72b8445a39714eabe7c7f8654a5"
 )
 APPROVED_PREPARATION_RUNNER_DIGEST = (
-    "8dee4b925cc436f60440f89b231998579bf16ec4c5864037f4841be79dd47667"
+    "c4bc94d531e9f0b4eba4f048f447fda7ae000854b6c77e4a7ceafadae20806eb"
 )
 if APPROVED_PREPARATION_RUNNER_DIGEST != SANITIZED_PREPARATION_RUNNER_DIGEST:
     raise RuntimeError("sanitized preparation runner authority is inconsistent")
@@ -131,11 +134,11 @@ VALIDATION_MASK_SEED = 21_729
 DROPOUT_BASE_SEED = TINY_SMOKE_DROPOUT_BASE_SEED
 DROPOUT_PROTOCOL = TINY_SMOKE_DROPOUT_PROTOCOL
 LEARNING_RATE_PROTOCOL = "neu_tiny_explicit_linear_lr_v1"
-CHECKPOINT_PROTOCOL = "neu_tiny_smoke_checkpoint_v1"
-RESUME_PROTOCOL = "neu_tiny_englishmono_fresh_process_resume_v1"
-RESUME_WORKER_PROTOCOL = "neu_tiny_englishmono_fresh_process_worker_v1"
-RESUME_BUNDLE_PROTOCOL = "neu_tiny_englishmono_replay_bundle_v1"
-RESUME_RESULT_PROTOCOL = "neu_tiny_englishmono_replay_result_v1"
+CHECKPOINT_PROTOCOL = "neu_tiny_smoke_checkpoint_v2"
+RESUME_PROTOCOL = "neu_tiny_englishmono_fresh_process_resume_v2"
+RESUME_WORKER_PROTOCOL = "neu_tiny_englishmono_fresh_process_worker_v2"
+RESUME_BUNDLE_PROTOCOL = "neu_tiny_englishmono_replay_bundle_v2"
+RESUME_RESULT_PROTOCOL = "neu_tiny_englishmono_replay_result_v2"
 RESUME_WORKER_ARGUMENT = "--internal-tiny-resume-worker"
 RESUME_WORKER_TIMEOUT_SECONDS = 600.0
 EXECUTOR_PROTOCOL = "neu_tiny_smoke_executor_v1"
@@ -395,7 +398,8 @@ class CheckpointEnvelope:
     authorization_sha256: str
     sanitized_view_sha256: str
     launch_manifest_sha256: str
-    inventory_sha256: str
+    checkpoint_inventory_sha256: str
+    artifact_transaction_inventory_sha256: str
     envelope_sha256: str
     _files: Mapping[str, bytes] = field(repr=False, compare=False)
     _factory_token: object = field(repr=False, compare=False)
@@ -1281,6 +1285,7 @@ def _synthetic_sequence(
     condition: str,
     arrays: SanitizedTensorArrays,
     identities: Sequence[str],
+    source_ranges: Sequence[tuple[SourceTokenRange, ...]],
     index: int,
     *,
     split: str,
@@ -1291,9 +1296,85 @@ def _synthetic_sequence(
         input_ids=tuple(int(value) for value in arrays.input_ids[index]),
         attention_mask=tuple(int(value) for value in arrays.attention_mask[index]),
         token_type_ids=tuple(int(value) for value in arrays.token_type_ids[index]),
-        provenance=(),
+        provenance=source_ranges[index],
         example_identity=identities[index],
     )
+
+
+def _synthetic_privacy_safe_source_ranges(
+    condition: str,
+    arrays: SanitizedTensorArrays,
+    identities: tuple[str, ...],
+    *,
+    split: str,
+) -> tuple[tuple[SourceTokenRange, ...], ...]:
+    """Create deterministic pseudonymous row ranges for synthetic-only fixtures."""
+
+    if split not in {"train", "validation"}:
+        raise SmokeTrainingError(SMOKE_DATA_SCHEDULE_MISMATCH)
+    result: list[tuple[SourceTokenRange, ...]] = []
+    separator_id = SEP_TOKEN_ID
+    for index, identity in enumerate(identities):
+        attended = int(arrays.attention_mask[index].sum())
+        separators = tuple(
+            position
+            for position in range(1, attended)
+            if int(arrays.input_ids[index, position]) == separator_id
+        )
+        cursor = 1
+        sequence_ranges: list[SourceTokenRange] = []
+        for row_order, separator in enumerate(separators):
+            lexical_count = separator - cursor
+            pseudonym_material = [
+                "neu_tiny_synthetic_privacy_safe_provenance_v1",
+                condition,
+                split,
+                identity,
+                index,
+                row_order,
+            ]
+
+            def pseudonym(kind: str) -> str:
+                return _sha256_bytes(canonical_json_bytes([*pseudonym_material, kind]))
+
+            sequence_ranges.append(
+                SourceTokenRange(
+                    condition=condition,
+                    split=split,
+                    source="synthetic_privacy_safe",
+                    component="synthetic_privacy_safe",
+                    document_id=pseudonym("document"),
+                    conversation_id=pseudonym("conversation"),
+                    span_id=pseudonym("span"),
+                    row_id=pseudonym("row"),
+                    row_order=row_order,
+                    language_shard=(
+                        "english"
+                        if condition == "EnglishMono"
+                        else "spanish" if condition == "SpanishMono" else None
+                    ),
+                    source_row_token_count=lexical_count,
+                    source_token_start=0,
+                    source_token_end=lexical_count,
+                    packed_token_start=cursor,
+                    packed_token_end=separator,
+                )
+            )
+            cursor = separator + 1
+        ranges = tuple(sequence_ranges)
+        try:
+            _synthetic_sequence(
+                condition,
+                arrays,
+                identities,
+                (ranges,) * len(identities),
+                index,
+                split=split,
+            )
+        except Exception:
+            raise SmokeTrainingError(SMOKE_DATA_SCHEDULE_MISMATCH) from None
+        result.append(ranges)
+    return tuple(result)
 
 
 def _sanitized_arrays_semantic_sha256(arrays: SanitizedTensorArrays) -> str:
@@ -2322,6 +2403,13 @@ def _reanchor_consumed_view(
                 or expected_schedule is None
                 or live_condition_digest != expected_condition_digest
                 or consumed.train_tensor_sha256 != expected_tensor[0]
+                or consumed.train_source_ranges_sha256
+                != _source_ranges_digest_contract(
+                    consumed.condition,
+                    consumed.train_tensors,
+                    consumed.ordered_train_identities,
+                    consumed.ordered_train_source_ranges,
+                )
                 or consumed.validation_tensor_sha256 != expected_tensor[1]
                 or consumed.schedule.identity_sha256 != expected_schedule[0]
                 or consumed.schedule.update_plan_sha256 != expected_schedule[1]
@@ -2347,6 +2435,13 @@ def _reanchor_consumed_view(
                 consumed is not None
                 or all(
                 item.train_tensor_sha256 == train_digest
+                and item.train_source_ranges_sha256
+                == _source_ranges_digest_contract(
+                    item.condition,
+                    item.train_tensors,
+                    item.ordered_train_identities,
+                    item.ordered_train_source_ranges,
+                )
                 and item.validation_tensor_sha256 == validation_digest
                 and item.schedule_evidence_sha256 == schedule_digest
                 for item, (_, train_digest, validation_digest), (
@@ -2457,6 +2552,18 @@ def create_synthetic_smoke_training_view_for_tests(
             )
             for index in range(tensors.input_ids.shape[0])
         )
+        train_source_ranges = _synthetic_privacy_safe_source_ranges(
+            condition,
+            tensors,
+            identities,
+            split="train",
+        )
+        validation_source_ranges = _synthetic_privacy_safe_source_ranges(
+            condition,
+            tensors,
+            identities,
+            split="validation",
+        )
         appearances: list[_SyntheticAppearance] = []
         updates: list[_SyntheticUpdatePlan] = []
         for update in range(1, test_updates + 1):
@@ -2469,6 +2576,7 @@ def create_synthetic_smoke_training_view_for_tests(
                     condition,
                     tensors,
                     identities,
+                    train_source_ranges,
                     index,
                     split="train",
                 )
@@ -2552,6 +2660,7 @@ def create_synthetic_smoke_training_view_for_tests(
                 condition,
                 tensors,
                 identities,
+                validation_source_ranges,
                 index,
                 split="validation",
             )
@@ -2576,6 +2685,7 @@ def create_synthetic_smoke_training_view_for_tests(
                 "condition": condition,
                 "tensors": tensors,
                 "identities": identities,
+                "train_source_ranges": train_source_ranges,
                 "schedule": schedule,
                 "validation_tensors": validation_tensors,
                 "validation_record": build_validation_mask_record(
@@ -2614,6 +2724,7 @@ def create_synthetic_smoke_training_view_for_tests(
             "condition": item["condition"],
             "train_tensors": item["tensors"],
             "ordered_train_identities": item["identities"],
+            "ordered_train_source_ranges": item["train_source_ranges"],
             "schedule": item["schedule"],
             "validation_tensors": item["validation_tensors"],
             "ordered_validation_identities": item["identities"],
@@ -2624,6 +2735,12 @@ def create_synthetic_smoke_training_view_for_tests(
                 ("validation_selected_targets", selected),
             ),
             "train_tensor_sha256": _sanitized_tensor_digest_contract(item["tensors"]),
+            "train_source_ranges_sha256": _source_ranges_digest_contract(
+                item["condition"],
+                item["tensors"],
+                item["identities"],
+                item["train_source_ranges"],
+            ),
             "validation_tensor_sha256": _sanitized_tensor_digest_contract(
                 item["validation_tensors"]
             ),
@@ -3325,6 +3442,7 @@ def _execute_next_update_impl(
                     runtime.condition,
                     runtime._condition_view.train_tensors,
                     runtime._condition_view.ordered_train_identities,
+                    runtime._condition_view.ordered_train_source_ranges,
                     appearance.sequence_index,
                     split="train",
                 )
@@ -3758,6 +3876,9 @@ def _checkpoint_state(runtime: TinySmokeConditionRuntime) -> dict[str, object]:
         ),
         "condition_view_sha256": runtime._condition_view.semantic_sha256,
         "train_tensor_sha256": runtime._condition_view.train_tensor_sha256,
+        "train_source_ranges_sha256": (
+            runtime._condition_view.train_source_ranges_sha256
+        ),
         "validation_tensor_sha256": runtime._condition_view.validation_tensor_sha256,
         "schedule_evidence_sha256": runtime._condition_view.schedule_evidence_sha256,
         "validation_plan_sha256": runtime._condition_view.validation_plan_sha256,
@@ -3831,7 +3952,7 @@ def _checkpoint_envelope_identity(files: Mapping[str, bytes]) -> str:
     return _sha256_bytes(
         canonical_json_bytes(
             [
-                "neu_tiny_checkpoint_external_envelope_v1",
+                "neu_tiny_checkpoint_external_envelope_v2",
                 [
                     [name, _sha256_bytes(files[name]), len(files[name])]
                     for name in sorted(files)
@@ -3861,6 +3982,9 @@ def checkpoint_envelope_for_runtime(
         "completed_optimizer_update": runtime.completed_update,
         "condition": runtime.condition,
         "condition_view_sha256": runtime._condition_view.semantic_sha256,
+        "train_source_ranges_sha256": (
+            runtime._condition_view.train_source_ranges_sha256
+        ),
         "device": "cpu",
         "executor_closure_digest": authorization.launch_manifest.executor_closure_digest,
         "executor_commit": authorization.launch_manifest.executor_commit,
@@ -3897,30 +4021,14 @@ def checkpoint_envelope_for_runtime(
                 "size": len(state_bytes),
             },
         },
-        "schema_version": 1,
+        "schema_version": 2,
     }
     inventory_bytes = canonical_json_bytes(inventory)
-    completion = {
-        "authorization_sha256": authorization.authorization_sha256,
-        "candidate_checksum_record_sha256": (
-            authorization.approval.candidate_checksum_record_sha256
-        ),
-        "checkpoint_protocol": CHECKPOINT_PROTOCOL,
-        "complete": True,
-        "completed_optimizer_update": runtime.completed_update,
-        "condition": runtime.condition,
-        "inventory_sha256": _sha256_bytes(inventory_bytes),
-        "launch_manifest_sha256": authorization.launch_manifest.manifest_sha256,
-        "namespace": f"checkpoint-{runtime.completed_update:04d}",
-        "sanitized_view_sha256": authorization.training_view_sha256,
-        "schema_version": 1,
-    }
-    files = MappingProxyType(
+    files = _canonical_checkpoint_transaction_files(
         {
             "checkpoint_state.pt": state_bytes,
             "checkpoint_manifest.json": manifest_bytes,
             "checkpoint_inventory.json": inventory_bytes,
-            "CHECKPOINT_COMPLETE.json": canonical_json_bytes(completion),
         }
     )
     result = object.__new__(CheckpointEnvelope)
@@ -3930,7 +4038,10 @@ def checkpoint_envelope_for_runtime(
         "authorization_sha256": authorization.authorization_sha256,
         "sanitized_view_sha256": authorization.training_view_sha256,
         "launch_manifest_sha256": authorization.launch_manifest.manifest_sha256,
-        "inventory_sha256": _sha256_bytes(inventory_bytes),
+        "checkpoint_inventory_sha256": _sha256_bytes(inventory_bytes),
+        "artifact_transaction_inventory_sha256": _sha256_bytes(
+            files["inventory.json"]
+        ),
         "envelope_sha256": _checkpoint_envelope_identity(files),
         "_files": files,
         "_factory_token": runtime._factory_token,
@@ -3960,6 +4071,7 @@ def _checkpoint_envelope_from_files_for_tests_impl(
             "checkpoint_state.pt",
             "checkpoint_manifest.json",
             "checkpoint_inventory.json",
+            "inventory.json",
             "CHECKPOINT_COMPLETE.json",
         }
         or any(type(value) is not bytes for value in files.values())
@@ -3975,7 +4087,12 @@ def _checkpoint_envelope_from_files_for_tests_impl(
         "authorization_sha256": completion.get("authorization_sha256"),
         "sanitized_view_sha256": completion.get("sanitized_view_sha256"),
         "launch_manifest_sha256": completion.get("launch_manifest_sha256"),
-        "inventory_sha256": completion.get("inventory_sha256"),
+        "checkpoint_inventory_sha256": completion.get(
+            "checkpoint_inventory_sha256"
+        ),
+        "artifact_transaction_inventory_sha256": completion.get(
+            "artifact_transaction_inventory_sha256"
+        ),
         "envelope_sha256": expected_envelope_sha256,
         "_files": MappingProxyType(dict(files)),
         "_factory_token": token,
@@ -4096,6 +4213,7 @@ def _verify_checkpoint_envelope(
             "checkpoint_state.pt",
             "checkpoint_manifest.json",
             "checkpoint_inventory.json",
+            "inventory.json",
             "CHECKPOINT_COMPLETE.json",
         }
         or any(type(value) is not bytes for value in envelope._files.values())
@@ -4105,9 +4223,11 @@ def _verify_checkpoint_envelope(
     state_bytes = envelope._files["checkpoint_state.pt"]
     manifest_bytes = envelope._files["checkpoint_manifest.json"]
     inventory_bytes = envelope._files["checkpoint_inventory.json"]
+    transaction_inventory_bytes = envelope._files["inventory.json"]
     completion_bytes = envelope._files["CHECKPOINT_COMPLETE.json"]
     manifest = _checkpoint_json(manifest_bytes)
     inventory = _checkpoint_json(inventory_bytes)
+    transaction_inventory = _checkpoint_json(transaction_inventory_bytes)
     completion = _checkpoint_json(completion_bytes)
     expected_inventory = {
         "algorithm": "sha256",
@@ -4123,22 +4243,43 @@ def _verify_checkpoint_envelope(
                 "size": len(state_bytes),
             },
         },
+        "schema_version": 2,
+    }
+    expected_transaction_inventory = {
+        "algorithm": "sha256",
+        "files": {
+            name: {
+                "mode": "0600",
+                "sha256": _sha256_bytes(envelope._files[name]),
+                "size": len(envelope._files[name]),
+            }
+            for name in (
+                "checkpoint_inventory.json",
+                "checkpoint_manifest.json",
+                "checkpoint_state.pt",
+            )
+        },
         "schema_version": 1,
     }
     expected_completion = {
+        "artifact_transaction_inventory_sha256": _sha256_bytes(
+            transaction_inventory_bytes
+        ),
+        "artifact_transaction_inventory_size": len(transaction_inventory_bytes),
         "authorization_sha256": authorization.authorization_sha256,
         "candidate_checksum_record_sha256": (
             authorization.approval.candidate_checksum_record_sha256
         ),
+        "checkpoint_inventory_sha256": _sha256_bytes(inventory_bytes),
         "checkpoint_protocol": CHECKPOINT_PROTOCOL,
         "complete": True,
         "completed_optimizer_update": expected_completed_update,
         "condition": condition,
-        "inventory_sha256": _sha256_bytes(inventory_bytes),
         "launch_manifest_sha256": authorization.launch_manifest.manifest_sha256,
+        "device": "cpu",
         "namespace": f"checkpoint-{expected_completed_update:04d}",
         "sanitized_view_sha256": authorization.training_view_sha256,
-        "schema_version": 1,
+        "schema_version": 2,
     }
     required_manifest_keys = {
         "authorization_sha256",
@@ -4148,6 +4289,7 @@ def _verify_checkpoint_envelope(
         "completed_optimizer_update",
         "condition",
         "condition_view_sha256",
+        "train_source_ranges_sha256",
         "device",
         "executor_closure_digest",
         "executor_commit",
@@ -4170,8 +4312,11 @@ def _verify_checkpoint_envelope(
     )
     if (
         inventory != expected_inventory
+        or transaction_inventory != expected_transaction_inventory
         or completion != expected_completion
-        or envelope.inventory_sha256 != _sha256_bytes(inventory_bytes)
+        or envelope.checkpoint_inventory_sha256 != _sha256_bytes(inventory_bytes)
+        or envelope.artifact_transaction_inventory_sha256
+        != _sha256_bytes(transaction_inventory_bytes)
         or set(manifest) != required_manifest_keys
         or manifest["authorization_sha256"] != authorization.authorization_sha256
         or manifest["candidate_checksum_record_sha256"]
@@ -4182,6 +4327,8 @@ def _verify_checkpoint_envelope(
         or manifest["completed_optimizer_update"] != expected_completed_update
         or manifest["condition"] != condition
         or manifest["condition_view_sha256"] != condition_view.semantic_sha256
+        or manifest["train_source_ranges_sha256"]
+        != condition_view.train_source_ranges_sha256
         or manifest["device"] != "cpu"
         or manifest["executor_closure_digest"]
         != authorization.launch_manifest.executor_closure_digest
@@ -4292,6 +4439,7 @@ def _restore_runtime_from_checkpoint_impl(
         "schedule_update_plan_sha256",
         "seeds",
         "train_tensor_sha256",
+        "train_source_ranges_sha256",
         "training_view_sha256",
         "validation_plan_sha256",
         "validation_tensor_sha256",
@@ -4356,6 +4504,8 @@ def _restore_runtime_from_checkpoint_impl(
         != runtime._condition_view.semantic_sha256
         or state.get("train_tensor_sha256")
         != runtime._condition_view.train_tensor_sha256
+        or state.get("train_source_ranges_sha256")
+        != runtime._condition_view.train_source_ranges_sha256
         or state.get("validation_tensor_sha256")
         != runtime._condition_view.validation_tensor_sha256
         or state.get("schedule_evidence_sha256")
@@ -4538,6 +4688,7 @@ _REPLAY_CHECKPOINT_FILE_NAMES = (
     "checkpoint_inventory.json",
     "checkpoint_manifest.json",
     "checkpoint_state.pt",
+    "inventory.json",
 )
 _REPLAY_TRANSACTION_FILE_NAMES = (
     "artifact_transaction_completion.json",
@@ -4716,13 +4867,10 @@ def _read_committed_checkpoint_transaction(
         for descriptor in (checkpoint_descriptor, cpu_descriptor, condition_descriptor):
             if descriptor >= 0:
                 os.close(descriptor)
-    for name in (
-        "checkpoint_inventory.json",
-        "checkpoint_manifest.json",
-        "checkpoint_state.pt",
-    ):
+    for name in sorted(expected_names):
         if files[name] != envelope._files[name]:
             raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    manifest = _checkpoint_json(files["checkpoint_manifest.json"])
     outer_inventory = _checkpoint_json(files["inventory.json"])
     outer_completion = _checkpoint_json(files["CHECKPOINT_COMPLETE.json"])
     expected_outer_files = {
@@ -4744,12 +4892,27 @@ def _read_committed_checkpoint_transaction(
         != getattr(commit_result, "inventory_sha256")
         or _sha256_bytes(files["CHECKPOINT_COMPLETE.json"])
         != getattr(commit_result, "completion_sha256")
-        or outer_completion.get("complete") is not True
-        or outer_completion.get("condition") != "EnglishMono"
-        or outer_completion.get("completed_optimizer_update") != 750
-        or outer_completion.get("namespace") != "checkpoint-0750"
-        or outer_completion.get("inventory_sha256")
-        != getattr(commit_result, "inventory_sha256")
+        or outer_completion
+        != {
+            "artifact_transaction_inventory_sha256": getattr(
+                commit_result, "inventory_sha256"
+            ),
+            "artifact_transaction_inventory_size": len(files["inventory.json"]),
+            "authorization_sha256": envelope.authorization_sha256,
+            "candidate_checksum_record_sha256": manifest[
+                "candidate_checksum_record_sha256"
+            ],
+            "checkpoint_inventory_sha256": envelope.checkpoint_inventory_sha256,
+            "checkpoint_protocol": CHECKPOINT_PROTOCOL,
+            "complete": True,
+            "completed_optimizer_update": 750,
+            "condition": "EnglishMono",
+            "device": "cpu",
+            "launch_manifest_sha256": envelope.launch_manifest_sha256,
+            "namespace": "checkpoint-0750",
+            "sanitized_view_sha256": envelope.sanitized_view_sha256,
+            "schema_version": 2,
+        }
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
     return MappingProxyType(
@@ -4928,7 +5091,7 @@ def _replay_request_payload(
             authorization.approval.candidate_checksum_record_sha256
         ),
         "checkpoint_envelope_sha256": envelope.envelope_sha256,
-        "checkpoint_inventory_sha256": envelope.inventory_sha256,
+        "checkpoint_inventory_sha256": envelope.checkpoint_inventory_sha256,
         "checkpoint_update": checkpoint_update,
         "condition": condition,
         "condition_digests": authorization.condition_digests,
@@ -5406,6 +5569,7 @@ def _verify_replay_transaction(
     outer_completion_bytes = files["artifact_transaction_completion.json"]
     outer_inventory = _checkpoint_json(outer_inventory_bytes)
     outer_completion = _checkpoint_json(outer_completion_bytes)
+    manifest = _checkpoint_json(files["checkpoint_manifest.json"])
     expected_files = {
         name: {
             "mode": "0600",
@@ -5425,12 +5589,30 @@ def _verify_replay_transaction(
         != request.get("artifact_completion_sha256")
         or outer_inventory
         != {"algorithm": "sha256", "files": expected_files, "schema_version": 1}
-        or outer_completion.get("complete") is not True
-        or outer_completion.get("condition") != "EnglishMono"
-        or outer_completion.get("completed_optimizer_update") != 750
-        or outer_completion.get("namespace") != "checkpoint-0750"
-        or outer_completion.get("inventory_sha256")
-        != request.get("artifact_inventory_sha256")
+        or outer_completion
+        != {
+            "artifact_transaction_inventory_sha256": request.get(
+                "artifact_inventory_sha256"
+            ),
+            "artifact_transaction_inventory_size": len(outer_inventory_bytes),
+            "authorization_sha256": request.get("authorization_sha256"),
+            "candidate_checksum_record_sha256": request.get(
+                "candidate_checksum_record_sha256"
+            ),
+            "checkpoint_inventory_sha256": request.get(
+                "checkpoint_inventory_sha256"
+            ),
+            "checkpoint_protocol": CHECKPOINT_PROTOCOL,
+            "complete": True,
+            "completed_optimizer_update": 750,
+            "condition": "EnglishMono",
+            "device": "cpu",
+            "launch_manifest_sha256": request.get("launch_manifest_sha256"),
+            "namespace": "checkpoint-0750",
+            "sanitized_view_sha256": request.get("sanitized_view_sha256"),
+            "schema_version": 2,
+        }
+        or manifest.get("checkpoint_protocol") != CHECKPOINT_PROTOCOL
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
 
@@ -5596,7 +5778,9 @@ def _execute_tiny_resume_replay_worker_impl(
         str(request.get("checkpoint_envelope_sha256")),
         token=token,
     )
-    if envelope.inventory_sha256 != request.get("checkpoint_inventory_sha256"):
+    if envelope.checkpoint_inventory_sha256 != request.get(
+        "checkpoint_inventory_sha256"
+    ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
     optimizers = _create_optimizer_set_impl(authorization, token=token)
     runtime = _restore_runtime_from_checkpoint_impl(
