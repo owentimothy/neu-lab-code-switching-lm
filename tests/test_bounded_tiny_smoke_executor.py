@@ -13,6 +13,7 @@ import sys
 import traceback
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import numpy as np
@@ -2727,6 +2728,242 @@ def test_fresh_process_worker_failure_is_not_retried(
     assert not workspace.exists()
 
 
+def _diagnostic_phase_bytes(phase: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "elapsed_ms": 1,
+                "phase": phase,
+                "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
+                "result": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "expected"),
+    (
+        (
+            ((b"result", _diagnostic_phase_bytes("RESULT_ENCODED")),),
+            "COMPLETED_AT_OR_BELOW_600_SECONDS",
+        ),
+        (
+            (
+                subprocess.TimeoutExpired("worker", 600),
+                (b"result", _diagnostic_phase_bytes("RESULT_ENCODED")),
+            ),
+            "COMPLETED_AFTER_600_SECONDS",
+        ),
+        (
+            (
+                subprocess.TimeoutExpired("worker", 600),
+                subprocess.TimeoutExpired("worker", 3_000),
+                (b"", b""),
+            ),
+            "HARD_TIMEOUT",
+        ),
+    ),
+)
+def test_replay_diagnostic_timeout_classification_is_single_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: tuple[object, ...],
+    expected: str,
+) -> None:
+    calls = 0
+
+    class FakeProcess:
+        pid = os.getpid() + 10
+        returncode = 0
+
+        def __init__(self) -> None:
+            self._outcomes = list(outcomes)
+
+        def communicate(self, *, timeout=None):
+            del timeout
+            outcome = self._outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(*args, **kwargs):
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return FakeProcess()
+
+    monkeypatch.setattr(smoke_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        smoke_module,
+        "_parse_fresh_process_replay_result",
+        lambda content, *, expected_pid: (content, expected_pid),
+    )
+    result = smoke_module._launch_replay_diagnostic(Path("/tmp/bundle"), {})
+    assert result["disposition"] == expected
+    assert result["crossed_600_seconds"] is (
+        expected != "COMPLETED_AT_OR_BELOW_600_SECONDS"
+    )
+    assert calls == 1
+
+
+def test_replay_worker_diagnostic_phases_wrap_existing_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = {
+        "artifact_completion_sha256", "artifact_inventory_sha256", "authority_kind",
+        "authorization_sha256", "candidate_checksum_record_sha256",
+        "checkpoint_envelope_sha256", "checkpoint_inventory_sha256",
+        "checkpoint_update", "condition", "condition_digests", "dropout_protocol",
+        "executor_closure_digest", "executor_commit", "first_replay_update",
+        "launch_manifest_sha256", "last_replay_update", "parent_pid",
+        "preparation_manifest_sha256", "preparation_runner_digest",
+        "process_environment_sha256", "process_start_nonce", "protocol",
+        "runtime_policy_sha256", "sanitized_view_sha256", "schedule_bindings",
+        "schedule_plan_identity_sha256", "schema_version", "synthetic_material",
+        "synthetic_output_parent", "tensor_array_digests", "tracker_authority",
+        "tracker_sha256", "validation_updates", "worker_script_sha256",
+        "worker_source_closure_sha256",
+    }
+    request = {name: None for name in required}
+    request.update(
+        {
+            "authority_kind": "synthetic_test_only",
+            "checkpoint_inventory_sha256": "inventory",
+            "checkpoint_update": 750,
+            "condition": "EnglishMono",
+            "dropout_protocol": smoke_module.DROPOUT_PROTOCOL,
+            "first_replay_update": 751,
+            "last_replay_update": 1_000,
+            "parent_pid": os.getpid() + 1,
+            "preparation_runner_digest": smoke_module.APPROVED_PREPARATION_RUNNER_DIGEST,
+            "process_environment_sha256": smoke_module._semantic_hash({}),
+            "process_start_nonce": "a" * 64,
+            "protocol": smoke_module.RESUME_WORKER_PROTOCOL,
+            "runtime_policy_sha256": "runtime",
+            "schema_version": 1,
+            "validation_updates": list(smoke_module.REPLAY_VALIDATION_POINTS),
+            "worker_script_sha256": hashlib.sha256(b"script").hexdigest(),
+            "worker_source_closure_sha256": "closure",
+        }
+    )
+    files = {"replay_request.json": b"request"}
+    files.update(
+        {name: b"checkpoint" for name in smoke_module._REPLAY_CHECKPOINT_FILE_NAMES}
+    )
+    runtime = SimpleNamespace(completed_update=750)
+    phases: list[tuple[str, int | None]] = []
+    monkeypatch.setattr(smoke_module, "_read_replay_bundle", lambda path: files)
+    monkeypatch.setattr(smoke_module, "_checkpoint_json", lambda content: request)
+    monkeypatch.setattr(smoke_module, "_worker_source_root", lambda: Path("/tmp/source"))
+    monkeypatch.setattr(
+        smoke_module,
+        "_stable_read",
+        lambda *args, **kwargs: (b"script", None),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_replay_worker_environment",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(smoke_module, "_verify_supported_runtime", lambda: "runtime")
+    monkeypatch.setattr(
+        smoke_module,
+        "_executor_source_closure_identity",
+        lambda root: "closure",
+    )
+    monkeypatch.setattr(smoke_module, "_verify_replay_transaction", lambda *args: None)
+    monkeypatch.setattr(
+        smoke_module,
+        "_reconstruct_replay_authorization",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_from_files_for_tests_impl",
+        lambda *args, **kwargs: SimpleNamespace(
+            checkpoint_inventory_sha256="inventory"
+        ),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_verify_checkpoint_envelope",
+        lambda *args, **kwargs: b"state",
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_create_optimizer_set_impl",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_restore_runtime_from_checkpoint_impl",
+        lambda *args, **kwargs: runtime,
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_execute_next_update_impl",
+        lambda value, **kwargs: setattr(
+            value,
+            "completed_update",
+            value.completed_update + 1,
+        ),
+    )
+    monkeypatch.setattr(smoke_module, "_validate_condition_impl", lambda *args, **kwargs: None)
+    monkeypatch.setattr(smoke_module, "_runtime_replay_comparison", lambda value: {})
+    monkeypatch.setattr(smoke_module, "_replay_result_bytes", lambda *args: b"result")
+    result = smoke_module._execute_tiny_resume_replay_worker_impl(
+        Path("/tmp/bundle"),
+        token=object(),
+        diagnostic_sink=lambda phase, update: phases.append((phase, update)),
+    )
+    assert result == b"result"
+    assert [phase for phase, _ in phases] == [
+        "WORKER_STARTED", "REQUEST_AND_SOURCE_VALIDATED", "TRANSACTION_VERIFIED",
+        "AUTHORITY_RECONSTRUCTED", "ENVELOPE_VERIFIED_PREDECODE",
+        "CHECKPOINT_RESTORED", "REPLAY_STARTED", "UPDATE_751_COMPLETED",
+        "VALIDATION_800_COMPLETED", "VALIDATION_900_COMPLETED",
+        "UPDATE_1000_COMPLETED", "VALIDATION_1000_COMPLETED", "RESULT_ENCODED",
+    ]
+
+
+def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) -> None:
+    script = Path(smoke_module.__file__).resolve().parents[3] / (
+        "scripts/run_bounded_tiny_smoke.py"
+    )
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            smoke_module.RESUME_DIAGNOSTIC_WORKER_ARGUMENT,
+            str(tmp_path / "missing-bundle"),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 3
+    assert result.stdout == b""
+    record = json.loads(result.stderr)
+    assert type(record.pop("elapsed_ms")) is int
+    assert record == {
+        "phase": "WORKER_STARTED",
+        "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
+        "result": True,
+    }
+
+
 def test_device_switching_and_production_execution_remain_impossible(tmp_path: Path) -> None:
     output_parent_existed = smoke_module.APPROVED_OUTPUT_PARENT.exists()
     output_children = (
@@ -2891,6 +3128,7 @@ def test_smoke_production_graph_inventory_is_explicit_and_allowlist_empty() -> N
         "execute_tiny_resume_replay_worker",
         "learning_rate_state_after_update",
         "load_candidate_approval_evidence",
+        "run_invocation3_replay_diagnostic",
     }
     assert not smoke_module.SMOKE_EXTERNAL_APPLICATION_CALLABLE_ALLOWLIST
     assert set(smoke_module.SMOKE_PUBLIC_BOUNDARY_CLASS_INVENTORY) == {
