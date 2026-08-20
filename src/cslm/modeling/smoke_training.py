@@ -145,6 +145,10 @@ RESUME_DIAGNOSTIC_WORKER_ARGUMENT = "--internal-tiny-replay-diagnostic-worker"
 RESUME_DIAGNOSTIC_PROTOCOL = "neu_tiny_invocation3_replay_diagnostic_v1"
 RESUME_WORKER_TIMEOUT_SECONDS = 600.0
 RESUME_DIAGNOSTIC_HARD_TIMEOUT_SECONDS = 3_600.0
+_INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT = Path("/private/tmp")
+_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX = (
+    "neu-invocation3-minimal-diagnostic."
+)
 INVOCATION3_RETAINED_STAGE = Path(
     "/Users/timothyowen/NEU_LAB_private_runs/tiny_smoke/"
     "run-stage-e1f72b4384747f7f2250f6d651eec427"
@@ -6112,11 +6116,155 @@ def _launch_replay_diagnostic(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class _Invocation3DiagnosticWorkspaceCustody:
+    path: Path
+    parent_device: int
+    parent_inode: int
+    device: int
+    inode: int
+    owner_uid: int
+    _factory_token: object = field(repr=False, compare=False)
+
+
+def _invocation3_diagnostic_workspace_path_is_safe(path: Path) -> bool:
+    root = _INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT
+    forbidden = {
+        Path("/"),
+        root,
+        Path().absolute(),
+        Path.cwd().absolute(),
+        Path.home().absolute(),
+        APPROVED_REPOSITORY_ROOT.absolute(),
+    }
+    return (
+        isinstance(path, Path)
+        and path.is_absolute()
+        and path == path.absolute()
+        and path.parent == root
+        and path == root / path.name
+        and path.name.startswith(_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX)
+        and path.name not in {"", ".", ".."}
+        and path not in forbidden
+    )
+
+
+def _create_invocation3_diagnostic_workspace(
+    *,
+    token: object,
+) -> _Invocation3DiagnosticWorkspaceCustody:
+    try:
+        if token is not _AUTHORITY_TOKEN:
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        root = _INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT
+        parent_status = os.lstat(root)
+        if not stat.S_ISDIR(parent_status.st_mode):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        path = Path(
+            tempfile.mkdtemp(
+                prefix=_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX,
+                dir=root,
+            )
+        )
+        workspace_status = os.lstat(path)
+        if (
+            not _invocation3_diagnostic_workspace_path_is_safe(path)
+            or not stat.S_ISDIR(workspace_status.st_mode)
+            or stat.S_IMODE(workspace_status.st_mode) != 0o700
+            or workspace_status.st_uid != os.getuid()
+        ):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        return _Invocation3DiagnosticWorkspaceCustody(
+            path=path,
+            parent_device=parent_status.st_dev,
+            parent_inode=parent_status.st_ino,
+            device=workspace_status.st_dev,
+            inode=workspace_status.st_ino,
+            owner_uid=workspace_status.st_uid,
+            _factory_token=token,
+        )
+    except SmokeTrainingError:
+        raise
+    except Exception:
+        raise SmokeTrainingError(SMOKE_RESUME_MISMATCH) from None
+
+
+def _remove_invocation3_diagnostic_workspace(
+    custody: _Invocation3DiagnosticWorkspaceCustody | None,
+    *,
+    token: object,
+) -> None:
+    if custody is None:
+        return
+    parent_descriptor = -1
+    failure: BaseException | None = None
+    try:
+        if (
+            type(custody) is not _Invocation3DiagnosticWorkspaceCustody
+            or custody._factory_token is not token
+            or token is not _AUTHORITY_TOKEN
+            or not _invocation3_diagnostic_workspace_path_is_safe(custody.path)
+            or custody.owner_uid != os.getuid()
+            or not shutil.rmtree.avoids_symlink_attacks
+        ):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        parent_descriptor = os.open(
+            _INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        parent_status = os.fstat(parent_descriptor)
+        workspace_status = os.stat(
+            custody.path.name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            not stat.S_ISDIR(parent_status.st_mode)
+            or (parent_status.st_dev, parent_status.st_ino)
+            != (custody.parent_device, custody.parent_inode)
+            or not stat.S_ISDIR(workspace_status.st_mode)
+            or (workspace_status.st_dev, workspace_status.st_ino)
+            != (custody.device, custody.inode)
+            or workspace_status.st_uid != custody.owner_uid
+            or stat.S_IMODE(workspace_status.st_mode) != 0o700
+        ):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        shutil.rmtree(custody.path.name, dir_fd=parent_descriptor)
+        try:
+            os.stat(
+                custody.path.name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            pass
+        else:
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    except SmokeTrainingError as error:
+        failure = error
+    except Exception:
+        failure = SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    if parent_descriptor >= 0:
+        try:
+            os.close(parent_descriptor)
+        except BaseException:
+            if failure is None:
+                failure = SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+            else:
+                failure.add_note("diagnostic cleanup descriptor close also failed")
+    if failure is not None:
+        raise failure
+
+
 def _execute_invocation3_replay_diagnostic_impl(*, token: object) -> Mapping[str, object]:
     authorization = _construct_production_smoke_execution_authorization_impl(token=token)
     checkpoint = INVOCATION3_RETAINED_STAGE / "EnglishMono/cpu/checkpoint-0750"
     writer: PrivateRunArtifactWriter | None = None
-    workspace = Path()
+    workspace: _Invocation3DiagnosticWorkspaceCustody | None = None
+    result: Mapping[str, object] | None = None
+    failure: BaseException | None = None
     try:
         files = {
             name: _stable_read(
@@ -6142,14 +6290,8 @@ def _execute_invocation3_replay_diagnostic_impl(*, token: object) -> Mapping[str
                 "artifact_transaction_inventory.json": files["inventory.json"],
             }
         )
-        workspace = Path(
-            tempfile.mkdtemp(
-                prefix="neu-invocation3-minimal-diagnostic.",
-                dir="/private/tmp",
-            )
-        )
-        os.chmod(workspace, 0o700)
-        output_parent = workspace / "private-output"
+        workspace = _create_invocation3_diagnostic_workspace(token=token)
+        output_parent = workspace.path / "private-output"
         writer = begin_private_run_artifacts(
             output_parent,
             "invocation3-replay-diagnostic",
@@ -6164,20 +6306,45 @@ def _execute_invocation3_replay_diagnostic_impl(*, token: object) -> Mapping[str
             bundle_fault=None,
             test_fault=None,
         )
-        return _launch_replay_diagnostic(bundle_path, environment)
-    except SmokeTrainingError:
-        raise
+        result = _launch_replay_diagnostic(bundle_path, environment)
+    except SmokeTrainingError as error:
+        failure = error
     except Exception:
+        failure = SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    except BaseException as error:
+        failure = error
+    cleanup_failure: BaseException | None = None
+    if writer is not None:
+        for descriptor in (writer._stage_descriptor, writer._parent_descriptor):
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                if cleanup_failure is None:
+                    cleanup_failure = error
+                else:
+                    cleanup_failure.add_note(
+                        "additional diagnostic cleanup step also failed closed"
+                    )
+    try:
+        _remove_invocation3_diagnostic_workspace(workspace, token=token)
+    except BaseException as error:
+        if cleanup_failure is None:
+            cleanup_failure = error
+        else:
+            cleanup_failure.add_note(
+                "diagnostic workspace cleanup also failed closed"
+            )
+    if failure is not None:
+        if cleanup_failure is not None:
+            failure.add_note("diagnostic workspace cleanup also failed closed")
+        raise failure
+    if cleanup_failure is not None:
+        if isinstance(cleanup_failure, SmokeTrainingError):
+            raise cleanup_failure
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH) from None
-    finally:
-        if writer is not None:
-            for descriptor in (writer._stage_descriptor, writer._parent_descriptor):
-                try:
-                    os.close(descriptor)
-                except OSError:
-                    pass
-        if workspace and workspace.exists():
-            shutil.rmtree(workspace)
+    if result is None:
+        raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    return result
 
 
 def _run_fresh_process_resume_rehearsal(

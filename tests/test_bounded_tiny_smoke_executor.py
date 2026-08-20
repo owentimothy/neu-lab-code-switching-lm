@@ -7,9 +7,11 @@ import io
 import json
 import os
 import random
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import traceback
 from dataclasses import replace
 from pathlib import Path
@@ -2742,6 +2744,246 @@ def _diagnostic_phase_bytes(phase: str) -> bytes:
         )
         + "\n"
     ).encode("ascii")
+
+
+def _install_synthetic_invocation3_diagnostic_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = b"synthetic-checkpoint-state"
+    files = {
+        name: state if name == "checkpoint_state.pt" else b"synthetic-record"
+        for name in smoke_module._REPLAY_CHECKPOINT_FILE_NAMES
+    }
+    monkeypatch.setattr(
+        smoke_module,
+        "_construct_production_smoke_execution_authorization_impl",
+        lambda *, token: ("synthetic-authorization", token),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_stable_read",
+        lambda path, *, maximum_bytes: (files[path.name], maximum_bytes),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "INVOCATION3_CHECKPOINT_750_STATE_SHA256",
+        hashlib.sha256(state).hexdigest(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_identity",
+        lambda content: ("synthetic-envelope-identity", tuple(sorted(content))),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_from_files_for_tests_impl",
+        lambda files, identity, *, token: (files, identity, token),
+    )
+
+
+def test_invocation3_diagnostic_early_failure_never_cleans_current_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = tmp_path / "sentinel.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        smoke_module,
+        "_construct_production_smoke_execution_authorization_impl",
+        lambda *, token: ("synthetic-authorization", token),
+    )
+
+    def fail_before_workspace(*args, **kwargs):
+        del args, kwargs
+        raise OSError("injected before diagnostic workspace creation")
+
+    removals: list[tuple[object, object]] = []
+    monkeypatch.setattr(smoke_module, "_stable_read", fail_before_workspace)
+    monkeypatch.setattr(
+        smoke_module.shutil,
+        "rmtree",
+        lambda target, *, dir_fd=None: removals.append((target, dir_fd)),
+    )
+    with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+        smoke_module._execute_invocation3_replay_diagnostic_impl(
+            token=smoke_module._AUTHORITY_TOKEN
+        )
+    assert removals == []
+    assert Path.cwd() == tmp_path
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert tmp_path.is_dir()
+
+
+def test_invocation3_diagnostic_later_failure_cleans_created_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_synthetic_invocation3_diagnostic_prerequisites(monkeypatch)
+    created: list[Path] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*, prefix, dir):
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        created.append(path)
+        return str(path)
+
+    monkeypatch.setattr(smoke_module.tempfile, "mkdtemp", tracked_mkdtemp)
+
+    def fail_after_workspace(output_parent, *args, **kwargs):
+        del args, kwargs
+        output_parent.mkdir(mode=0o700)
+        (output_parent / "synthetic.txt").write_text("synthetic", encoding="utf-8")
+        raise OSError("injected after diagnostic workspace creation")
+
+    monkeypatch.setattr(smoke_module, "begin_private_run_artifacts", fail_after_workspace)
+    try:
+        with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+            smoke_module._execute_invocation3_replay_diagnostic_impl(
+                token=smoke_module._AUTHORITY_TOKEN
+            )
+        assert len(created) == 1
+        assert not created[0].exists()
+    finally:
+        for path in created:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+
+
+def test_invocation3_diagnostic_cleanup_refuses_wrong_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "neu-invocation3-minimal-diagnostic.wrong-parent"
+    workspace.mkdir(mode=0o700)
+    os.chmod(workspace, 0o700)
+    sentinel = workspace / "sentinel.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    parent_status = os.lstat(tmp_path)
+    workspace_status = os.lstat(workspace)
+    custody = smoke_module._Invocation3DiagnosticWorkspaceCustody(
+        path=workspace,
+        parent_device=parent_status.st_dev,
+        parent_inode=parent_status.st_ino,
+        device=workspace_status.st_dev,
+        inode=workspace_status.st_ino,
+        owner_uid=workspace_status.st_uid,
+        _factory_token=smoke_module._AUTHORITY_TOKEN,
+    )
+    removals: list[tuple[object, object]] = []
+    monkeypatch.setattr(
+        smoke_module.shutil,
+        "rmtree",
+        lambda target, *, dir_fd=None: removals.append((target, dir_fd)),
+    )
+    with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+        smoke_module._remove_invocation3_diagnostic_workspace(
+            custody,
+            token=smoke_module._AUTHORITY_TOKEN,
+        )
+    assert removals == []
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+
+
+@pytest.mark.parametrize("substitution", ("directory", "symlink", "public_mode"))
+def test_invocation3_diagnostic_cleanup_refuses_unverified_workspace(
+    substitution: str,
+) -> None:
+    custody = smoke_module._create_invocation3_diagnostic_workspace(
+        token=smoke_module._AUTHORITY_TOKEN
+    )
+    workspace = custody.path
+    original = workspace.with_name(f"{workspace.name}.original")
+    unrelated = workspace.with_name(f"{workspace.name}.unrelated")
+    try:
+        if substitution in {"directory", "symlink"}:
+            workspace.rename(original)
+        if substitution == "directory":
+            workspace.mkdir(mode=0o700)
+            os.chmod(workspace, 0o700)
+            sentinel = workspace / "sentinel.txt"
+        elif substitution == "symlink":
+            unrelated.mkdir(mode=0o700)
+            os.chmod(unrelated, 0o700)
+            workspace.symlink_to(unrelated, target_is_directory=True)
+            sentinel = unrelated / "sentinel.txt"
+        else:
+            os.chmod(workspace, 0o755)
+            sentinel = workspace / "sentinel.txt"
+        sentinel.write_text("preserve", encoding="utf-8")
+        with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+            smoke_module._remove_invocation3_diagnostic_workspace(
+                custody,
+                token=smoke_module._AUTHORITY_TOKEN,
+            )
+        assert sentinel.read_text(encoding="utf-8") == "preserve"
+    finally:
+        if workspace.is_symlink():
+            workspace.unlink()
+        for path in (workspace, original, unrelated):
+            if path.is_dir() and not path.is_symlink():
+                os.chmod(path, 0o700)
+                shutil.rmtree(path)
+
+
+def test_invocation3_diagnostic_operational_failure_survives_cleanup_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_synthetic_invocation3_diagnostic_prerequisites(monkeypatch)
+    created: list[Path] = []
+    replacements: list[Path] = []
+    real_mkdtemp = tempfile.mkdtemp
+    operational_failure = SmokeTrainingError(SMOKE_DATA_SCHEDULE_MISMATCH)
+
+    def tracked_mkdtemp(*, prefix, dir):
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        created.append(path)
+        return str(path)
+
+    def substitute_then_fail(*args, **kwargs):
+        del args, kwargs
+        workspace = created[0]
+        original = workspace.with_name(f"{workspace.name}.original")
+        workspace.rename(original)
+        replacements.append(original)
+        workspace.mkdir(mode=0o700)
+        os.chmod(workspace, 0o700)
+        (workspace / "sentinel.txt").write_text("preserve", encoding="utf-8")
+        raise operational_failure
+
+    monkeypatch.setattr(smoke_module.tempfile, "mkdtemp", tracked_mkdtemp)
+    monkeypatch.setattr(
+        smoke_module,
+        "begin_private_run_artifacts",
+        substitute_then_fail,
+    )
+    try:
+        with pytest.raises(SmokeTrainingError) as caught:
+            smoke_module._execute_invocation3_replay_diagnostic_impl(
+                token=smoke_module._AUTHORITY_TOKEN
+            )
+        assert caught.value is operational_failure
+        assert caught.value.code == SMOKE_DATA_SCHEDULE_MISMATCH
+        assert caught.value.__notes__ == [
+            "diagnostic workspace cleanup also failed closed"
+        ]
+        assert (created[0] / "sentinel.txt").read_text(encoding="utf-8") == "preserve"
+    finally:
+        for path in (*created, *replacements):
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+
+
+def test_production_execution_does_not_reference_diagnostic_workspace_cleanup() -> None:
+    diagnostic_names = {
+        "_create_invocation3_diagnostic_workspace",
+        "_remove_invocation3_diagnostic_workspace",
+    }
+    assert diagnostic_names.isdisjoint(
+        smoke_module._execute_bounded_tiny_smoke_impl.__code__.co_names
+    )
+    assert diagnostic_names.isdisjoint(
+        smoke_module._execute_canonical_four_condition_orchestrator_impl.__code__.co_names
+    )
 
 
 @pytest.mark.parametrize(
