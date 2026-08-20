@@ -18,6 +18,7 @@ from cslm.modeling.smoke_training import (
     SMOKE_FAILURE_CODES,
     SMOKE_RESUME_MISMATCH,
     SmokeTrainingError,
+    _invocation3_diagnostic_workspace_path_is_safe,
     construct_production_smoke_execution_authorization,
     execute_bounded_tiny_smoke,
     execute_tiny_resume_replay_worker,
@@ -25,7 +26,13 @@ from cslm.modeling.smoke_training import (
 )
 
 
-def _fixed_result(code: str | None, *, executed: bool, status: str) -> str:
+def _fixed_result(
+    code: str | None,
+    *,
+    executed: bool,
+    status: str,
+    preserved_workspace: str | None = None,
+) -> str:
     if code is not None and code not in SMOKE_FAILURE_CODES:
         code = SMOKE_APPROVAL_MISMATCH
     payload: dict[str, bool | str] = {
@@ -35,6 +42,11 @@ def _fixed_result(code: str | None, *, executed: bool, status: str) -> str:
     }
     if code is not None:
         payload["code"] = code
+    if preserved_workspace is not None:
+        workspace = Path(preserved_workspace)
+        if _invocation3_diagnostic_workspace_path_is_safe(workspace):
+            payload["workspace_disposition"] = "preserved"
+            payload["workspace_path"] = str(workspace)
     return json.dumps(
         payload,
         ensure_ascii=True,
@@ -86,12 +98,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if arguments == (RESUME_DIAGNOSTIC_ARGUMENT,):
         try:
             result = run_invocation3_replay_diagnostic()
-        except Exception:
+        except Exception as error:
+            preserved_workspace = (
+                getattr(error, "preserved_workspace", None)
+                if isinstance(error, SmokeTrainingError)
+                else None
+            )
             print(
                 _fixed_result(
                     SMOKE_RESUME_MISMATCH,
                     executed=False,
                     status="replay_diagnostic_failed",
+                    preserved_workspace=preserved_workspace,
                 ),
                 file=sys.stderr,
             )
