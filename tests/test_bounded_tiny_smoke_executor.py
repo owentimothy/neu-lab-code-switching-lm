@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib
 import inspect
@@ -7,12 +8,15 @@ import io
 import json
 import os
 import random
+import shutil
 import stat
 import subprocess
 import sys
+import tempfile
 import traceback
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Mapping
 
 import numpy as np
@@ -2727,6 +2731,801 @@ def test_fresh_process_worker_failure_is_not_retried(
     assert not workspace.exists()
 
 
+def _diagnostic_phase_bytes(phase: str) -> bytes:
+    return (
+        json.dumps(
+            {
+                "elapsed_ms": 1,
+                "phase": phase,
+                "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
+                "result": True,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("ascii")
+
+
+def _install_synthetic_invocation3_diagnostic_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = b"synthetic-checkpoint-state"
+    files = {
+        name: state if name == "checkpoint_state.pt" else b"synthetic-record"
+        for name in smoke_module._REPLAY_CHECKPOINT_FILE_NAMES
+    }
+    monkeypatch.setattr(
+        smoke_module,
+        "_construct_production_smoke_execution_authorization_impl",
+        lambda *, token: ("synthetic-authorization", token),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_stable_read",
+        lambda path, *, maximum_bytes: (files[path.name], maximum_bytes),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "INVOCATION3_CHECKPOINT_750_STATE_SHA256",
+        hashlib.sha256(state).hexdigest(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_identity",
+        lambda content: ("synthetic-envelope-identity", tuple(sorted(content))),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_from_files_for_tests_impl",
+        lambda files, identity, *, token: (files, identity, token),
+    )
+
+
+def _tracked_invocation3_mkdtemp(created: list[Path]):
+    real_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*, prefix, dir):
+        assert prefix == smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX
+        assert dir == smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        created.append(path)
+        return str(path)
+
+    return tracked_mkdtemp
+
+
+def _remove_synthetic_workspaces(paths: list[Path]) -> None:
+    for path in paths:
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+
+
+def test_invocation3_diagnostic_failure_before_workspace_never_deletes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sentinel = tmp_path / "sentinel.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        smoke_module,
+        "_construct_production_smoke_execution_authorization_impl",
+        lambda *, token: ("synthetic-authorization", token),
+    )
+
+    def fail_before_workspace(*args, **kwargs):
+        del args, kwargs
+        raise OSError("injected before diagnostic workspace creation")
+
+    removals: list[Path] = []
+    with monkeypatch.context() as context:
+        context.setattr(smoke_module, "_stable_read", fail_before_workspace)
+        context.setattr(
+            smoke_module.shutil,
+            "rmtree",
+            lambda target, *args, **kwargs: removals.append(Path(target)),
+        )
+        with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH) as caught:
+            smoke_module._execute_invocation3_replay_diagnostic_impl(
+                token=smoke_module._AUTHORITY_TOKEN
+            )
+    assert removals == []
+    assert getattr(caught.value, "preserved_workspace", None) is None
+    assert Path.cwd() == tmp_path
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert tmp_path.is_dir()
+
+
+def test_invocation3_diagnostic_failure_after_mkdtemp_preserves_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[Path] = []
+    removals: list[Path] = []
+
+    def fail_after_workspace(output_parent, *args, **kwargs):
+        del output_parent, args, kwargs
+        raise OSError("injected after diagnostic workspace creation")
+
+    try:
+        with monkeypatch.context() as context:
+            _install_synthetic_invocation3_diagnostic_prerequisites(context)
+            context.setattr(
+                smoke_module.tempfile,
+                "mkdtemp",
+                _tracked_invocation3_mkdtemp(created),
+            )
+            context.setattr(
+                smoke_module,
+                "begin_private_run_artifacts",
+                fail_after_workspace,
+            )
+            context.setattr(
+                smoke_module.shutil,
+                "rmtree",
+                lambda target, *args, **kwargs: removals.append(Path(target)),
+            )
+            with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH) as caught:
+                smoke_module._execute_invocation3_replay_diagnostic_impl(
+                    token=smoke_module._AUTHORITY_TOKEN
+                )
+        assert len(created) == 1
+        assert caught.value.preserved_workspace == str(created[0])
+        assert created[0].is_dir()
+        assert not created[0].is_symlink()
+        assert created[0].parent == Path("/private/tmp")
+        assert created[0].name.startswith(
+            smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX
+        )
+        status = os.lstat(created[0])
+        assert stat.S_IMODE(status.st_mode) == 0o700
+        assert status.st_uid == os.getuid()
+        assert removals == []
+    finally:
+        _remove_synthetic_workspaces(created)
+
+
+def test_invocation3_diagnostic_post_mkdtemp_validation_failure_preserves_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[Path] = []
+    removals: list[Path] = []
+    real_lstat = os.lstat
+
+    def fail_workspace_lstat(path):
+        if created and Path(path) == created[0]:
+            raise OSError("injected immediate workspace validation failure")
+        return real_lstat(path)
+
+    try:
+        with monkeypatch.context() as context:
+            _install_synthetic_invocation3_diagnostic_prerequisites(context)
+            context.setattr(
+                smoke_module.tempfile,
+                "mkdtemp",
+                _tracked_invocation3_mkdtemp(created),
+            )
+            context.setattr(smoke_module.os, "lstat", fail_workspace_lstat)
+            context.setattr(
+                smoke_module.shutil,
+                "rmtree",
+                lambda target, *args, **kwargs: removals.append(Path(target)),
+            )
+            with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH) as caught:
+                smoke_module._execute_invocation3_replay_diagnostic_impl(
+                    token=smoke_module._AUTHORITY_TOKEN
+                )
+        assert len(created) == 1
+        assert caught.value.preserved_workspace == str(created[0])
+        assert created[0].is_dir()
+        assert removals == []
+    finally:
+        _remove_synthetic_workspaces(created)
+
+
+def test_invocation3_diagnostic_operational_failure_preserves_sentinel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[Path] = []
+    removals: list[Path] = []
+    operational_failure = SmokeTrainingError(SMOKE_DATA_SCHEDULE_MISMATCH)
+
+    def write_sentinel_then_fail(output_parent, *args, **kwargs):
+        del args, kwargs
+        output_parent.mkdir(mode=0o700)
+        (output_parent / "synthetic-sentinel.txt").write_text(
+            "preserve",
+            encoding="utf-8",
+        )
+        raise operational_failure
+
+    try:
+        with monkeypatch.context() as context:
+            _install_synthetic_invocation3_diagnostic_prerequisites(context)
+            context.setattr(
+                smoke_module.tempfile,
+                "mkdtemp",
+                _tracked_invocation3_mkdtemp(created),
+            )
+            context.setattr(
+                smoke_module,
+                "begin_private_run_artifacts",
+                write_sentinel_then_fail,
+            )
+            context.setattr(
+                smoke_module.shutil,
+                "rmtree",
+                lambda target, *args, **kwargs: removals.append(Path(target)),
+            )
+            with pytest.raises(SmokeTrainingError) as caught:
+                smoke_module._execute_invocation3_replay_diagnostic_impl(
+                    token=smoke_module._AUTHORITY_TOKEN
+                )
+        assert caught.value is operational_failure
+        assert caught.value.code == SMOKE_DATA_SCHEDULE_MISMATCH
+        assert caught.value.preserved_workspace == str(created[0])
+        assert (
+            created[0] / "private-output" / "synthetic-sentinel.txt"
+        ).read_text(encoding="utf-8") == "preserve"
+        assert removals == []
+    finally:
+        _remove_synthetic_workspaces(created)
+
+
+def test_invocation3_diagnostic_success_preserves_workspace_and_disables_bundle_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[Path] = []
+    removals: list[Path] = []
+    bundle_policies: list[bool] = []
+    output_parents: list[Path] = []
+    production_output_parent = tmp_path / "production-output"
+    production_output_parent.mkdir()
+
+    def synthetic_writer(output_parent, *args, **kwargs):
+        del args, kwargs
+        output_parents.append(output_parent)
+        output_parent.mkdir(mode=0o700)
+        return SimpleNamespace(_stage_descriptor=-1, _parent_descriptor=-1)
+
+    def synthetic_bundle(*args, cleanup_on_failure, **kwargs):
+        del args, kwargs
+        bundle_policies.append(cleanup_on_failure)
+        return Path("/private/tmp/synthetic-bundle"), {}, "synthetic-request"
+
+    try:
+        with monkeypatch.context() as context:
+            _install_synthetic_invocation3_diagnostic_prerequisites(context)
+            context.setattr(
+                smoke_module.tempfile,
+                "mkdtemp",
+                _tracked_invocation3_mkdtemp(created),
+            )
+            context.setattr(
+                smoke_module,
+                "APPROVED_OUTPUT_PARENT",
+                production_output_parent,
+            )
+            context.setattr(
+                smoke_module,
+                "begin_private_run_artifacts",
+                synthetic_writer,
+            )
+            context.setattr(smoke_module, "_create_replay_bundle", synthetic_bundle)
+            context.setattr(
+                smoke_module,
+                "_launch_replay_diagnostic",
+                lambda bundle, environment: {
+                    "bundle": bundle.name,
+                    "disposition": "COMPLETED_AT_OR_BELOW_600_SECONDS",
+                    "environment_size": len(environment),
+                },
+            )
+            context.setattr(
+                smoke_module.shutil,
+                "rmtree",
+                lambda target, *args, **kwargs: removals.append(Path(target)),
+            )
+            result = smoke_module._execute_invocation3_replay_diagnostic_impl(
+                token=smoke_module._AUTHORITY_TOKEN
+            )
+        assert len(created) == 1
+        assert bundle_policies == [False]
+        assert removals == []
+        assert result["workspace_disposition"] == "preserved"
+        assert result["workspace_path"] == str(created[0])
+        assert "deleted" not in json.dumps(dict(result)).lower()
+        assert created[0].is_dir()
+        assert output_parents == [created[0] / "private-output"]
+        assert list(production_output_parent.iterdir()) == []
+        assert production_output_parent not in output_parents[0].parents
+    finally:
+        _remove_synthetic_workspaces(created)
+
+
+def _exercise_synthetic_bundle_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    cleanup_on_failure: bool | None,
+) -> tuple[Path, list[tuple[Path, bool]]]:
+    class SyntheticWriter:
+        def __init__(self, parent: Path, stage_name: str) -> None:
+            self._committed = False
+            self._parent = parent
+            self._stage_name = stage_name
+
+    class SyntheticAuthorization:
+        authority_kind = "production_tracker_and_launch"
+
+    class SyntheticEnvelope:
+        condition = "EnglishMono"
+        completed_update = 750
+        _files = {"checkpoint_state.pt": b"synthetic-state"}
+
+    root = tmp_path.resolve()
+    stage_name = "synthetic-stage"
+    stage_root = root / stage_name
+    stage_root.mkdir(mode=0o700)
+    os.chmod(stage_root, 0o700)
+    created: list[Path] = []
+    removals: list[tuple[Path, bool]] = []
+    real_mkdtemp = tempfile.mkdtemp
+
+    def tracked_mkdtemp(*, prefix, dir):
+        path = Path(real_mkdtemp(prefix=prefix, dir=dir))
+        (path / "synthetic-sentinel.txt").write_text("preserve", encoding="utf-8")
+        created.append(path)
+        return str(path)
+
+    def fail_bundle_write(*args, **kwargs):
+        del args, kwargs
+        raise SmokeTrainingError(SMOKE_CHECKPOINT_WRITE_FAILURE)
+
+    with monkeypatch.context() as context:
+        context.setattr(smoke_module, "PrivateRunArtifactWriter", SyntheticWriter)
+        context.setattr(smoke_module, "SmokeExecutionAuthorization", SyntheticAuthorization)
+        context.setattr(smoke_module, "CheckpointEnvelope", SyntheticEnvelope)
+        context.setattr(smoke_module, "_worker_source_root", lambda: root)
+        context.setattr(
+            smoke_module,
+            "_replay_worker_environment",
+            lambda *args, **kwargs: {},
+        )
+        context.setattr(
+            smoke_module,
+            "_replay_request_payload",
+            lambda *args, **kwargs: {"synthetic": True},
+        )
+        context.setattr(smoke_module, "_write_regular_file_at", fail_bundle_write)
+        context.setattr(smoke_module.tempfile, "mkdtemp", tracked_mkdtemp)
+        context.setattr(
+            smoke_module.shutil,
+            "rmtree",
+            lambda target, *, ignore_errors=False: removals.append(
+                (Path(target), ignore_errors)
+            ),
+        )
+        arguments = {
+            "bundle_fault": None,
+            "test_fault": None,
+        }
+        if cleanup_on_failure is not None:
+            arguments["cleanup_on_failure"] = cleanup_on_failure
+        with pytest.raises(SmokeTrainingError, match=SMOKE_CHECKPOINT_WRITE_FAILURE):
+            smoke_module._create_replay_bundle(
+                SyntheticWriter(root, stage_name),
+                SyntheticAuthorization(),
+                SyntheticEnvelope(),
+                {
+                    "artifact_transaction_completion.json": b"synthetic-completion",
+                    "artifact_transaction_inventory.json": b"synthetic-inventory",
+                },
+                root / "synthetic-output",
+                **arguments,
+            )
+    assert len(created) == 1
+    return created[0], removals
+
+
+def test_create_replay_bundle_failure_cleanup_disabled_preserves_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, removals = _exercise_synthetic_bundle_failure(
+        monkeypatch,
+        tmp_path,
+        cleanup_on_failure=False,
+    )
+    try:
+        assert removals == []
+        assert bundle.is_dir()
+        assert (bundle / "synthetic-sentinel.txt").read_text(encoding="utf-8") == (
+            "preserve"
+        )
+    finally:
+        shutil.rmtree(bundle)
+
+
+def test_create_replay_bundle_default_retains_production_failure_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bundle, removals = _exercise_synthetic_bundle_failure(
+        monkeypatch,
+        tmp_path,
+        cleanup_on_failure=None,
+    )
+    try:
+        assert removals == [(bundle, True)]
+        assert bundle.is_dir()
+        assert inspect.signature(smoke_module._create_replay_bundle).parameters[
+            "cleanup_on_failure"
+        ].default is True
+    finally:
+        shutil.rmtree(bundle)
+
+
+@pytest.mark.parametrize("invalid_policy", (None, 0, 1, "preserve"))
+def test_create_replay_bundle_rejects_invalid_cleanup_policy(
+    invalid_policy: object,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SyntheticWriter:
+        _committed = False
+
+    class SyntheticAuthorization:
+        pass
+
+    class SyntheticEnvelope:
+        condition = "EnglishMono"
+        completed_update = 750
+
+    with monkeypatch.context() as context:
+        context.setattr(smoke_module, "PrivateRunArtifactWriter", SyntheticWriter)
+        context.setattr(smoke_module, "SmokeExecutionAuthorization", SyntheticAuthorization)
+        context.setattr(smoke_module, "CheckpointEnvelope", SyntheticEnvelope)
+        context.setattr(
+            smoke_module.tempfile,
+            "mkdtemp",
+            lambda *args, **kwargs: pytest.fail("invalid policy reached construction"),
+        )
+        with pytest.raises(SmokeTrainingError, match=SMOKE_RESUME_MISMATCH):
+            smoke_module._create_replay_bundle(
+                SyntheticWriter(),
+                SyntheticAuthorization(),
+                SyntheticEnvelope(),
+                {
+                    "artifact_transaction_completion.json": b"synthetic-completion",
+                    "artifact_transaction_inventory.json": b"synthetic-inventory",
+                },
+                Path("/private/tmp/synthetic-output"),
+                bundle_fault=None,
+                test_fault=None,
+                cleanup_on_failure=invalid_policy,
+            )
+
+
+def test_invocation3_diagnostic_has_no_recursive_or_implicit_cleanup_edge() -> None:
+    diagnostic_source = inspect.getsource(
+        smoke_module._execute_invocation3_replay_diagnostic_impl
+    )
+    assert "cleanup_on_failure=False" in diagnostic_source
+    assert "workspace: str | None = None" in diagnostic_source
+    assert "shutil.rmtree" not in diagnostic_source
+    assert "_remove_replay_bundle" not in diagnostic_source
+    assert "TemporaryDirectory" not in diagnostic_source
+    assert "atexit" not in diagnostic_source
+    assert "weakref" not in diagnostic_source
+    assert "__del__" not in diagnostic_source
+    assert "signal" not in diagnostic_source
+    assert "unlink" not in diagnostic_source
+    assert "rename" not in diagnostic_source
+    assert "trash" not in diagnostic_source
+    assert "cleanup_on_failure=False" not in inspect.getsource(
+        smoke_module._run_fresh_process_resume_rehearsal
+    )
+    assert "cleanup_on_failure" not in inspect.signature(
+        smoke_module._run_fresh_process_resume_rehearsal
+    ).parameters
+
+
+def test_smoke_training_recursive_deletion_inventory_is_diagnostic_unreachable() -> None:
+    source_path = Path(smoke_module.__file__)
+    syntax = ast.parse(source_path.read_text(encoding="utf-8"))
+    inventory: list[tuple[str, int]] = []
+    for node in ast.walk(syntax):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.walk(node):
+            if (
+                isinstance(child, ast.Call)
+                and isinstance(child.func, ast.Attribute)
+                and child.func.attr == "rmtree"
+                and isinstance(child.func.value, ast.Name)
+                and child.func.value.id == "shutil"
+            ):
+                inventory.append((node.name, child.lineno))
+    assert [name for name, _ in inventory] == [
+        "_create_replay_bundle",
+        "_create_replay_bundle",
+        "_remove_replay_bundle",
+        "_run_synthetic_fresh_process_resume_for_tests_impl",
+    ]
+    assert "_remove_replay_bundle" not in (
+        smoke_module._execute_invocation3_replay_diagnostic_impl.__code__.co_names
+    )
+    assert "shutil" not in (
+        smoke_module._execute_invocation3_replay_diagnostic_impl.__code__.co_names
+    )
+
+
+def test_diagnostic_fixed_failure_record_reports_only_constrained_preservation() -> None:
+    script = Path(smoke_module.__file__).resolve().parents[3] / (
+        "scripts/run_bounded_tiny_smoke.py"
+    )
+    spec = importlib.util.spec_from_file_location("synthetic_smoke_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    preserved = (
+        "/private/tmp/"
+        f"{smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX}synthetic"
+    )
+    record = json.loads(
+        module._fixed_result(
+            SMOKE_RESUME_MISMATCH,
+            executed=False,
+            status="replay_diagnostic_failed",
+            preserved_workspace=preserved,
+        )
+    )
+    assert record["workspace_disposition"] == "preserved"
+    assert record["workspace_path"] == preserved
+    assert "deleted" not in json.dumps(record).lower()
+    arbitrary = json.loads(
+        module._fixed_result(
+            SMOKE_RESUME_MISMATCH,
+            executed=False,
+            status="replay_diagnostic_failed",
+            preserved_workspace="/tmp/arbitrary",
+        )
+    )
+    assert "workspace_path" not in arbitrary
+
+
+def test_production_execution_does_not_select_diagnostic_preservation_policy() -> None:
+    module_source = Path(smoke_module.__file__).read_text(encoding="utf-8")
+    assert module_source.count("cleanup_on_failure=False") == 1
+    assert "_execute_invocation3_replay_diagnostic_impl" not in (
+        smoke_module._execute_bounded_tiny_smoke_impl.__code__.co_names
+    )
+    assert "_execute_invocation3_replay_diagnostic_impl" not in (
+        smoke_module._execute_canonical_four_condition_orchestrator_impl.__code__.co_names
+    )
+
+
+@pytest.mark.parametrize(
+    ("outcomes", "expected"),
+    (
+        (
+            ((b"result", _diagnostic_phase_bytes("RESULT_ENCODED")),),
+            "COMPLETED_AT_OR_BELOW_600_SECONDS",
+        ),
+        (
+            (
+                subprocess.TimeoutExpired("worker", 600),
+                (b"result", _diagnostic_phase_bytes("RESULT_ENCODED")),
+            ),
+            "COMPLETED_AFTER_600_SECONDS",
+        ),
+        (
+            (
+                subprocess.TimeoutExpired("worker", 600),
+                subprocess.TimeoutExpired("worker", 3_000),
+                (b"", b""),
+            ),
+            "HARD_TIMEOUT",
+        ),
+    ),
+)
+def test_replay_diagnostic_timeout_classification_is_single_worker(
+    monkeypatch: pytest.MonkeyPatch,
+    outcomes: tuple[object, ...],
+    expected: str,
+) -> None:
+    calls = 0
+
+    class FakeProcess:
+        pid = os.getpid() + 10
+        returncode = 0
+
+        def __init__(self) -> None:
+            self._outcomes = list(outcomes)
+
+        def communicate(self, *, timeout=None):
+            del timeout
+            outcome = self._outcomes.pop(0)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            return outcome
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def fake_popen(*args, **kwargs):
+        nonlocal calls
+        del args, kwargs
+        calls += 1
+        return FakeProcess()
+
+    monkeypatch.setattr(smoke_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        smoke_module,
+        "_parse_fresh_process_replay_result",
+        lambda content, *, expected_pid: (content, expected_pid),
+    )
+    result = smoke_module._launch_replay_diagnostic(Path("/tmp/bundle"), {})
+    assert result["disposition"] == expected
+    assert result["crossed_600_seconds"] is (
+        expected != "COMPLETED_AT_OR_BELOW_600_SECONDS"
+    )
+    assert calls == 1
+
+
+def test_replay_worker_diagnostic_phases_wrap_existing_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    required = {
+        "artifact_completion_sha256", "artifact_inventory_sha256", "authority_kind",
+        "authorization_sha256", "candidate_checksum_record_sha256",
+        "checkpoint_envelope_sha256", "checkpoint_inventory_sha256",
+        "checkpoint_update", "condition", "condition_digests", "dropout_protocol",
+        "executor_closure_digest", "executor_commit", "first_replay_update",
+        "launch_manifest_sha256", "last_replay_update", "parent_pid",
+        "preparation_manifest_sha256", "preparation_runner_digest",
+        "process_environment_sha256", "process_start_nonce", "protocol",
+        "runtime_policy_sha256", "sanitized_view_sha256", "schedule_bindings",
+        "schedule_plan_identity_sha256", "schema_version", "synthetic_material",
+        "synthetic_output_parent", "tensor_array_digests", "tracker_authority",
+        "tracker_sha256", "validation_updates", "worker_script_sha256",
+        "worker_source_closure_sha256",
+    }
+    request = {name: None for name in required}
+    request.update(
+        {
+            "authority_kind": "synthetic_test_only",
+            "checkpoint_inventory_sha256": "inventory",
+            "checkpoint_update": 750,
+            "condition": "EnglishMono",
+            "dropout_protocol": smoke_module.DROPOUT_PROTOCOL,
+            "first_replay_update": 751,
+            "last_replay_update": 1_000,
+            "parent_pid": os.getpid() + 1,
+            "preparation_runner_digest": smoke_module.APPROVED_PREPARATION_RUNNER_DIGEST,
+            "process_environment_sha256": smoke_module._semantic_hash({}),
+            "process_start_nonce": "a" * 64,
+            "protocol": smoke_module.RESUME_WORKER_PROTOCOL,
+            "runtime_policy_sha256": "runtime",
+            "schema_version": 1,
+            "validation_updates": list(smoke_module.REPLAY_VALIDATION_POINTS),
+            "worker_script_sha256": hashlib.sha256(b"script").hexdigest(),
+            "worker_source_closure_sha256": "closure",
+        }
+    )
+    files = {"replay_request.json": b"request"}
+    files.update(
+        {name: b"checkpoint" for name in smoke_module._REPLAY_CHECKPOINT_FILE_NAMES}
+    )
+    runtime = SimpleNamespace(completed_update=750)
+    phases: list[tuple[str, int | None]] = []
+    monkeypatch.setattr(smoke_module, "_read_replay_bundle", lambda path: files)
+    monkeypatch.setattr(smoke_module, "_checkpoint_json", lambda content: request)
+    monkeypatch.setattr(smoke_module, "_worker_source_root", lambda: Path("/tmp/source"))
+    monkeypatch.setattr(
+        smoke_module,
+        "_stable_read",
+        lambda *args, **kwargs: (b"script", None),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_replay_worker_environment",
+        lambda *args, **kwargs: {},
+    )
+    monkeypatch.setattr(smoke_module, "_verify_supported_runtime", lambda: "runtime")
+    monkeypatch.setattr(
+        smoke_module,
+        "_executor_source_closure_identity",
+        lambda root: "closure",
+    )
+    monkeypatch.setattr(smoke_module, "_verify_replay_transaction", lambda *args: None)
+    monkeypatch.setattr(
+        smoke_module,
+        "_reconstruct_replay_authorization",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_checkpoint_envelope_from_files_for_tests_impl",
+        lambda *args, **kwargs: SimpleNamespace(
+            checkpoint_inventory_sha256="inventory"
+        ),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_verify_checkpoint_envelope",
+        lambda *args, **kwargs: b"state",
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_create_optimizer_set_impl",
+        lambda *args, **kwargs: object(),
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_restore_runtime_from_checkpoint_impl",
+        lambda *args, **kwargs: runtime,
+    )
+    monkeypatch.setattr(
+        smoke_module,
+        "_execute_next_update_impl",
+        lambda value, **kwargs: setattr(
+            value,
+            "completed_update",
+            value.completed_update + 1,
+        ),
+    )
+    monkeypatch.setattr(smoke_module, "_validate_condition_impl", lambda *args, **kwargs: None)
+    monkeypatch.setattr(smoke_module, "_runtime_replay_comparison", lambda value: {})
+    monkeypatch.setattr(smoke_module, "_replay_result_bytes", lambda *args: b"result")
+    result = smoke_module._execute_tiny_resume_replay_worker_impl(
+        Path("/tmp/bundle"),
+        token=object(),
+        diagnostic_sink=lambda phase, update: phases.append((phase, update)),
+    )
+    assert result == b"result"
+    assert [phase for phase, _ in phases] == [
+        "WORKER_STARTED", "REQUEST_AND_SOURCE_VALIDATED", "TRANSACTION_VERIFIED",
+        "AUTHORITY_RECONSTRUCTED", "ENVELOPE_VERIFIED_PREDECODE",
+        "CHECKPOINT_RESTORED", "REPLAY_STARTED", "UPDATE_751_COMPLETED",
+        "VALIDATION_800_COMPLETED", "VALIDATION_900_COMPLETED",
+        "UPDATE_1000_COMPLETED", "VALIDATION_1000_COMPLETED", "RESULT_ENCODED",
+    ]
+
+
+def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) -> None:
+    script = Path(smoke_module.__file__).resolve().parents[3] / (
+        "scripts/run_bounded_tiny_smoke.py"
+    )
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            smoke_module.RESUME_DIAGNOSTIC_WORKER_ARGUMENT,
+            str(tmp_path / "missing-bundle"),
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 3
+    assert result.stdout == b""
+    record = json.loads(result.stderr)
+    assert type(record.pop("elapsed_ms")) is int
+    assert record == {
+        "phase": "WORKER_STARTED",
+        "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
+        "result": True,
+    }
+
+
 def test_device_switching_and_production_execution_remain_impossible(tmp_path: Path) -> None:
     output_parent_existed = smoke_module.APPROVED_OUTPUT_PARENT.exists()
     output_children = (
@@ -2891,6 +3690,7 @@ def test_smoke_production_graph_inventory_is_explicit_and_allowlist_empty() -> N
         "execute_tiny_resume_replay_worker",
         "learning_rate_state_after_update",
         "load_candidate_approval_evidence",
+        "run_invocation3_replay_diagnostic",
     }
     assert not smoke_module.SMOKE_EXTERNAL_APPLICATION_CALLABLE_ALLOWLIST
     assert set(smoke_module.SMOKE_PUBLIC_BOUNDARY_CLASS_INVENTORY) == {

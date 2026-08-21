@@ -140,7 +140,22 @@ RESUME_WORKER_PROTOCOL = "neu_tiny_englishmono_fresh_process_worker_v2"
 RESUME_BUNDLE_PROTOCOL = "neu_tiny_englishmono_replay_bundle_v2"
 RESUME_RESULT_PROTOCOL = "neu_tiny_englishmono_replay_result_v2"
 RESUME_WORKER_ARGUMENT = "--internal-tiny-resume-worker"
+RESUME_DIAGNOSTIC_ARGUMENT = "--internal-tiny-replay-diagnostic"
+RESUME_DIAGNOSTIC_WORKER_ARGUMENT = "--internal-tiny-replay-diagnostic-worker"
+RESUME_DIAGNOSTIC_PROTOCOL = "neu_tiny_invocation3_replay_diagnostic_v1"
 RESUME_WORKER_TIMEOUT_SECONDS = 600.0
+RESUME_DIAGNOSTIC_HARD_TIMEOUT_SECONDS = 3_600.0
+_INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT = Path("/private/tmp")
+_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX = (
+    "neu-invocation3-minimal-diagnostic."
+)
+INVOCATION3_RETAINED_STAGE = Path(
+    "/Users/timothyowen/NEU_LAB_private_runs/tiny_smoke/"
+    "run-stage-e1f72b4384747f7f2250f6d651eec427"
+)
+INVOCATION3_CHECKPOINT_750_STATE_SHA256 = (
+    "c8b18f8fc662362664309ff1b8222058a14e1a7acc84bf33640e29d91461eae2"
+)
 EXECUTOR_PROTOCOL = "neu_tiny_smoke_executor_v1"
 SYNTHETIC_AUTHORITY_PROTOCOL = "neu_tiny_smoke_synthetic_test_authority_v1"
 PRODUCTION_AUTHORITY_PROTOCOL = "neu_tiny_smoke_production_authority_v1"
@@ -5142,6 +5157,7 @@ def _create_replay_bundle(
     *,
     bundle_fault: str | None,
     test_fault: str | None,
+    cleanup_on_failure: bool = True,
 ) -> tuple[Path, Mapping[str, str], str]:
     if (
         type(writer) is not PrivateRunArtifactWriter
@@ -5153,6 +5169,7 @@ def _create_replay_bundle(
         or set(transaction_files) != set(_REPLAY_TRANSACTION_FILE_NAMES)
         or not isinstance(output_parent, Path)
         or not output_parent.is_absolute()
+        or type(cleanup_on_failure) is not bool
         or bundle_fault
         not in {
             None,
@@ -5262,11 +5279,11 @@ def _create_replay_bundle(
             raise SmokeTrainingError(SMOKE_CHECKPOINT_WRITE_FAILURE)
         return bundle_path, MappingProxyType(dict(environment)), _sha256_bytes(request_bytes)
     except SmokeTrainingError:
-        if bundle_path is not None:
+        if cleanup_on_failure and bundle_path is not None:
             shutil.rmtree(bundle_path, ignore_errors=True)
         raise
     except Exception:
-        if bundle_path is not None:
+        if cleanup_on_failure and bundle_path is not None:
             shutil.rmtree(bundle_path, ignore_errors=True)
         raise SmokeTrainingError(SMOKE_CHECKPOINT_WRITE_FAILURE) from None
     finally:
@@ -5676,7 +5693,13 @@ def _execute_tiny_resume_replay_worker_impl(
     bundle_path: Path,
     *,
     token: object,
+    diagnostic_sink: Callable[[str, int | None], None] | None = None,
 ) -> bytes:
+    def complete(phase: str, update: int | None = None) -> None:
+        if diagnostic_sink is not None:
+            diagnostic_sink(phase, update)
+
+    complete("WORKER_STARTED")
     test_fault = os.environ.get("CSLM_TINY_REPLAY_TEST_FAULT")
     if test_fault is not None and os.environ.get("CSLM_TRACKED_ONLY_TEST") != "1":
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
@@ -5761,15 +5784,18 @@ def _execute_tiny_resume_replay_worker_impl(
         or _SHA256_RE.fullmatch(str(request.get("process_start_nonce"))) is None
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    complete("REQUEST_AND_SOURCE_VALIDATED")
     if test_fault == "identity_mismatch":
         return _mismatched_replay_result_for_tests(request)
     _verify_replay_transaction(request, files)
+    complete("TRANSACTION_VERIFIED")
     authorization = _reconstruct_replay_authorization(
         request,
         files,
         bundle_path,
         token=token,
     )
+    complete("AUTHORITY_RECONSTRUCTED")
     checkpoint_files = {
         name: files[name] for name in _REPLAY_CHECKPOINT_FILE_NAMES
     }
@@ -5782,6 +5808,15 @@ def _execute_tiny_resume_replay_worker_impl(
         "checkpoint_inventory_sha256"
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    if diagnostic_sink is not None:
+        _verify_checkpoint_envelope(
+            authorization,
+            "EnglishMono",
+            envelope,
+            750,
+            token=token,
+        )
+        complete("ENVELOPE_VERIFIED_PREDECODE")
     optimizers = _create_optimizer_set_impl(authorization, token=token)
     runtime = _restore_runtime_from_checkpoint_impl(
         authorization,
@@ -5791,20 +5826,31 @@ def _execute_tiny_resume_replay_worker_impl(
         expected_completed_update=750,
         token=token,
     )
+    complete("CHECKPOINT_RESTORED")
     replay_updates: list[int] = []
     replay_validations: list[int] = []
+    complete("REPLAY_STARTED")
     while runtime.completed_update < 1_000:
         _execute_next_update_impl(runtime, token=token)
         replay_updates.append(runtime.completed_update)
+        if runtime.completed_update in {751, 1_000}:
+            complete(f"UPDATE_{runtime.completed_update}_COMPLETED", runtime.completed_update)
         if runtime.completed_update in VALIDATION_POINTS:
             _validate_condition_impl(runtime, token=token)
             replay_validations.append(runtime.completed_update)
+            if runtime.completed_update in REPLAY_VALIDATION_POINTS:
+                complete(
+                    f"VALIDATION_{runtime.completed_update}_COMPLETED",
+                    runtime.completed_update,
+                )
     if (
         replay_updates != list(range(751, 1_001))
         or tuple(replay_validations) != REPLAY_VALIDATION_POINTS
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
-    return _replay_result_bytes(request, _runtime_replay_comparison(runtime))
+    result = _replay_result_bytes(request, _runtime_replay_comparison(runtime))
+    complete("RESULT_ENCODED")
+    return result
 
 
 def _parse_fresh_process_replay_result(
@@ -5971,6 +6017,216 @@ def _launch_fresh_process_replay(
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
     return result
+
+
+def _launch_replay_diagnostic(
+    bundle_path: Path,
+    environment: Mapping[str, str],
+) -> Mapping[str, object]:
+    source_root = _worker_source_root()
+    process = subprocess.Popen(
+        (
+            str(Path(sys.executable)),
+            str(source_root / "scripts" / "run_bounded_tiny_smoke.py"),
+            RESUME_DIAGNOSTIC_WORKER_ARGUMENT,
+            str(bundle_path),
+        ),
+        cwd=source_root,
+        env=dict(environment),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    started = time.monotonic()
+    crossed_600 = hard_timeout = False
+    try:
+        try:
+            stdout, stderr = process.communicate(timeout=RESUME_WORKER_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            crossed_600 = True
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=RESUME_DIAGNOSTIC_HARD_TIMEOUT_SECONDS
+                    - RESUME_WORKER_TIMEOUT_SECONDS
+                )
+            except subprocess.TimeoutExpired:
+                hard_timeout = True
+                process.kill()
+                stdout, stderr = process.communicate()
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        raise
+    phases: tuple[str, ...] = ()
+    stdout_status = "empty" if not stdout else "malformed"
+    if len(stdout) > 128 * 1024 or len(stderr) > 128 * 1024:
+        disposition = "CHANNEL_OVERSIZED"
+    else:
+        try:
+            records = tuple(json.loads(line) for line in stderr.splitlines())
+            if any(
+                not isinstance(record, dict)
+                or record.get("protocol") != RESUME_DIAGNOSTIC_PROTOCOL
+                or not isinstance(record.get("phase"), str)
+                or type(record.get("elapsed_ms")) is not int
+                or record.get("result") is not True
+                for record in records
+            ):
+                raise ValueError
+            phases = tuple(record["phase"] for record in records)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            disposition = "CHANNEL_MALFORMED"
+        else:
+            if process.returncode == 0 and stdout:
+                if not phases or phases[-1] != "RESULT_ENCODED":
+                    disposition = "CHANNEL_MALFORMED"
+                else:
+                    try:
+                        _parse_fresh_process_replay_result(
+                            stdout,
+                            expected_pid=process.pid,
+                        )
+                    except SmokeTrainingError:
+                        disposition = "RESULT_MALFORMED"
+                    else:
+                        stdout_status = "valid"
+                        disposition = (
+                            "COMPLETED_AFTER_600_SECONDS"
+                            if crossed_600
+                            else "COMPLETED_AT_OR_BELOW_600_SECONDS"
+                        )
+            elif hard_timeout:
+                disposition = "HARD_TIMEOUT"
+            else:
+                disposition = "WORKER_FAILED"
+    return MappingProxyType(
+        {
+            "crossed_600_seconds": crossed_600,
+            "disposition": disposition,
+            "elapsed_ms": int((time.monotonic() - started) * 1_000),
+            "last_phase": phases[-1] if phases else None,
+            "protocol": RESUME_DIAGNOSTIC_PROTOCOL,
+            "stderr_bytes": len(stderr),
+            "stderr_nonempty": bool(stderr),
+            "stderr_sha256": _sha256_bytes(stderr),
+            "stdout_bytes": len(stdout),
+            "stdout_sha256": _sha256_bytes(stdout),
+            "stdout_status": stdout_status,
+            "worker_returncode": process.returncode,
+        }
+    )
+
+
+def _invocation3_diagnostic_workspace_path_is_safe(path: Path) -> bool:
+    root = _INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT
+    return (
+        isinstance(path, Path)
+        and path.is_absolute()
+        and path == path.absolute()
+        and path.parent == root
+        and path == root / path.name
+        and path.name.startswith(_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX)
+        and path.name not in {"", ".", ".."}
+        and path != root
+    )
+
+
+def _execute_invocation3_replay_diagnostic_impl(*, token: object) -> Mapping[str, object]:
+    authorization = _construct_production_smoke_execution_authorization_impl(token=token)
+    checkpoint = INVOCATION3_RETAINED_STAGE / "EnglishMono/cpu/checkpoint-0750"
+    writer: PrivateRunArtifactWriter | None = None
+    workspace: str | None = None
+    workspace_path: Path | None = None
+    try:
+        files = {
+            name: _stable_read(
+                checkpoint / name,
+                maximum_bytes=128 * 1024 * 1024,
+            )[0]
+            for name in _REPLAY_CHECKPOINT_FILE_NAMES
+        }
+        if _sha256_bytes(files["checkpoint_state.pt"]) != (
+            INVOCATION3_CHECKPOINT_750_STATE_SHA256
+        ):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        envelope = _checkpoint_envelope_from_files_for_tests_impl(
+            files,
+            _checkpoint_envelope_identity(files),
+            token=token,
+        )
+        transaction_files = MappingProxyType(
+            {
+                "artifact_transaction_completion.json": files[
+                    "CHECKPOINT_COMPLETE.json"
+                ],
+                "artifact_transaction_inventory.json": files["inventory.json"],
+            }
+        )
+        if token is not _AUTHORITY_TOKEN:
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        root = _INVOCATION3_DIAGNOSTIC_WORKSPACE_ROOT
+        if not stat.S_ISDIR(os.lstat(root).st_mode):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        workspace = tempfile.mkdtemp(
+            prefix=_INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX,
+            dir=root,
+        )
+        workspace_path = Path(workspace)
+        workspace_status = os.lstat(workspace_path)
+        if (
+            not _invocation3_diagnostic_workspace_path_is_safe(workspace_path)
+            or not stat.S_ISDIR(workspace_status.st_mode)
+            or stat.S_IMODE(workspace_status.st_mode) != 0o700
+            or workspace_status.st_uid != os.getuid()
+        ):
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        output_parent = workspace_path / "private-output"
+        writer = begin_private_run_artifacts(
+            output_parent,
+            "invocation3-replay-diagnostic",
+            create_parent=True,
+        )
+        bundle_path, environment, _ = _create_replay_bundle(
+            writer,
+            authorization,
+            envelope,
+            transaction_files,
+            output_parent,
+            bundle_fault=None,
+            test_fault=None,
+            cleanup_on_failure=False,
+        )
+        result = _launch_replay_diagnostic(bundle_path, environment)
+        return MappingProxyType(
+            {
+                **dict(result),
+                "workspace_disposition": "preserved",
+                "workspace_path": workspace,
+            }
+        )
+    except SmokeTrainingError as error:
+        if (
+            workspace_path is not None
+            and _invocation3_diagnostic_workspace_path_is_safe(workspace_path)
+        ):
+            error.preserved_workspace = workspace
+        raise
+    except Exception:
+        error = SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+        if (
+            workspace_path is not None
+            and _invocation3_diagnostic_workspace_path_is_safe(workspace_path)
+        ):
+            error.preserved_workspace = workspace
+        raise error from None
+    finally:
+        if writer is not None:
+            for descriptor in (writer._stage_descriptor, writer._parent_descriptor):
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
 
 
 def _run_fresh_process_resume_rehearsal(
@@ -6631,6 +6887,9 @@ def _public_factories(
         "_execute_synthetic_production_equivalent_impl"
     ]
     resume_worker_impl = reviewed["_execute_tiny_resume_replay_worker_impl"]
+    invocation3_diagnostic_impl = reviewed[
+        "_execute_invocation3_replay_diagnostic_impl"
+    ]
     synthetic_resume_impl = reviewed[
         "_run_synthetic_fresh_process_resume_for_tests_impl"
     ]
@@ -7012,11 +7271,19 @@ def _public_factories(
             raise SmokeTrainingError(failure or SMOKE_APPROVAL_MISMATCH)
         return result
 
-    def resume_worker(bundle_path: Path) -> bytes:
+    def resume_worker(
+        bundle_path: Path,
+        *,
+        diagnostic_sink: Callable[[str, int | None], None] | None = None,
+    ) -> bytes:
         result: bytes | None = None
         failure: str | None = None
         try:
-            result = resume_worker_impl(bundle_path, token=token)
+            result = resume_worker_impl(
+                bundle_path,
+                token=token,
+                diagnostic_sink=diagnostic_sink,
+            )
         except SmokeTrainingError as error:
             failure = error.code
         except Exception:
@@ -7025,6 +7292,14 @@ def _public_factories(
         if failure is not None or result is None:
             raise SmokeTrainingError(failure or SMOKE_RESUME_MISMATCH)
         return result
+
+    def invocation3_diagnostic() -> Mapping[str, object]:
+        try:
+            return invocation3_diagnostic_impl(token=token)
+        except SmokeTrainingError:
+            raise
+        except Exception:
+            raise SmokeTrainingError(SMOKE_RESUME_MISMATCH) from None
 
     def synthetic_resume(
         authorization: SmokeExecutionAuthorization,
@@ -7087,6 +7362,7 @@ def _public_factories(
                 production_equivalent
             ),
             "execute_tiny_resume_replay_worker": resume_worker,
+            "run_invocation3_replay_diagnostic": invocation3_diagnostic,
             "run_synthetic_fresh_process_resume_for_tests": synthetic_resume,
         }
     )
@@ -7106,6 +7382,7 @@ SMOKE_PRODUCTION_REVIEWED_CALLABLES = frozenset(
         "derive_tiny_dropout_seed",
         "execute_bounded_tiny_smoke",
         "execute_tiny_resume_replay_worker",
+        "run_invocation3_replay_diagnostic",
         "learning_rate_state_after_update",
         "load_candidate_approval_evidence",
         "construct_production_smoke_execution_authorization",
