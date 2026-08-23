@@ -5689,6 +5689,81 @@ def _mismatched_replay_result_for_tests(request: Mapping[str, object]) -> bytes:
     )
 
 
+def _execute_verified_replay(
+    authorization: SmokeExecutionAuthorization,
+    envelope: CheckpointEnvelope,
+    request: Mapping[str, object],
+    *,
+    token: object,
+    diagnostic_sink: Callable[[str, int | None], None] | None,
+    guard: Callable[[], None] | None = None,
+) -> bytes:
+    """Restore and replay updates 751--1000 through the sole verified path."""
+
+    def gated() -> None:
+        if guard is not None:
+            guard()
+
+    def complete(phase: str, update: int | None = None) -> None:
+        gated()
+        if diagnostic_sink is not None:
+            diagnostic_sink(phase, update)
+        gated()
+
+    gated()
+    _verify_checkpoint_envelope(
+        authorization,
+        "EnglishMono",
+        envelope,
+        750,
+        token=token,
+    )
+    gated()
+    complete("ENVELOPE_VERIFIED_PREDECODE")
+    optimizers = _create_optimizer_set_impl(authorization, token=token)
+    gated()
+    runtime = _restore_runtime_from_checkpoint_impl(
+        authorization,
+        optimizers,
+        "EnglishMono",
+        envelope,
+        expected_completed_update=750,
+        token=token,
+    )
+    gated()
+    complete("CHECKPOINT_RESTORED")
+    replay_updates: list[int] = []
+    replay_validations: list[int] = []
+    complete("REPLAY_STARTED")
+    while runtime.completed_update < 1_000:
+        gated()
+        _execute_next_update_impl(runtime, token=token)
+        gated()
+        replay_updates.append(runtime.completed_update)
+        if runtime.completed_update in {751, 1_000}:
+            complete(f"UPDATE_{runtime.completed_update}_COMPLETED", runtime.completed_update)
+        if runtime.completed_update in VALIDATION_POINTS:
+            gated()
+            _validate_condition_impl(runtime, token=token)
+            gated()
+            replay_validations.append(runtime.completed_update)
+            if runtime.completed_update in REPLAY_VALIDATION_POINTS:
+                complete(
+                    f"VALIDATION_{runtime.completed_update}_COMPLETED",
+                    runtime.completed_update,
+                )
+    if (
+        replay_updates != list(range(751, 1_001))
+        or tuple(replay_validations) != REPLAY_VALIDATION_POINTS
+    ):
+        raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
+    gated()
+    result = _replay_result_bytes(request, _runtime_replay_comparison(runtime))
+    gated()
+    complete("RESULT_ENCODED")
+    return result
+
+
 def _execute_tiny_resume_replay_worker_impl(
     bundle_path: Path,
     *,
@@ -5808,49 +5883,13 @@ def _execute_tiny_resume_replay_worker_impl(
         "checkpoint_inventory_sha256"
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
-    if diagnostic_sink is not None:
-        _verify_checkpoint_envelope(
-            authorization,
-            "EnglishMono",
-            envelope,
-            750,
-            token=token,
-        )
-        complete("ENVELOPE_VERIFIED_PREDECODE")
-    optimizers = _create_optimizer_set_impl(authorization, token=token)
-    runtime = _restore_runtime_from_checkpoint_impl(
+    return _execute_verified_replay(
         authorization,
-        optimizers,
-        "EnglishMono",
         envelope,
-        expected_completed_update=750,
+        request,
         token=token,
+        diagnostic_sink=diagnostic_sink,
     )
-    complete("CHECKPOINT_RESTORED")
-    replay_updates: list[int] = []
-    replay_validations: list[int] = []
-    complete("REPLAY_STARTED")
-    while runtime.completed_update < 1_000:
-        _execute_next_update_impl(runtime, token=token)
-        replay_updates.append(runtime.completed_update)
-        if runtime.completed_update in {751, 1_000}:
-            complete(f"UPDATE_{runtime.completed_update}_COMPLETED", runtime.completed_update)
-        if runtime.completed_update in VALIDATION_POINTS:
-            _validate_condition_impl(runtime, token=token)
-            replay_validations.append(runtime.completed_update)
-            if runtime.completed_update in REPLAY_VALIDATION_POINTS:
-                complete(
-                    f"VALIDATION_{runtime.completed_update}_COMPLETED",
-                    runtime.completed_update,
-                )
-    if (
-        replay_updates != list(range(751, 1_001))
-        or tuple(replay_validations) != REPLAY_VALIDATION_POINTS
-    ):
-        raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
-    result = _replay_result_bytes(request, _runtime_replay_comparison(runtime))
-    complete("RESULT_ENCODED")
-    return result
 
 
 def _parse_fresh_process_replay_result(

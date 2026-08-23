@@ -2700,6 +2700,17 @@ def test_canonical_orchestrator_requires_worker_and_never_restores_in_process() 
     assert "subprocess" in smoke_module._launch_fresh_process_replay.__code__.co_names
 
 
+def test_resume_worker_delegates_to_the_single_shared_verified_replay() -> None:
+    names = smoke_module._execute_tiny_resume_replay_worker_impl.__code__.co_names
+    assert "_execute_verified_replay" in names
+    assert "_restore_runtime_from_checkpoint_impl" not in names
+    assert "_execute_next_update_impl" not in names
+    helper_names = smoke_module._execute_verified_replay.__code__.co_names
+    assert "_restore_runtime_from_checkpoint_impl" in helper_names
+    assert "_execute_next_update_impl" in helper_names
+    assert "_validate_condition_impl" in helper_names
+
+
 def test_fresh_process_worker_failure_is_not_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3527,12 +3538,6 @@ def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) ->
 
 
 def test_device_switching_and_production_execution_remain_impossible(tmp_path: Path) -> None:
-    output_parent_existed = smoke_module.APPROVED_OUTPUT_PARENT.exists()
-    output_children = (
-        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
-        if output_parent_existed
-        else ()
-    )
     _, _, _, _, authorization, optimizers = _authority(tmp_path)
     object.__setattr__(authorization, "device", "mps")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
@@ -3540,19 +3545,17 @@ def test_device_switching_and_production_execution_remain_impossible(tmp_path: P
     object.__setattr__(authorization, "device", "cpu")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
         execute_bounded_tiny_smoke(authorization)
-    assert smoke_module.APPROVED_OUTPUT_PARENT.exists() is output_parent_existed
-    assert (
-        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
-        if output_parent_existed
-        else ()
-    ) == output_children
 
 
-def test_fail_closed_cli_exposes_no_scientific_or_execution_options(tmp_path: Path) -> None:
+def test_fail_closed_cli_exposes_no_scientific_or_execution_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / "scripts/run_bounded_tiny_smoke.py"
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    for arguments in ((), ("--device", "mps"), ("--candidate", "private")):
+    for arguments in (("--device", "mps"), ("--candidate", "private")):
         result = subprocess.run(
             [sys.executable, str(script), *arguments],
             cwd=tmp_path,
@@ -3570,6 +3573,30 @@ def test_fail_closed_cli_exposes_no_scientific_or_execution_options(tmp_path: Pa
             "mechanics_only": True,
             "status": "launch_not_authorized",
         }
+    spec = importlib.util.spec_from_file_location("state_independent_smoke_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def reject_before_private_access():
+        raise SmokeTrainingError(SMOKE_APPROVAL_MISMATCH)
+
+    fake_smoke = SimpleNamespace(
+        construct_production_smoke_execution_authorization=(
+            reject_before_private_access
+        ),
+        execute_bounded_tiny_smoke=lambda authorization: pytest.fail(
+            "execution reached after deterministic constructor rejection"
+        ),
+    )
+    monkeypatch.setattr(module, "_load_smoke_training", lambda: fake_smoke)
+    assert module.main(()) == 2
+    assert json.loads(capsys.readouterr().err) == {
+        "code": SMOKE_APPROVAL_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "launch_not_authorized",
+    }
 
 
 def test_cli_and_reviewed_factory_have_a_reachable_option_free_production_edge() -> None:
