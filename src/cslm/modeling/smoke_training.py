@@ -5689,15 +5689,7 @@ def _mismatched_replay_result_for_tests(request: Mapping[str, object]) -> bytes:
     )
 
 
-def _execute_verified_replay(
-    authorization: SmokeExecutionAuthorization,
-    envelope: CheckpointEnvelope,
-    request: Mapping[str, object],
-    *,
-    token: object,
-    diagnostic_sink: Callable[[str, int | None], None] | None,
-    guard: Callable[[], None] | None = None,
-) -> bytes:
+def _execute_verified_replay(authorization: SmokeExecutionAuthorization, envelope: CheckpointEnvelope, request: Mapping[str, object], *, token: object, diagnostic_sink: Callable[[str, int | None], None] | None, guard: Callable[[], None] | None = None) -> bytes:  # noqa: E501
     """Restore and replay updates 751--1000 through the sole verified path."""
 
     def gated() -> None:
@@ -5711,25 +5703,12 @@ def _execute_verified_replay(
         gated()
 
     gated()
-    _verify_checkpoint_envelope(
-        authorization,
-        "EnglishMono",
-        envelope,
-        750,
-        token=token,
-    )
+    _verify_checkpoint_envelope(authorization, "EnglishMono", envelope, 750, token=token)
     gated()
     complete("ENVELOPE_VERIFIED_PREDECODE")
     optimizers = _create_optimizer_set_impl(authorization, token=token)
     gated()
-    runtime = _restore_runtime_from_checkpoint_impl(
-        authorization,
-        optimizers,
-        "EnglishMono",
-        envelope,
-        expected_completed_update=750,
-        token=token,
-    )
+    runtime = _restore_runtime_from_checkpoint_impl(authorization, optimizers, "EnglishMono", envelope, expected_completed_update=750, token=token)  # noqa: E501
     gated()
     complete("CHECKPOINT_RESTORED")
     replay_updates: list[int] = []
@@ -5748,14 +5727,8 @@ def _execute_verified_replay(
             gated()
             replay_validations.append(runtime.completed_update)
             if runtime.completed_update in REPLAY_VALIDATION_POINTS:
-                complete(
-                    f"VALIDATION_{runtime.completed_update}_COMPLETED",
-                    runtime.completed_update,
-                )
-    if (
-        replay_updates != list(range(751, 1_001))
-        or tuple(replay_validations) != REPLAY_VALIDATION_POINTS
-    ):
+                complete(f"VALIDATION_{runtime.completed_update}_COMPLETED", runtime.completed_update)  # noqa: E501
+    if replay_updates != list(range(751, 1_001)) or tuple(replay_validations) != REPLAY_VALIDATION_POINTS:  # noqa: E501
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
     gated()
     result = _replay_result_bytes(request, _runtime_replay_comparison(runtime))
@@ -5883,13 +5856,7 @@ def _execute_tiny_resume_replay_worker_impl(
         "checkpoint_inventory_sha256"
     ):
         raise SmokeTrainingError(SMOKE_RESUME_MISMATCH)
-    return _execute_verified_replay(
-        authorization,
-        envelope,
-        request,
-        token=token,
-        diagnostic_sink=diagnostic_sink,
-    )
+    return _execute_verified_replay(authorization, envelope, request, token=token, diagnostic_sink=diagnostic_sink)  # noqa: E501
 
 
 def _parse_fresh_process_replay_result(

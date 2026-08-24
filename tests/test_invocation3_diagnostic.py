@@ -258,6 +258,7 @@ def _write_authority(
     body = _seal(payload or _base_payload()) if content is None else content
     path.write_bytes(body)
     os.chmod(path, 0o600)
+    os.chown(path, 501, 20)
     return path, body
 
 
@@ -794,6 +795,27 @@ def test_stage_payload_requires_prior_snapshot_exact_inode_size_and_hash(
         )
 
 
+def test_descriptor_reads_reject_intermediate_symlink_parent_substitution_and_final_symlink(tmp_path: Path) -> None:
+    root, _, authority = _synthetic_stage(tmp_path)
+    alias = tmp_path / "stage-alias"
+    alias.symlink_to(root, target_is_directory=True)
+    authority.payload["retained_stage"]["path"] = str(alias)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError):
+        diagnostic._stage_snapshot(authority)
+    authority.payload["retained_stage"]["path"] = str(root)
+    displaced = tmp_path / "displaced-stage"
+    root.rename(displaced)
+    root.mkdir(mode=0o700)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError):
+        diagnostic._stage_snapshot(authority)
+    target = tmp_path / "target"
+    target.write_bytes(b"bounded")
+    link = tmp_path / "final-link"
+    link.symlink_to(target)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError):
+        diagnostic._stable_read(link, 32)
+
+
 def test_diagnostic_and_embedded_historical_types_cannot_enter_production(
     tmp_path: Path,
 ) -> None:
@@ -893,6 +915,36 @@ def test_real_shared_reanchor_transaction_and_envelope_accept_exact_lineage(
         token=historical_token,
     )
     assert checkpoint_bytes == files["checkpoint_state.pt"]
+
+
+@pytest.mark.parametrize("mutation", ("none", "wrong_tracker_mode", "crossed_documents"))
+def test_real_production_mode_loader_and_reanchor_use_file_specific_custody(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
+    view, paired, tracker, manifest = legacy._production_condition_runtime_material(tmp_path)
+    output = tmp_path / "synthetic-output"
+    output.mkdir(mode=0o700)
+    commit, closure, runtime = "a" * 40, "b" * 64, smoke._runtime_policy_sha256()
+    launch_bytes = smoke.canonical_json_bytes(smoke._production_launch_payload(view, authority_kind="production_tracker_and_launch", executor_commit=commit, executor_closure_digest=closure, output_parent=output))
+    tracker_bytes = smoke._updated_tracker_text_for_tests(heading="# Synthetic production-mode historical tracker", authority_kind="production_tracker_and_launch", candidate_checksum=view.candidate_checksum_record_sha256, preparation_manifest=view.preparation_manifest_sha256, schedule_identity=view.schedule_plan_identity_sha256, launch_manifest_sha256=hashlib.sha256(launch_bytes).hexdigest(), executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output)
+    tracker.write_bytes(tracker_bytes)
+    manifest.write_bytes(launch_bytes)
+    os.chmod(tracker, 0o644)
+    os.chmod(manifest, 0o600)
+    monkeypatch.setattr(smoke, "APPROVED_TRACKER_PATH", tracker.absolute())
+    monkeypatch.setattr(smoke, "APPROVED_LAUNCH_MANIFEST_PATH", manifest.absolute())
+    if mutation == "wrong_tracker_mode":
+        os.chmod(tracker, 0o600)
+    elif mutation == "crossed_documents":
+        tracker.write_bytes(launch_bytes)
+        manifest.write_bytes(tracker_bytes)
+    token = object()
+    if mutation != "none":
+        with pytest.raises(smoke.SmokeTrainingError, match=smoke.SMOKE_APPROVAL_MISMATCH):
+            smoke._load_future_tracker_approval(tracker.absolute(), candidate_checksum=view.candidate_checksum_record_sha256, preparation_manifest=view.preparation_manifest_sha256, schedule_identity=view.schedule_plan_identity_sha256, executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, authority_kind="production_tracker_and_launch", production=True, token=token)
+        return
+    approval = smoke._load_future_tracker_approval(tracker.absolute(), candidate_checksum=view.candidate_checksum_record_sha256, preparation_manifest=view.preparation_manifest_sha256, schedule_identity=view.schedule_plan_identity_sha256, executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, authority_kind="production_tracker_and_launch", production=True, token=token)
+    launch = smoke._validate_launch_before_candidate_load(approval, manifest.absolute(), authority_kind="production_tracker_and_launch", executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, production=True, token=token)
+    authorization = smoke._construct_bound_production_authorization(approval, launch, view, paired, authority_kind="production_tracker_and_launch", required_view_kind="synthetic_test_only", output_parent=output, token=token)
+    assert smoke._reanchor_consumed_view(authorization, code=smoke.SMOKE_APPROVAL_MISMATCH) is None
 
 
 def test_real_reanchor_rejects_view_substitution_before_decode(
@@ -1206,41 +1258,116 @@ def test_bounded_simultaneous_stdout_stderr_floods_do_not_deadlock() -> None:
     ).hexdigest()
 
 
-def test_parent_observed_late_exit_forces_hard_timeout() -> None:
+def test_early_channel_eof_child_is_killed_and_reaped_at_hard_deadline() -> None:
     process = subprocess.Popen(
-        (sys.executable, "-c", "pass"),
+        (sys.executable, "-c", "import os,time;os.close(1);os.close(2);time.sleep(2)"),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    ticks = iter((99, 100))
+    started = diagnostic.time.monotonic_ns()
     result = diagnostic._drain_process(
         process,
-        50,
-        100,
-        clock=lambda: next(ticks, 100),
+        started + 50_000_000,
+        started + 100_000_000,
     )
-    assert result["crossed_observation"] is True
-    assert result["hard_timeout"] is True
+    assert result["hard_timeout"] is True and result["returncode"] < 0
+    assert diagnostic.time.monotonic_ns() - started < 1_500_000_000
 
 
-def test_exclusive_evidence_write_is_private_fsynced_and_no_overwrite(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    path = tmp_path / "evidence.json"
-    diagnostic._exclusive_write(path, b"{}\n")
-    status = os.lstat(path)
-    assert stat.S_ISREG(status.st_mode)
-    assert stat.S_IMODE(status.st_mode) == 0o600
-    assert status.st_nlink == 1
-    assert path.read_bytes() == b"{}\n"
+def test_inherited_pipe_descriptors_do_not_outlive_direct_child_supervision() -> None:
+    program = "import subprocess,sys;subprocess.Popen((sys.executable,'-c','import time;time.sleep(.5)'))"
+    process = subprocess.Popen((sys.executable, "-c", program), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    started = diagnostic.time.monotonic_ns()
+    result = diagnostic._drain_process(process, started + 1_000_000_000, started + 2_000_000_000)
+    assert result["returncode"] == 0 and result["hard_timeout"] is False
+    assert diagnostic.time.monotonic_ns() - started < 400_000_000
+
+
+@pytest.mark.parametrize(("offset", "hard_timeout", "killed"), ((-1, False, False), (0, True, True), (1, True, True)))
+def test_direct_child_deadline_precedence_kills_and_reaps(offset: int, hard_timeout: bool, killed: bool) -> None:
+    stdout_read, stdout_write = os.pipe()
+    stderr_read, stderr_write = os.pipe()
+    os.write(stdout_write, b"apparent-result")
+    os.close(stdout_write)
+    os.close(stderr_write)
+
+    class Child:
+        stdout = os.fdopen(stdout_read, "rb", buffering=0)
+        stderr = os.fdopen(stderr_read, "rb", buffering=0)
+        returncode = None
+        killed = waited = False
+
+        def poll(self):
+            if offset < 0:
+                self.returncode = 0
+            return self.returncode
+
+        def kill(self):
+            self.killed, self.returncode = True, -9
+
+        def wait(self, timeout):
+            assert 0 < timeout <= 1.0
+            self.waited = True
+            return self.returncode
+
+    child = Child()
+    result = diagnostic._drain_process(child, 50, 100, clock=lambda: 100 + offset)
+    assert result["hard_timeout"] is hard_timeout
+    assert child.killed is killed and child.waited is killed
+    assert result["stdout"] == b"apparent-result"
+
+
+@pytest.mark.parametrize("failure", ("partial_write", "file_fsync", "publish", "directory_fsync"))
+def test_failed_completion_publication_leaves_no_acceptable_final(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
+    unrelated = workspace / "unrelated"
+    unrelated.write_bytes(b"preserve")
+    real_write, real_fsync = diagnostic.os.write, diagnostic.os.fsync
+    calls = [0]
+    if failure == "partial_write":
+        def broken_write(descriptor, content):
+            calls[0] += 1
+            return real_write(descriptor, content[:1]) if calls[0] == 1 else 0
+        monkeypatch.setattr(diagnostic.os, "write", broken_write)
+    elif failure in {"file_fsync", "directory_fsync"}:
+        def broken_fsync(descriptor):
+            calls[0] += 1
+            if calls[0] == (1 if failure == "file_fsync" else 2):
+                raise OSError
+            return real_fsync(descriptor)
+        monkeypatch.setattr(diagnostic.os, "fsync", broken_fsync)
+    else:
+        monkeypatch.setattr(diagnostic.os, "link", lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))
     with pytest.raises(diagnostic.Invocation3DiagnosticError):
-        diagnostic._exclusive_write(path, b"changed\n")
-    assert path.read_bytes() == b"{}\n"
-    monkeypatch.setattr(diagnostic.os, "fsync", lambda descriptor: (_ for _ in ()).throw(OSError()))
-    with pytest.raises(diagnostic.Invocation3DiagnosticError):
-        diagnostic._exclusive_write(tmp_path / "completion.json", b"{}\n")
+        diagnostic._publish_completion(workspace, b'{"complete":true}\n')
+    assert not (workspace / "completion.json").exists()
+    assert not (workspace / ".completion.json.pending").exists()
+    assert unrelated.read_bytes() == b"preserve"
+
+
+def test_completion_is_private_canonical_and_published_last(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
+    content, events = diagnostic._canonical({"complete": True}), []
+    real_link, real_fsync = diagnostic.os.link, diagnostic.os.fsync
+    def observed_link(*args, **kwargs):
+        assert not (workspace / "completion.json").exists()
+        events.append("publish")
+        return real_link(*args, **kwargs)
+    def observed_fsync(descriptor):
+        events.append("directory_fsync" if stat.S_ISDIR(os.fstat(descriptor).st_mode) else "file_fsync")
+        return real_fsync(descriptor)
+    monkeypatch.setattr(diagnostic.os, "link", observed_link)
+    monkeypatch.setattr(diagnostic.os, "fsync", observed_fsync)
+    diagnostic._publish_completion(workspace, content)
+    status = os.lstat(workspace / "completion.json")
+    assert events == ["file_fsync", "publish", "directory_fsync"]
+    assert stat.S_ISREG(status.st_mode) and stat.S_IMODE(status.st_mode) == 0o600 and status.st_nlink == 1
+    assert (workspace / "completion.json").read_bytes() == content
 
 
 def test_controller_spawns_once_and_kills_reaps_after_launch_failure(
@@ -1251,6 +1378,7 @@ def test_controller_spawns_once_and_kills_reaps_after_launch_failure(
     stage = diagnostic._StageSnapshot("7" * 64, 1, 2, 1, 0, 0, MappingProxyType({}))
     workspace = tmp_path / "preserved-attempt"
     workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
     children: list[object] = []
 
     class Child:
@@ -1262,8 +1390,10 @@ def test_controller_spawns_once_and_kills_reaps_after_launch_failure(
         def kill(self):
             self.returncode = -9
 
-        def wait(self):
+        def wait(self, timeout):
+            assert timeout == 1.0
             self.waited = True
+            return self.returncode
 
     def popen(*args, **kwargs):
         del args, kwargs
@@ -1300,13 +1430,16 @@ def _bootstrap_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     command["python_path"] = [str(root / f"path-{index}") for index in range(5)]
     for path in command["python_path"]:
         Path(path).mkdir()
+    for name, package in command["packages"].items():
+        package_root = root / "packages" / name
+        package_root.mkdir(parents=True)
+        package["root"] = str(package_root)
     command["interpreter"].update({"public_path": str(interpreter), "resolved_path": str(interpreter), "sha256": hashlib.sha256(interpreter.read_bytes()).hexdigest(), "size": interpreter.stat().st_size, "uid": interpreter.stat().st_uid, "gid": interpreter.stat().st_gid, "link_count": 1, "python_version": "synthetic"})
     origins.update({"controller_script": str(script), "diagnostic_module": str(Path(diagnostic.__file__).resolve()), "smoke_training_module": str(smoke_path), "smoke_artifacts_module": str(artifact_path)})
     argv = [str(interpreter), "-I", "-B", "-S", str(script), diagnostic.CONTROLLER_ARGUMENT, diagnostic.AUTHORITY_SHA_ARGUMENT, "f" * 64, diagnostic.ATTESTATION_ARGUMENT]
     command["controller_argv_template"] = list(argv)
     fake_smoke, fake_artifacts = SimpleNamespace(__file__=str(smoke_path)), SimpleNamespace(__file__=str(artifact_path))
     monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value: None)
-    monkeypatch.setattr(diagnostic, "_validate_path_custody", lambda value: None)
     monkeypatch.setattr(diagnostic.importlib.metadata, "version", lambda name: command["packages"][name]["version"])
     monkeypatch.setattr(diagnostic, "_package_root", lambda name: command["packages"][name]["root"])
     monkeypatch.setattr(diagnostic.importlib, "import_module", lambda name: fake_smoke if name.endswith("smoke_training") else fake_artifacts)
@@ -1315,7 +1448,7 @@ def _bootstrap_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return _authority_object(payload), script, argv
 
 
-@pytest.mark.parametrize("mutation", ("none", "public", "resolved", "hash", "size", "flags", "package_version", "package_root", "origin"))
+@pytest.mark.parametrize("mutation", ("none", "public", "resolved", "hash", "size", "python_version", "interpreter_mode", "flags", "package_version", "package_root", "package_custody", "origin"))
 def test_bootstrap_validates_interpreter_runtime_packages_and_origins(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
     authority, script, argv = _bootstrap_case(tmp_path, monkeypatch)
     interpreter, command = authority.payload["command"]["interpreter"], authority.payload["command"]
@@ -1327,12 +1460,18 @@ def test_bootstrap_validates_interpreter_runtime_packages_and_origins(tmp_path: 
         interpreter["sha256"] = ZERO_SHA
     elif mutation == "size":
         interpreter["size"] += 1
+    elif mutation == "python_version":
+        diagnostic.sys.version = "wrong"
+    elif mutation == "interpreter_mode":
+        os.chmod(interpreter["resolved_path"], 0o700)
     elif mutation == "flags":
         diagnostic.sys.flags.no_site = 0
     elif mutation == "package_version":
         monkeypatch.setattr(diagnostic.importlib.metadata, "version", lambda name: "wrong" if name == "torch" else command["packages"][name]["version"])
     elif mutation == "package_root":
         monkeypatch.setattr(diagnostic, "_package_root", lambda name: "/wrong" if name == "torch" else command["packages"][name]["root"])
+    elif mutation == "package_custody":
+        os.chmod(command["packages"]["torch"]["root"], 0o777)
     elif mutation == "origin":
         authority.payload["implementation"]["origins"]["smoke_training_module"] = "/wrong"
     if mutation == "none":
@@ -1342,13 +1481,15 @@ def test_bootstrap_validates_interpreter_runtime_packages_and_origins(tmp_path: 
             diagnostic.bootstrap_runtime(authority, controller_script=script, argv=argv, worker=False)
 
 
-@pytest.mark.parametrize("substitution", ("none", "tracker", "manifest", "crossed_pair", "candidate", "view", "authorization"))
+@pytest.mark.parametrize("substitution", ("none", "tracker_mode", "tracker", "manifest", "crossed_pair", "candidate", "view", "authorization"))
 def test_historical_lineage_reconstruction_and_substitution(tmp_path: Path, substitution: str) -> None:
     tracker, manifest = tmp_path / "tracker", tmp_path / "manifest"
     tracker.write_bytes(b"tracker\n")
     manifest.write_bytes(b"manifest\n")
-    os.chmod(tracker, 0o600)
+    os.chmod(tracker, 0o644)
     os.chmod(manifest, 0o600)
+    os.chown(tracker, 501, 20)
+    os.chown(manifest, 501, 20)
     candidate, key = tmp_path / "candidate", tmp_path / "key"
     candidate.mkdir(mode=0o700)
     key.write_bytes(b"k" * 32)
@@ -1362,7 +1503,9 @@ def test_historical_lineage_reconstruction_and_substitution(tmp_path: Path, subs
     launch = SimpleNamespace(manifest_sha256=lineage["manifest"]["sha256"], _manifest_bytes=manifest.read_bytes(), _manifest_path=manifest, executor_commit=lineage["executor"]["commit"], executor_closure_digest=lineage["executor"]["source_closure_sha256"], resume_protocol=lineage["checkpoint"]["resume_protocol"])
     view = SimpleNamespace(semantic_sha256=lineage["candidate"]["sanitized_view_sha256"])
     historical = SimpleNamespace(authorization_sha256=lineage["production_authorization_sha256"])
-    if substitution == "tracker":
+    if substitution == "tracker_mode":
+        os.chmod(tracker, 0o600)
+    elif substitution == "tracker":
         approval.tracker_sha256 = ZERO_SHA
     elif substitution == "manifest":
         launch.manifest_sha256 = ZERO_SHA
@@ -1400,8 +1543,9 @@ def test_request_event_controller_and_cleanup_static_contract(tmp_path: Path) ->
         diagnostic._parse_request(changed, hashlib.sha256(changed).hexdigest())
     source = Path(diagnostic.__file__).read_text()
     assert source.count("subprocess.Popen(") == 1
-    assert all(term not in source for term in ("rmtree", ".unlink(", "TemporaryDirectory", "sys.meta_path", "SourceFileLoader", "launch_record"))
+    assert all(term not in source for term in ("rmtree", "TemporaryDirectory", "sys.meta_path", "SourceFileLoader", "launch_record"))
+    assert source.count("os.unlink(") == 2
     controller = source[source.index("def run_controller"):]
-    assert controller.index('"request.json"') < controller.index('"events.jsonl"') < controller.index('"completion.json"')
+    assert controller.index('"request.json"') < controller.index('"events.jsonl"') < controller.index("_publish_completion")
     assert "construct_production_smoke_execution_authorization" not in source
     assert "execute_bounded_tiny_smoke" not in source

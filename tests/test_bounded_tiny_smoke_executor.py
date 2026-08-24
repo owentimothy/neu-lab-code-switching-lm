@@ -1035,9 +1035,39 @@ def test_future_production_authority_uses_closed_ordered_boundary(
     assert not material[7].exists()
 
 
-def test_current_production_factory_fails_before_external_access_or_output() -> None:
+def test_real_production_factory_rejects_synthetic_test_state_before_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = construct_production_smoke_execution_authorization
+    implementation = inspect.getclosurevars(factory).nonlocals[
+        "production_authority_impl"
+    ]
+    reached: list[str] = []
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        reached.append("external_or_runtime_access")
+        pytest.fail("production rejection did not precede external access")
+
+    monkeypatch.setenv("CSLM_TRACKED_ONLY_TEST", "1")
+    for name in (
+        "_verify_supported_runtime", "_executor_repository_identity",
+        "_load_future_tracker_approval", "_validate_launch_before_candidate_load",
+        "_validate_output_root_custody", "_validate_candidate_custody",
+        "load_preparation_candidate", "derive_sanitized_training_view",
+        "create_paired_initialization", "_create_optimizer_set_impl",
+    ):
+        monkeypatch.setitem(implementation.__globals__, name, forbidden)
+    for name in (
+        "APPROVED_REPOSITORY_ROOT", "APPROVED_TRACKER_PATH",
+        "APPROVED_LAUNCH_MANIFEST_PATH", "APPROVED_CANDIDATE_ROOT",
+        "APPROVED_RECONCILIATION_KEY_PATH", "APPROVED_OUTPUT_PARENT",
+    ):
+        monkeypatch.setitem(implementation.__globals__, name, tmp_path / name.lower())
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        construct_production_smoke_execution_authorization()
+        factory()
+    assert reached == []
 
 
 @pytest.mark.parametrize("missing", ("tracker", "launch"))
@@ -3272,7 +3302,7 @@ def test_smoke_training_recursive_deletion_inventory_is_diagnostic_unreachable()
     )
 
 
-def test_diagnostic_fixed_failure_record_reports_only_constrained_preservation() -> None:
+def test_minimal_diagnostic_fixed_failure_record_contains_no_workspace_path() -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / (
         "scripts/run_bounded_tiny_smoke.py"
     )
@@ -3280,30 +3310,22 @@ def test_diagnostic_fixed_failure_record_reports_only_constrained_preservation()
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    preserved = (
-        "/private/tmp/"
-        f"{smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX}synthetic"
-    )
+    assert "preserved_workspace" not in inspect.signature(module._fixed_result).parameters
     record = json.loads(
         module._fixed_result(
             SMOKE_RESUME_MISMATCH,
             executed=False,
             status="replay_diagnostic_failed",
-            preserved_workspace=preserved,
         )
     )
-    assert record["workspace_disposition"] == "preserved"
-    assert record["workspace_path"] == preserved
-    assert "deleted" not in json.dumps(record).lower()
-    arbitrary = json.loads(
-        module._fixed_result(
-            SMOKE_RESUME_MISMATCH,
-            executed=False,
-            status="replay_diagnostic_failed",
-            preserved_workspace="/tmp/arbitrary",
-        )
-    )
-    assert "workspace_path" not in arbitrary
+    assert record == {
+        "code": SMOKE_RESUME_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "replay_diagnostic_failed",
+    }
+    encoded = json.dumps(record).lower()
+    assert "workspace" not in encoded and "deleted" not in encoded
 
 
 def test_production_execution_does_not_select_diagnostic_preservation_policy() -> None:
@@ -3508,7 +3530,7 @@ def test_replay_worker_diagnostic_phases_wrap_existing_operations(
     ]
 
 
-def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) -> None:
+def test_removed_legacy_diagnostic_worker_form_fails_closed(tmp_path: Path) -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / (
         "scripts/run_bounded_tiny_smoke.py"
     )
@@ -3526,14 +3548,14 @@ def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) ->
         capture_output=True,
         check=False,
     )
-    assert result.returncode == 3
+    assert result.returncode == 2
     assert result.stdout == b""
     record = json.loads(result.stderr)
-    assert type(record.pop("elapsed_ms")) is int
     assert record == {
-        "phase": "WORKER_STARTED",
-        "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
-        "result": True,
+        "code": SMOKE_APPROVAL_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "launch_not_authorized",
     }
 
 
@@ -3578,19 +3600,28 @@ def test_fail_closed_cli_exposes_no_scientific_or_execution_options(
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
+    calls: list[str] = []
+
     def reject_before_private_access():
+        calls.append("constructor")
         raise SmokeTrainingError(SMOKE_APPROVAL_MISMATCH)
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        calls.append("forbidden")
+        pytest.fail("no-argument rejection reached external or execution state")
 
     fake_smoke = SimpleNamespace(
         construct_production_smoke_execution_authorization=(
             reject_before_private_access
         ),
-        execute_bounded_tiny_smoke=lambda authorization: pytest.fail(
-            "execution reached after deterministic constructor rejection"
-        ),
+        execute_bounded_tiny_smoke=forbidden,
+        candidate=forbidden, reconciliation_key=forbidden, model=forbidden,
+        optimizer_runtime=forbidden, production_output=forbidden,
     )
     monkeypatch.setattr(module, "_load_smoke_training", lambda: fake_smoke)
     assert module.main(()) == 2
+    assert calls == ["constructor"]
     assert json.loads(capsys.readouterr().err) == {
         "code": SMOKE_APPROVAL_MISMATCH,
         "executed": False,
@@ -3604,6 +3635,22 @@ def test_cli_and_reviewed_factory_have_a_reachable_option_free_production_edge()
     source = script.read_text(encoding="utf-8")
     assert source.count("construct_production_smoke_execution_authorization()") == 1
     assert source.count("execute_bounded_tiny_smoke(authorization)") == 1
+    tree = ast.parse(source)
+    production_calls = [
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr in {
+            "construct_production_smoke_execution_authorization",
+            "execute_bounded_tiny_smoke",
+            "load_authority",
+        }
+    ]
+    assert production_calls == [
+        "construct_production_smoke_execution_authorization",
+        "execute_bounded_tiny_smoke",
+    ]
     assert tuple(
         inspect.signature(
             smoke_module.construct_production_smoke_execution_authorization
@@ -3626,9 +3673,7 @@ def test_public_type_identity_reload_old_references_and_reverse_import_are_stabl
         ]
     }
     old_update = smoke_module.execute_next_optimizer_update
-    old_production_factory = (
-        smoke_module.construct_production_smoke_execution_authorization
-    )
+    old_production_factory = smoke_module.construct_production_smoke_execution_authorization
     old_error = smoke_module.SmokeTrainingError
     artifact_types = dict(artifact_module.SMOKE_ARTIFACT_PUBLIC_TYPES)
     reloaded_artifacts = importlib.reload(artifact_module)
@@ -3637,8 +3682,7 @@ def test_public_type_identity_reload_old_references_and_reverse_import_are_stabl
     assert all(getattr(reloaded, name) is value for name, value in old_types.items())
     assert old_error is reloaded.SmokeTrainingError
     assert old_update is not reloaded.execute_next_optimizer_update
-    with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        old_production_factory()
+    assert tuple(inspect.signature(old_production_factory).parameters) == ()
     assert not reloaded.SMOKE_EXTERNAL_APPLICATION_CALLABLE_ALLOWLIST
 
 
@@ -3662,8 +3706,10 @@ def test_module_global_replacement_cannot_redirect_closed_public_entrypoints(
     )
     monkeypatch.setattr(smoke_module, "derive_tiny_dropout_seed", permissive)
     result = execute_next_optimizer_update(runtime)
-    with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        construct_production_smoke_execution_authorization()
+    closure = inspect.getclosurevars(
+        construct_production_smoke_execution_authorization
+    ).nonlocals
+    assert closure["production_authority_impl"] is not permissive
     assert result.completed_update == 1
     assert calls == []
 

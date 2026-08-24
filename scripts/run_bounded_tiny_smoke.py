@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import json
 import sys
-import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -28,19 +27,11 @@ def _load_smoke_training():
     return smoke_training
 
 
-def _legacy_diagnostic_record(started: float, phase: str, update: int | None) -> None:
-    fields: dict[str, object] = {"elapsed_ms": int((time.monotonic() - started) * 1_000), "phase": phase, "protocol": "neu_tiny_invocation3_replay_diagnostic_v1", "result": True}  # noqa: E501
-    if update is not None:
-        fields["update"] = update
-    print(json.dumps(fields, sort_keys=True, separators=(",", ":")), file=sys.stderr, flush=True)
-
-
 def _fixed_result(
     code: str | None,
     *,
     executed: bool,
     status: str,
-    preserved_workspace: str | None = None,
 ) -> str:
     if code is not None and code not in SMOKE_FAILURE_CODES:
         code = SMOKE_APPROVAL_MISMATCH
@@ -51,17 +42,6 @@ def _fixed_result(
     }
     if code is not None:
         payload["code"] = code
-    if preserved_workspace is not None:
-        workspace = Path(preserved_workspace)
-        if (
-            workspace.is_absolute()
-            and workspace.parent == Path("/private/tmp")
-            and workspace.name.startswith(
-                ("neu-invocation3-minimal-diagnostic.", "neu-invocation3-replay-")
-            )
-        ):
-            payload["workspace_disposition"] = "preserved"
-            payload["workspace_path"] = str(workspace)
     return json.dumps(
         payload,
         ensure_ascii=True,
@@ -123,21 +103,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0 if result.get("diagnostic_disposition") == (
             "DIAGNOSTIC_REPLAY_MECHANICS_COMPLETED"
         ) else 3
-    if len(arguments) == 2 and arguments[0] == invocation3.WORKER_ARGUMENT:
-        smoke_training = _load_smoke_training()
-        started = time.monotonic()
-        try:
-            result = smoke_training.execute_tiny_resume_replay_worker(
-                Path(arguments[1]),
-                diagnostic_sink=lambda phase, update: _legacy_diagnostic_record(
-                    started, phase, update
-                ),
-            )
-        except Exception:
-            return 3
-        if result:
-            sys.stdout.buffer.write(result)
-        return 0
     if len(arguments) == 2 and arguments[0] == RESUME_WORKER_ARGUMENT:
         smoke_training = _load_smoke_training()
         try:
