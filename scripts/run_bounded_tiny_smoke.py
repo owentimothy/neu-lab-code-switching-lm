@@ -50,6 +50,22 @@ def _fixed_result(
     )
 
 
+def _fixed_indeterminate_diagnostic_result() -> str:
+    return json.dumps(
+        {
+            "code": invocation3.INVOCATION3_EVIDENCE_INDETERMINATE,
+            "diagnostic_only": True,
+            "executed": False,
+            "mechanics_only": True,
+            "production_completion": False,
+            "status": "replay_diagnostic_evidence_indeterminate",
+        },
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Accept no protocol options and execute only factory-produced authority."""
 
@@ -89,7 +105,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 controller_script=Path(__file__).resolve(),
                 argv=tuple(sys.orig_argv),
             )
-        except Exception:
+        except Exception as error:
+            if (
+                type(error) is invocation3.Invocation3DiagnosticError
+                and error.code == invocation3.INVOCATION3_EVIDENCE_INDETERMINATE
+            ):
+                print(_fixed_indeterminate_diagnostic_result(), file=sys.stderr)
+                return 3
             print(
                 _fixed_result(
                     SMOKE_RESUME_MISMATCH,

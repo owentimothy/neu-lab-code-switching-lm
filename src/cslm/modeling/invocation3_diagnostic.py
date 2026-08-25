@@ -42,6 +42,7 @@ OBSERVATION_NS = 600 * 1_000_000_000
 HARD_TIMEOUT_NS = 3_600 * 1_000_000_000
 STDOUT_LIMIT = 32_768
 STDERR_LIMIT = 65_536
+INVOCATION3_EVIDENCE_INDETERMINATE = "INVOCATION3_EVIDENCE_INDETERMINATE"
 SOURCE_FILES = ("scripts/run_bounded_tiny_smoke.py", "src/cslm/modeling/config.py", "src/cslm/modeling/contracts.py", "src/cslm/modeling/initialization.py", "src/cslm/modeling/invocation3_diagnostic.py", "src/cslm/modeling/masking.py", "src/cslm/modeling/packing.py", "src/cslm/modeling/preparation.py", "src/cslm/modeling/scheduling.py", "src/cslm/modeling/smoke_artifacts.py", "src/cslm/modeling/smoke_training.py", "src/cslm/modeling/training_contract.py")
 WORKER_ENVIRONMENT = MappingProxyType({"HF_HUB_OFFLINE": "1", "LANG": "C", "LC_ALL": "C", "MKL_NUM_THREADS": "1", "NUMEXPR_NUM_THREADS": "1", "OMP_NUM_THREADS": "1", "OPENBLAS_NUM_THREADS": "1", "PATH": "/opt/anaconda3/bin:/usr/bin:/bin", "PYTHONDONTWRITEBYTECODE": "1", "PYTHONHASHSEED": "1729", "PYTHONNOUSERSITE": "1", "TOKENIZERS_PARALLELISM": "false", "TRANSFORMERS_OFFLINE": "1", "VECLIB_MAXIMUM_THREADS": "1"})
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -90,6 +91,7 @@ class _StageSnapshot:
     directory_count: int
     file_count: int
     total_file_bytes: int
+    directories: Mapping[str, tuple[int, ...]] = field(repr=False)
     files: Mapping[str, tuple[int, ...]] = field(repr=False)
 
 def _reject() -> None:
@@ -509,6 +511,7 @@ def _stage_snapshot(authority: Invocation3ReplayDiagnosticAuthority) -> _StageSn
         root, root_status = _stage_root(authority)
         opened.add(root)
         entries: list[list[object]] = [[".", "d", root_status.st_dev, root_status.st_ino, root_status.st_uid, root_status.st_gid, f"{stat.S_IMODE(root_status.st_mode):04o}", root_status.st_nlink, root_status.st_size]]
+        directories = {".": tuple(getattr(root_status, field) for field in _IDENTITY_FIELDS)}
         files: dict[str, tuple[int, ...]] = {}
         directory_count = 1
         file_count = total = 0
@@ -529,6 +532,7 @@ def _stage_snapshot(authority: Invocation3ReplayDiagnosticAuthority) -> _StageSn
                     if any(getattr(status, field) != getattr(os.fstat(child), field) for field in _IDENTITY_FIELDS):
                         os.close(child)
                         _reject()
+                    directories[relative] = tuple(getattr(status, field) for field in _IDENTITY_FIELDS)
                     opened.add(child)
                     directory_count += 1
                     pending.append((child, relative))
@@ -555,7 +559,7 @@ def _stage_snapshot(authority: Invocation3ReplayDiagnosticAuthority) -> _StageSn
         or digest != expected["metadata_sha256"]
     ):
         _reject()
-    return _StageSnapshot(digest, root_status.st_dev, root_status.st_ino, directory_count, file_count, total, MappingProxyType(files))
+    return _StageSnapshot(digest, root_status.st_dev, root_status.st_ino, directory_count, file_count, total, MappingProxyType(directories), MappingProxyType(files))
 
 def _read_stage_payload(authority: Invocation3ReplayDiagnosticAuthority, snapshot: _StageSnapshot, relative: str, expected: Mapping[str, object]) -> bytes:
     if relative not in snapshot.files or expected["relative_path"] != relative:
@@ -564,12 +568,16 @@ def _read_stage_payload(authority: Invocation3ReplayDiagnosticAuthority, snapsho
     parts = Path(relative).parts
     if not parts or Path(relative).is_absolute() or any(part in ("", ".", "..") for part in parts):
         _reject()
-    directory, _ = _stage_root(authority)
+    directory, root_status = _stage_root(authority)
     try:
+        if tuple(getattr(root_status, field) for field in _IDENTITY_FIELDS) != snapshot.directories.get("."):
+            _reject()
+        prefix = ""
         for part in parts[:-1]:
             child = os.open(part, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0), dir_fd=directory)
             status = os.fstat(child)
-            if not stat.S_ISDIR(status.st_mode) or status.st_uid != stage["uid"] or status.st_gid != stage["gid"] or stat.S_IMODE(status.st_mode) != int(stage["directory_mode"], 8):
+            prefix = f"{prefix}/{part}" if prefix else part
+            if not stat.S_ISDIR(status.st_mode) or tuple(getattr(status, field) for field in _IDENTITY_FIELDS) != snapshot.directories.get(prefix):
                 os.close(child)
                 _reject()
             os.close(directory)
@@ -722,7 +730,7 @@ def _publish_completion(workspace: Path, content: bytes) -> None:
             os.fsync(directory)
         except OSError:
             safe_absence = False
-        raise Invocation3DiagnosticError("INVOCATION3_DIAGNOSTIC_REJECTED" if safe_absence else "INVOCATION3_EVIDENCE_INDETERMINATE") from None
+        raise Invocation3DiagnosticError("INVOCATION3_DIAGNOSTIC_REJECTED" if safe_absence else INVOCATION3_EVIDENCE_INDETERMINATE) from None
     finally:
         if final_descriptor >= 0:
             os.close(final_descriptor)
@@ -750,8 +758,9 @@ def _deadline_state(now: int, observation: int, hard: int) -> tuple[bool, bool]:
     return now >= observation, now >= hard
 
 def _kill_and_reap(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is None:
-        process.kill()
+    if process.poll() is not None:
+        return
+    process.kill()
     try:
         process.wait(timeout=1.0)
     except subprocess.TimeoutExpired:
@@ -768,7 +777,7 @@ def _drain_process(process: subprocess.Popen[bytes], observation: int, hard: int
             _reject()
         os.set_blocking(stream.fileno(), False)
         selector.register(stream, selectors.EVENT_READ, name)
-    crossed = killed = False
+    crossed = timed_out = False
     def consume(timeout: float) -> bool:
         ready = selector.select(timeout)
         for key, _ in ready:
@@ -787,24 +796,39 @@ def _drain_process(process: subprocess.Popen[bytes], observation: int, hard: int
                 state["data"].extend(chunk[:remaining])
         return bool(ready)
 
+    def sample() -> tuple[int, bool]:
+        nonlocal crossed
+        now = clock()
+        observed, hard_reached = _deadline_state(now, observation, hard)
+        if observed and not hard_reached and not crossed:
+            crossed = True
+            if observation_sink is not None:
+                observation_sink()
+        return now, hard_reached
+
+    def enforce_hard() -> None:
+        nonlocal crossed, timed_out
+        timed_out = True
+        _kill_and_reap(process)
+        if not crossed:
+            crossed = True
+            if observation_sink is not None:
+                observation_sink()
+
     try:
         while True:
-            now = clock()
-            observed, timed_out = _deadline_state(now, observation, hard)
-            if observed and not crossed:
-                crossed = True
-                if observation_sink is not None:
-                    observation_sink()
-            if timed_out:
-                killed = True
-                _kill_and_reap(process)
-                while selector.get_map() and consume(0):
-                    pass
+            now, hard_reached = sample()
+            if hard_reached:
+                enforce_hard()
                 break
             if process.poll() is not None:
-                while selector.get_map() and consume(0):
-                    pass
-                break
+                _, hard_reached = sample()
+                if hard_reached:
+                    enforce_hard()
+                    break
+                if not selector.get_map() or not consume(0):
+                    break
+                continue
             timeout = min(0.1, max(0.0, (hard - now) / 1_000_000_000))
             if selector.get_map():
                 consume(timeout)
@@ -820,7 +844,7 @@ def _drain_process(process: subprocess.Popen[bytes], observation: int, hard: int
         selector.close()
     return MappingProxyType({
         "crossed_observation": crossed,
-        "hard_timeout": killed,
+        "hard_timeout": timed_out,
         "returncode": process.returncode,
         "stdout": bytes(states["stdout"]["data"]),
         "stdout_bytes": states["stdout"]["count"],

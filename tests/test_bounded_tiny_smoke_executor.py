@@ -3632,25 +3632,156 @@ def test_fail_closed_cli_exposes_no_scientific_or_execution_options(
 
 def test_cli_and_reviewed_factory_have_a_reachable_option_free_production_edge() -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / "scripts/run_bounded_tiny_smoke.py"
-    source = script.read_text(encoding="utf-8")
-    assert source.count("construct_production_smoke_execution_authorization()") == 1
-    assert source.count("execute_bounded_tiny_smoke(authorization)") == 1
-    tree = ast.parse(source)
-    production_calls = [
-        node.func.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in {
-            "construct_production_smoke_execution_authorization",
-            "execute_bounded_tiny_smoke",
-            "load_authority",
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    main = functions["main"]
+    boundary = next(
+        index
+        for index, node in enumerate(main.body)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "arguments"
+    )
+    no_argument_nodes = list(main.body[boundary + 1:])
+
+    def local_callees(nodes, definitions):
+        return {
+            node.func.id
+            for root in nodes
+            for node in ast.walk(root)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in definitions
         }
+
+    reachable_helpers: set[str] = set()
+    queue = list(local_callees(no_argument_nodes, functions))
+    while queue:
+        name = queue.pop()
+        if name in reachable_helpers:
+            continue
+        reachable_helpers.add(name)
+        queue.extend(local_callees((functions[name],), functions))
+    reachable_nodes = no_argument_nodes + [
+        functions[name] for name in sorted(reachable_helpers)
     ]
-    assert production_calls == [
+    production_calls = sorted(
+        (
+            node
+            for root in reachable_nodes
+            for node in ast.walk(root)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {
+                "construct_production_smoke_execution_authorization",
+                "execute_bounded_tiny_smoke",
+            }
+        ),
+        key=lambda node: node.lineno,
+    )
+    assert [node.func.attr for node in production_calls] == [
         "construct_production_smoke_execution_authorization",
         "execute_bounded_tiny_smoke",
     ]
+    assert production_calls[0].args == [] and production_calls[0].keywords == []
+    assert len(production_calls[1].args) == 1
+    assert isinstance(production_calls[1].args[0], ast.Name)
+    assert production_calls[1].args[0].id == "authorization"
+    cli_nodes = [
+        node
+        for root in reachable_nodes
+        for node in ast.walk(root)
+    ]
+    cli_spellings = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in cli_nodes
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    forbidden_cli = {
+        "invocation3", "load_authority", "run_controller", "run_worker",
+        "AUTHORITY_PATH", "CONTROLLER_ARGUMENT", "WORKER_ARGUMENT",
+    }
+    assert not (forbidden_cli & cli_spellings)
+    assert not any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and "invocation3" in (node.module or "")
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any("invocation3" in alias.name for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "invocation3" in node.value.lower()
+        )
+        for node in cli_nodes
+    )
+
+    smoke_tree = ast.parse(Path(smoke_module.__file__).read_text(encoding="utf-8"))
+    smoke_functions = {
+        node.name: node
+        for node in smoke_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    factory = smoke_functions["_public_factories"]
+    bindings = {
+        node.targets[0].id: node.value.slice.value
+        for node in ast.walk(factory)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "reviewed"
+        and isinstance(node.value.slice, ast.Constant)
+        and isinstance(node.value.slice.value, str)
+    }
+    assert bindings["production_authority_impl"] == (
+        "_construct_production_smoke_execution_authorization_impl"
+    )
+    assert bindings["production_impl"] == "_execute_bounded_tiny_smoke_impl"
+    nested = {
+        node.name: node
+        for node in factory.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert local_callees(
+        (nested["construct_production_authority"],),
+        {"production_authority_impl": None},
+    ) == {"production_authority_impl"}
+    assert local_callees(
+        (nested["production"],),
+        {"production_impl": None},
+    ) == {"production_impl"}
+    reviewed_reachable, queue = set(), [
+        bindings["production_authority_impl"],
+        bindings["production_impl"],
+    ]
+    while queue:
+        name = queue.pop()
+        if name in reviewed_reachable:
+            continue
+        reviewed_reachable.add(name)
+        queue.extend(local_callees((smoke_functions[name],), smoke_functions))
+    forbidden = {"load_authority", "run_controller", "run_worker", "_worker_replay"}
+    spellings = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for name in reviewed_reachable
+        for node in ast.walk(smoke_functions[name])
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    assert not (forbidden & spellings)
+    assert not any(
+        "invocation3" in name.lower() or "replay_diagnostic" in name.lower()
+        for name in reviewed_reachable | spellings
+    )
     assert tuple(
         inspect.signature(
             smoke_module.construct_production_smoke_execution_authorization

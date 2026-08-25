@@ -4,7 +4,10 @@ from __future__ import annotations
 import ast
 import copy
 import hashlib
+import importlib.util
+import json
 import os
+import select
 import stat
 import subprocess
 import sys
@@ -816,6 +819,30 @@ def test_descriptor_reads_reject_intermediate_symlink_parent_substitution_and_fi
         diagnostic._stable_read(link, 32)
 
 
+@pytest.mark.parametrize("relative", ("EnglishMono", "EnglishMono/cpu", "EnglishMono/cpu/checkpoint-0750"))
+def test_stage_payload_rejects_replaced_intermediate_with_original_final_inode(tmp_path: Path, relative: str) -> None:
+    root, _, authority = _synthetic_stage(tmp_path)
+    snapshot = diagnostic._stage_snapshot(authority)
+    record = authority.payload["retained_stage"]["controls"]["checkpoint_manifest"]
+    target = root / relative
+    displaced = tmp_path / f"accepted-{relative.replace('/', '-')}"
+    target.rename(displaced)
+    target.mkdir(mode=0o700)
+    child = {"EnglishMono": "cpu", "EnglishMono/cpu": "checkpoint-0750"}.get(relative, "checkpoint_manifest.json")
+    original = displaced / child
+    original.rename(target / child)
+    parent_relative = Path(relative).parent.as_posix()
+    parent_relative = "." if parent_relative == "." else parent_relative
+    accepted_parent = snapshot.directories[parent_relative]
+    parent = target.parent
+    os.utime(parent, ns=(os.lstat(parent).st_atime_ns, accepted_parent[-1]), follow_symlinks=False)
+    assert tuple(getattr(os.lstat(parent), field) for field in diagnostic._IDENTITY_FIELDS) == accepted_parent
+    accepted_inode = snapshot.files[record["relative_path"]][1]
+    assert os.lstat(root / record["relative_path"]).st_ino == accepted_inode
+    with pytest.raises(diagnostic.Invocation3DiagnosticError):
+        diagnostic._read_stage_payload(authority, snapshot, record["relative_path"], record)
+
+
 def test_diagnostic_and_embedded_historical_types_cannot_enter_production(
     tmp_path: Path,
 ) -> None:
@@ -858,9 +885,7 @@ def test_diagnostic_and_embedded_historical_types_cannot_enter_production(
         smoke.execute_bounded_tiny_smoke(historical)
 
 
-def test_real_shared_reanchor_transaction_and_envelope_accept_exact_lineage(
-    tmp_path: Path,
-) -> None:
+def _exercise_real_shared_reanchor_transaction_and_envelope(tmp_path: Path) -> bytes:
     *_, authorization, optimizers, runtime = legacy._runtime(
         tmp_path,
         test_updates=751,
@@ -915,9 +940,14 @@ def test_real_shared_reanchor_transaction_and_envelope_accept_exact_lineage(
         token=historical_token,
     )
     assert checkpoint_bytes == files["checkpoint_state.pt"]
+    return checkpoint_bytes
 
 
-@pytest.mark.parametrize("mutation", ("none", "wrong_tracker_mode", "crossed_documents"))
+def test_real_shared_reanchor_transaction_and_envelope_accept_exact_lineage(tmp_path: Path) -> None:
+    assert _exercise_real_shared_reanchor_transaction_and_envelope(tmp_path)
+
+
+@pytest.mark.parametrize("mutation", ("valid", "wrong_tracker_mode", "wrong_manifest_mode", "manifest_tracker_bytes", "manifest_other_launch"))
 def test_real_production_mode_loader_and_reanchor_use_file_specific_custody(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str) -> None:
     view, paired, tracker, manifest = legacy._production_condition_runtime_material(tmp_path)
     output = tmp_path / "synthetic-output"
@@ -933,18 +963,43 @@ def test_real_production_mode_loader_and_reanchor_use_file_specific_custody(tmp_
     monkeypatch.setattr(smoke, "APPROVED_LAUNCH_MANIFEST_PATH", manifest.absolute())
     if mutation == "wrong_tracker_mode":
         os.chmod(tracker, 0o600)
-    elif mutation == "crossed_documents":
-        tracker.write_bytes(launch_bytes)
+    elif mutation == "wrong_manifest_mode":
+        os.chmod(manifest, 0o644)
+    elif mutation == "manifest_tracker_bytes":
         manifest.write_bytes(tracker_bytes)
+    elif mutation == "manifest_other_launch":
+        other = json.loads(launch_bytes)
+        other["reporting_policy"] = "different_canonical_launch"
+        manifest.write_bytes(smoke.canonical_json_bytes(other))
+    calls: list[str] = []
+    for name in ("_load_future_tracker_approval", "_validate_launch_before_candidate_load", "_construct_bound_production_authorization", "_reanchor_consumed_view", "_verify_replay_transaction", "_checkpoint_envelope_from_files_for_tests_impl", "_verify_checkpoint_envelope"):
+        original = getattr(smoke, name)
+        def wrapped(*args, _name=name, _original=original, **kwargs):
+            calls.append(_name)
+            return _original(*args, **kwargs)
+        monkeypatch.setattr(smoke, name, wrapped)
     token = object()
-    if mutation != "none":
+    load_kwargs = {"candidate_checksum": view.candidate_checksum_record_sha256, "preparation_manifest": view.preparation_manifest_sha256, "schedule_identity": view.schedule_plan_identity_sha256, "executor_commit": commit, "executor_closure_digest": closure, "runtime_policy_sha256": runtime, "output_parent": output, "authority_kind": "production_tracker_and_launch", "production": True, "token": token}
+    if mutation == "wrong_tracker_mode":
         with pytest.raises(smoke.SmokeTrainingError, match=smoke.SMOKE_APPROVAL_MISMATCH):
-            smoke._load_future_tracker_approval(tracker.absolute(), candidate_checksum=view.candidate_checksum_record_sha256, preparation_manifest=view.preparation_manifest_sha256, schedule_identity=view.schedule_plan_identity_sha256, executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, authority_kind="production_tracker_and_launch", production=True, token=token)
+            smoke._load_future_tracker_approval(tracker.absolute(), **load_kwargs)
+        assert calls == ["_load_future_tracker_approval"]
         return
-    approval = smoke._load_future_tracker_approval(tracker.absolute(), candidate_checksum=view.candidate_checksum_record_sha256, preparation_manifest=view.preparation_manifest_sha256, schedule_identity=view.schedule_plan_identity_sha256, executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, authority_kind="production_tracker_and_launch", production=True, token=token)
-    launch = smoke._validate_launch_before_candidate_load(approval, manifest.absolute(), authority_kind="production_tracker_and_launch", executor_commit=commit, executor_closure_digest=closure, runtime_policy_sha256=runtime, output_parent=output, production=True, token=token)
+    approval = smoke._load_future_tracker_approval(tracker.absolute(), **load_kwargs)
+    launch_kwargs = {"authority_kind": "production_tracker_and_launch", "executor_commit": commit, "executor_closure_digest": closure, "runtime_policy_sha256": runtime, "output_parent": output, "production": True, "token": token}
+    if mutation != "valid":
+        with pytest.raises(smoke.SmokeTrainingError, match=smoke.SMOKE_APPROVAL_MISMATCH):
+            smoke._validate_launch_before_candidate_load(approval, manifest.absolute(), **launch_kwargs)
+        assert calls == ["_load_future_tracker_approval", "_validate_launch_before_candidate_load"]
+        return
+    launch = smoke._validate_launch_before_candidate_load(approval, manifest.absolute(), **launch_kwargs)
     authorization = smoke._construct_bound_production_authorization(approval, launch, view, paired, authority_kind="production_tracker_and_launch", required_view_kind="synthetic_test_only", output_parent=output, token=token)
     assert smoke._reanchor_consumed_view(authorization, code=smoke.SMOKE_APPROVAL_MISMATCH) is None
+    shared = tmp_path / "shared-validation"
+    shared.mkdir()
+    assert _exercise_real_shared_reanchor_transaction_and_envelope(shared)
+    for name in ("_load_future_tracker_approval", "_validate_launch_before_candidate_load", "_construct_bound_production_authorization", "_reanchor_consumed_view", "_verify_replay_transaction", "_checkpoint_envelope_from_files_for_tests_impl", "_verify_checkpoint_envelope"):
+        assert name in calls
 
 
 def test_real_reanchor_rejects_view_substitution_before_decode(
@@ -1271,21 +1326,30 @@ def test_early_channel_eof_child_is_killed_and_reaped_at_hard_deadline() -> None
         started + 50_000_000,
         started + 100_000_000,
     )
-    assert result["hard_timeout"] is True and result["returncode"] < 0
+    assert result["hard_timeout"] is True and result["returncode"] < 0 and process.poll() is not None
+    assert process.stdout.closed and process.stderr.closed
     assert diagnostic.time.monotonic_ns() - started < 1_500_000_000
 
 
-def test_inherited_pipe_descriptors_do_not_outlive_direct_child_supervision() -> None:
-    program = "import subprocess,sys;subprocess.Popen((sys.executable,'-c','import time;time.sleep(.5)'))"
+def test_continuous_inherited_writer_forces_timeout_without_descendant_signal() -> None:
+    writer = "import os\ntry:\n while True: os.write(1,b'x'*4096)\nexcept BrokenPipeError: pass"
+    program = f"import subprocess,sys;subprocess.Popen((sys.executable,'-c',{writer!r}))"
     process = subprocess.Popen((sys.executable, "-c", program), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    started = diagnostic.time.monotonic_ns()
-    result = diagnostic._drain_process(process, started + 1_000_000_000, started + 2_000_000_000)
-    assert result["returncode"] == 0 and result["hard_timeout"] is False
-    assert diagnostic.time.monotonic_ns() - started < 400_000_000
+    assert process.wait(timeout=2) == 0 and select.select([process.stdout], [], [], 2)[0]
+    killed, ticks = [], iter(range(100))
+    original_kill = process.kill
+    def kill():
+        killed.append(True)
+        original_kill()
+    process.kill = kill
+    result = diagnostic._drain_process(process, 5, 10, clock=lambda: next(ticks))
+    assert result["returncode"] == 0 and result["hard_timeout"] is True
+    assert result["stdout_bytes"] > 0 and killed == []
+    assert process.stdout.closed and process.stderr.closed
 
 
-@pytest.mark.parametrize(("offset", "hard_timeout", "killed"), ((-1, False, False), (0, True, True), (1, True, True)))
-def test_direct_child_deadline_precedence_kills_and_reaps(offset: int, hard_timeout: bool, killed: bool) -> None:
+@pytest.mark.parametrize(("offset", "hard_timeout", "killed", "stdout"), ((-1, False, False, b"apparent-result"), (0, True, True, b""), (1, True, True, b"")))
+def test_direct_child_deadline_precedence_kills_and_reaps(offset: int, hard_timeout: bool, killed: bool, stdout: bytes) -> None:
     stdout_read, stdout_write = os.pipe()
     stderr_read, stderr_write = os.pipe()
     os.write(stdout_write, b"apparent-result")
@@ -1315,7 +1379,29 @@ def test_direct_child_deadline_precedence_kills_and_reaps(offset: int, hard_time
     result = diagnostic._drain_process(child, 50, 100, clock=lambda: 100 + offset)
     assert result["hard_timeout"] is hard_timeout
     assert child.killed is killed and child.waited is killed
-    assert result["stdout"] == b"apparent-result"
+    assert result["stdout"] == stdout
+
+
+def test_child_exit_observation_resamples_exact_hard_boundary_before_drain() -> None:
+    stdout_read, stdout_write = os.pipe()
+    stderr_read, stderr_write = os.pipe()
+    os.write(stdout_write, b"buffered-result")
+    os.close(stdout_write)
+    os.close(stderr_write)
+    class ExitedChild:
+        stdout, stderr, returncode, killed = os.fdopen(stdout_read, "rb", buffering=0), os.fdopen(stderr_read, "rb", buffering=0), None, False
+        def poll(self):
+            self.returncode = 0
+            return 0
+        def kill(self):
+            self.killed = True
+        def wait(self, timeout):
+            pytest.fail(f"reap wait reached for already exited child: {timeout}")
+    times = iter((99, 100))
+    child = ExitedChild()
+    result = diagnostic._drain_process(child, 50, 100, clock=lambda: next(times))
+    assert result["hard_timeout"] is True and result["returncode"] == 0
+    assert result["stdout"] == b"" and child.killed is False
 
 
 @pytest.mark.parametrize("failure", ("partial_write", "file_fsync", "publish", "directory_fsync"))
@@ -1341,11 +1427,73 @@ def test_failed_completion_publication_leaves_no_acceptable_final(tmp_path: Path
         monkeypatch.setattr(diagnostic.os, "fsync", broken_fsync)
     else:
         monkeypatch.setattr(diagnostic.os, "link", lambda *args, **kwargs: (_ for _ in ()).throw(OSError()))
-    with pytest.raises(diagnostic.Invocation3DiagnosticError):
+    with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
         diagnostic._publish_completion(workspace, b'{"complete":true}\n')
+    assert caught.value.code == "INVOCATION3_DIAGNOSTIC_REJECTED"
     assert not (workspace / "completion.json").exists()
     assert not (workspace / ".completion.json.pending").exists()
     assert unrelated.read_bytes() == b"preserve"
+
+
+def test_completion_removal_failure_is_indeterminate_and_preserves_exact_final(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
+    real_fsync, real_unlink, calls = diagnostic.os.fsync, diagnostic.os.unlink, [0]
+    def fail_publish_fsync(descriptor):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise OSError
+        return real_fsync(descriptor)
+    def fail_final_unlink(name, *args, **kwargs):
+        if name == "completion.json":
+            raise OSError
+        return real_unlink(name, *args, **kwargs)
+    monkeypatch.setattr(diagnostic.os, "fsync", fail_publish_fsync)
+    monkeypatch.setattr(diagnostic.os, "unlink", fail_final_unlink)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
+        diagnostic._publish_completion(workspace, b'{"complete":true}\n')
+    assert caught.value.code == diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE
+    assert (workspace / "completion.json").exists()
+
+
+def test_completion_cleanup_second_directory_fsync_failure_is_indeterminate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
+    real_fsync, calls = diagnostic.os.fsync, [0]
+    def fail_both_directory_fsyncs(descriptor):
+        calls[0] += 1
+        if calls[0] in {2, 3}:
+            raise OSError
+        return real_fsync(descriptor)
+    monkeypatch.setattr(diagnostic.os, "fsync", fail_both_directory_fsyncs)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
+        diagnostic._publish_completion(workspace, b'{"complete":true}\n')
+    assert caught.value.code == diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE
+    assert not (workspace / "completion.json").exists()
+
+
+def test_postpublication_identity_failure_does_not_remove_substituted_final(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(mode=0o700)
+    os.chown(workspace, 501, 20)
+    foreign = workspace / "foreign"
+    foreign.write_bytes(b"foreign-record\n")
+    os.chmod(foreign, 0o600)
+    os.chown(foreign, 501, 20)
+    real_open, swapped = diagnostic.os.open, [False]
+    def substitute_before_final_open(name, flags, *args, **kwargs):
+        if name == "completion.json" and not swapped[0]:
+            swapped[0] = True
+            (workspace / "completion.json").rename(workspace / "displaced-created-record")
+            foreign.rename(workspace / "completion.json")
+        return real_open(name, flags, *args, **kwargs)
+    monkeypatch.setattr(diagnostic.os, "open", substitute_before_final_open)
+    with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
+        diagnostic._publish_completion(workspace, b'{"complete":true}\n')
+    assert caught.value.code == diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE
+    assert (workspace / "completion.json").read_bytes() == b"foreign-record\n"
 
 
 def test_completion_is_private_canonical_and_published_last(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1370,12 +1518,14 @@ def test_completion_is_private_canonical_and_published_last(tmp_path: Path, monk
     assert (workspace / "completion.json").read_bytes() == content
 
 
-def test_controller_spawns_once_and_kills_reaps_after_launch_failure(
+@pytest.mark.parametrize("publication", ("success", "indeterminate"))
+def test_controller_spawns_once_kills_reaps_and_preserves_indeterminate_publication(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    publication: str,
 ) -> None:
     authority = _authority_object(_base_payload())
-    stage = diagnostic._StageSnapshot("7" * 64, 1, 2, 1, 0, 0, MappingProxyType({}))
+    stage = diagnostic._StageSnapshot("7" * 64, 1, 2, 1, 0, 0, MappingProxyType({".": (1,) * 8}), MappingProxyType({}))
     workspace = tmp_path / "preserved-attempt"
     workspace.mkdir(mode=0o700)
     os.chown(workspace, 501, 20)
@@ -1409,10 +1559,39 @@ def test_controller_spawns_once_and_kills_reaps_after_launch_failure(
     monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value: None)
     monkeypatch.setattr(diagnostic.subprocess, "Popen", popen)
     monkeypatch.setattr(diagnostic, "_drain_process", lambda *args, **kwargs: diagnostic._reject())
-    result = diagnostic.run_controller("f" * 64, controller_script=tmp_path / "run.py", argv=())
+    if publication == "indeterminate":
+        monkeypatch.setattr(diagnostic, "_publish_completion", lambda *args: (_ for _ in ()).throw(diagnostic.Invocation3DiagnosticError(diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE)))
+        with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
+            diagnostic.run_controller("f" * 64, controller_script=tmp_path / "run.py", argv=())
+        assert caught.value.code == diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE
+    else:
+        result = diagnostic.run_controller("f" * 64, controller_script=tmp_path / "run.py", argv=())
+        assert result["diagnostic_disposition"] == "CONTROLLER_REJECTED"
+        assert sorted(path.name for path in workspace.iterdir()) == ["completion.json", "events.jsonl", "request.json"]
     assert len(children) == 1 and children[0].returncode == -9 and children[0].waited
-    assert result["diagnostic_disposition"] == "CONTROLLER_REJECTED"
-    assert sorted(path.name for path in workspace.iterdir()) == ["completion.json", "events.jsonl", "request.json"]
+
+
+def test_exact_cli_preserves_only_indeterminate_diagnostic_code_without_private_context(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    script = Path(smoke.__file__).resolve().parents[3] / "scripts/run_bounded_tiny_smoke.py"
+    spec = importlib.util.spec_from_file_location("indeterminate_diagnostic_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    private = "/private/tmp/neu-invocation3-replay-private-marker"
+    def fail(*args, **kwargs):
+        try:
+            raise RuntimeError(private)
+        except RuntimeError as context:
+            raise diagnostic.Invocation3DiagnosticError(diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE) from context
+    monkeypatch.setattr(module.invocation3, "run_controller", fail)
+    arguments = (diagnostic.CONTROLLER_ARGUMENT, diagnostic.AUTHORITY_SHA_ARGUMENT, "f" * 64, diagnostic.ATTESTATION_ARGUMENT)
+    assert module.main(arguments) == 3
+    stderr = capsys.readouterr().err
+    assert json.loads(stderr) == {"code": diagnostic.INVOCATION3_EVIDENCE_INDETERMINATE, "diagnostic_only": True, "executed": False, "mechanics_only": True, "production_completion": False, "status": "replay_diagnostic_evidence_indeterminate"}
+    assert private not in stderr and "RuntimeError" not in stderr
+    monkeypatch.setattr(module.invocation3, "run_controller", lambda *args, **kwargs: (_ for _ in ()).throw(diagnostic.Invocation3DiagnosticError()))
+    assert module.main(arguments) == 3
+    assert json.loads(capsys.readouterr().err)["code"] == "SMOKE_RESUME_MISMATCH"
 
 
 def _bootstrap_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1533,7 +1712,7 @@ def test_historical_lineage_reconstruction_and_substitution(tmp_path: Path, subs
 
 def test_request_event_controller_and_cleanup_static_contract(tmp_path: Path) -> None:
     authority = _authority_object(_base_payload())
-    stage = diagnostic._StageSnapshot("7" * 64, 1, 2, 1, 0, 0, MappingProxyType({}))
+    stage = diagnostic._StageSnapshot("7" * 64, 1, 2, 1, 0, 0, MappingProxyType({".": (1,) * 8}), MappingProxyType({}))
     request = diagnostic._request_payload(authority, tmp_path, stage, ("a" * 64, 1, 0), 100)
     content = diagnostic._canonical(request)
     assert diagnostic._parse_request(content, hashlib.sha256(content).hexdigest()) == request
