@@ -8,6 +8,7 @@ import hashlib
 import importlib
 import importlib.metadata
 import json
+import math
 import os
 import re
 import selectors
@@ -409,7 +410,7 @@ def _admission_process(arguments: tuple[str, ...], hard: int) -> subprocess.Comp
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             check=False,
-            timeout=(hard - now) / 1_000_000_000,
+            timeout=math.nextafter((hard - now) / 1_000_000_000, 0.0),
         )
     except subprocess.TimeoutExpired:
         code = "HARD_TIMEOUT" if time.monotonic_ns() >= hard else "INVOCATION3_DIAGNOSTIC_REJECTED"

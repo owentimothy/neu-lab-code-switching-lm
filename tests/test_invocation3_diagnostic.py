@@ -11,6 +11,7 @@ import select
 import stat
 import subprocess
 import sys
+from fractions import Fraction
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -1237,7 +1238,18 @@ def test_admission_helpers_are_bound_to_remaining_hard_deadline(monkeypatch: pyt
     if case == "exact":
         assert not calls
     else:
-        assert calls[0][0][0] == ("/usr/bin/git" if helper == "git" else "/bin/ps") and calls[0][1]["timeout"] == (1_000 - clock[0]) / 1_000_000_000
+        timeout, remaining = calls[0][1]["timeout"], 1_000 - clock[0]
+        assert calls[0][0][0] == ("/usr/bin/git" if helper == "git" else "/bin/ps") and timeout > 0 and Fraction.from_float(timeout) <= Fraction(remaining, 1_000_000_000)
+
+
+def test_admission_timeout_conversion_never_exceeds_exact_rational_remainder(monkeypatch: pytest.MonkeyPatch) -> None:
+    remaining_values = (1, 2, 999_999_999, 1_000_000_000, 1_000_000_001, 3_599_999_999_999, 3_600_000_000_000)
+    timeouts: list[float] = []
+    monkeypatch.setattr(diagnostic.time, "monotonic_ns", lambda: 0)
+    monkeypatch.setattr(diagnostic.subprocess, "run", lambda *args, timeout, **kwargs: timeouts.append(timeout) or SimpleNamespace(returncode=0, stdout=b""))
+    for remaining in remaining_values:
+        diagnostic._admission_process(("/synthetic",), remaining)
+    assert all(timeout > 0 and Fraction.from_float(timeout) <= Fraction(remaining, 1_000_000_000) for remaining, timeout in zip(remaining_values, timeouts, strict=True))
 
 
 def test_worker_guard_rejects_parent_loss_and_exact_deadline(
