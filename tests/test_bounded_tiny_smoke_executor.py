@@ -1035,9 +1035,39 @@ def test_future_production_authority_uses_closed_ordered_boundary(
     assert not material[7].exists()
 
 
-def test_current_production_factory_fails_before_external_access_or_output() -> None:
+def test_real_production_factory_rejects_synthetic_test_state_before_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = construct_production_smoke_execution_authorization
+    implementation = inspect.getclosurevars(factory).nonlocals[
+        "production_authority_impl"
+    ]
+    reached: list[str] = []
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        reached.append("external_or_runtime_access")
+        pytest.fail("production rejection did not precede external access")
+
+    monkeypatch.setenv("CSLM_TRACKED_ONLY_TEST", "1")
+    for name in (
+        "_verify_supported_runtime", "_executor_repository_identity",
+        "_load_future_tracker_approval", "_validate_launch_before_candidate_load",
+        "_validate_output_root_custody", "_validate_candidate_custody",
+        "load_preparation_candidate", "derive_sanitized_training_view",
+        "create_paired_initialization", "_create_optimizer_set_impl",
+    ):
+        monkeypatch.setitem(implementation.__globals__, name, forbidden)
+    for name in (
+        "APPROVED_REPOSITORY_ROOT", "APPROVED_TRACKER_PATH",
+        "APPROVED_LAUNCH_MANIFEST_PATH", "APPROVED_CANDIDATE_ROOT",
+        "APPROVED_RECONCILIATION_KEY_PATH", "APPROVED_OUTPUT_PARENT",
+    ):
+        monkeypatch.setitem(implementation.__globals__, name, tmp_path / name.lower())
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        construct_production_smoke_execution_authorization()
+        factory()
+    assert reached == []
 
 
 @pytest.mark.parametrize("missing", ("tracker", "launch"))
@@ -2700,6 +2730,17 @@ def test_canonical_orchestrator_requires_worker_and_never_restores_in_process() 
     assert "subprocess" in smoke_module._launch_fresh_process_replay.__code__.co_names
 
 
+def test_resume_worker_delegates_to_the_single_shared_verified_replay() -> None:
+    names = smoke_module._execute_tiny_resume_replay_worker_impl.__code__.co_names
+    assert "_execute_verified_replay" in names
+    assert "_restore_runtime_from_checkpoint_impl" not in names
+    assert "_execute_next_update_impl" not in names
+    helper_names = smoke_module._execute_verified_replay.__code__.co_names
+    assert "_restore_runtime_from_checkpoint_impl" in helper_names
+    assert "_execute_next_update_impl" in helper_names
+    assert "_validate_condition_impl" in helper_names
+
+
 def test_fresh_process_worker_failure_is_not_retried(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3261,7 +3302,7 @@ def test_smoke_training_recursive_deletion_inventory_is_diagnostic_unreachable()
     )
 
 
-def test_diagnostic_fixed_failure_record_reports_only_constrained_preservation() -> None:
+def test_minimal_diagnostic_fixed_failure_record_contains_no_workspace_path() -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / (
         "scripts/run_bounded_tiny_smoke.py"
     )
@@ -3269,30 +3310,22 @@ def test_diagnostic_fixed_failure_record_reports_only_constrained_preservation()
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    preserved = (
-        "/private/tmp/"
-        f"{smoke_module._INVOCATION3_DIAGNOSTIC_WORKSPACE_PREFIX}synthetic"
-    )
+    assert "preserved_workspace" not in inspect.signature(module._fixed_result).parameters
     record = json.loads(
         module._fixed_result(
             SMOKE_RESUME_MISMATCH,
             executed=False,
             status="replay_diagnostic_failed",
-            preserved_workspace=preserved,
         )
     )
-    assert record["workspace_disposition"] == "preserved"
-    assert record["workspace_path"] == preserved
-    assert "deleted" not in json.dumps(record).lower()
-    arbitrary = json.loads(
-        module._fixed_result(
-            SMOKE_RESUME_MISMATCH,
-            executed=False,
-            status="replay_diagnostic_failed",
-            preserved_workspace="/tmp/arbitrary",
-        )
-    )
-    assert "workspace_path" not in arbitrary
+    assert record == {
+        "code": SMOKE_RESUME_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "replay_diagnostic_failed",
+    }
+    encoded = json.dumps(record).lower()
+    assert "workspace" not in encoded and "deleted" not in encoded
 
 
 def test_production_execution_does_not_select_diagnostic_preservation_policy() -> None:
@@ -3497,7 +3530,7 @@ def test_replay_worker_diagnostic_phases_wrap_existing_operations(
     ]
 
 
-def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) -> None:
+def test_removed_legacy_diagnostic_worker_form_fails_closed(tmp_path: Path) -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / (
         "scripts/run_bounded_tiny_smoke.py"
     )
@@ -3515,24 +3548,18 @@ def test_diagnostic_worker_failure_emits_only_completed_phase(tmp_path: Path) ->
         capture_output=True,
         check=False,
     )
-    assert result.returncode == 3
+    assert result.returncode == 2
     assert result.stdout == b""
     record = json.loads(result.stderr)
-    assert type(record.pop("elapsed_ms")) is int
     assert record == {
-        "phase": "WORKER_STARTED",
-        "protocol": smoke_module.RESUME_DIAGNOSTIC_PROTOCOL,
-        "result": True,
+        "code": SMOKE_APPROVAL_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "launch_not_authorized",
     }
 
 
 def test_device_switching_and_production_execution_remain_impossible(tmp_path: Path) -> None:
-    output_parent_existed = smoke_module.APPROVED_OUTPUT_PARENT.exists()
-    output_children = (
-        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
-        if output_parent_existed
-        else ()
-    )
     _, _, _, _, authorization, optimizers = _authority(tmp_path)
     object.__setattr__(authorization, "device", "mps")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
@@ -3540,19 +3567,17 @@ def test_device_switching_and_production_execution_remain_impossible(tmp_path: P
     object.__setattr__(authorization, "device", "cpu")
     with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
         execute_bounded_tiny_smoke(authorization)
-    assert smoke_module.APPROVED_OUTPUT_PARENT.exists() is output_parent_existed
-    assert (
-        tuple(sorted(path.name for path in smoke_module.APPROVED_OUTPUT_PARENT.iterdir()))
-        if output_parent_existed
-        else ()
-    ) == output_children
 
 
-def test_fail_closed_cli_exposes_no_scientific_or_execution_options(tmp_path: Path) -> None:
+def test_fail_closed_cli_exposes_no_scientific_or_execution_options(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / "scripts/run_bounded_tiny_smoke.py"
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
-    for arguments in ((), ("--device", "mps"), ("--candidate", "private")):
+    for arguments in (("--device", "mps"), ("--candidate", "private")):
         result = subprocess.run(
             [sys.executable, str(script), *arguments],
             cwd=tmp_path,
@@ -3570,13 +3595,193 @@ def test_fail_closed_cli_exposes_no_scientific_or_execution_options(tmp_path: Pa
             "mechanics_only": True,
             "status": "launch_not_authorized",
         }
+    spec = importlib.util.spec_from_file_location("state_independent_smoke_cli", script)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    calls: list[str] = []
+
+    def reject_before_private_access():
+        calls.append("constructor")
+        raise SmokeTrainingError(SMOKE_APPROVAL_MISMATCH)
+
+    def forbidden(*args, **kwargs):
+        del args, kwargs
+        calls.append("forbidden")
+        pytest.fail("no-argument rejection reached external or execution state")
+
+    fake_smoke = SimpleNamespace(
+        construct_production_smoke_execution_authorization=(
+            reject_before_private_access
+        ),
+        execute_bounded_tiny_smoke=forbidden,
+        candidate=forbidden, reconciliation_key=forbidden, model=forbidden,
+        optimizer_runtime=forbidden, production_output=forbidden,
+    )
+    monkeypatch.setattr(module, "_load_smoke_training", lambda: fake_smoke)
+    assert module.main(()) == 2
+    assert calls == ["constructor"]
+    assert json.loads(capsys.readouterr().err) == {
+        "code": SMOKE_APPROVAL_MISMATCH,
+        "executed": False,
+        "mechanics_only": True,
+        "status": "launch_not_authorized",
+    }
 
 
 def test_cli_and_reviewed_factory_have_a_reachable_option_free_production_edge() -> None:
     script = Path(smoke_module.__file__).resolve().parents[3] / "scripts/run_bounded_tiny_smoke.py"
-    source = script.read_text(encoding="utf-8")
-    assert source.count("construct_production_smoke_execution_authorization()") == 1
-    assert source.count("execute_bounded_tiny_smoke(authorization)") == 1
+    tree = ast.parse(script.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    main = functions["main"]
+    boundary = next(
+        index
+        for index, node in enumerate(main.body)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "arguments"
+    )
+    no_argument_nodes = list(main.body[boundary + 1:])
+
+    def local_callees(nodes, definitions):
+        return {
+            node.func.id
+            for root in nodes
+            for node in ast.walk(root)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in definitions
+        }
+
+    reachable_helpers: set[str] = set()
+    queue = list(local_callees(no_argument_nodes, functions))
+    while queue:
+        name = queue.pop()
+        if name in reachable_helpers:
+            continue
+        reachable_helpers.add(name)
+        queue.extend(local_callees((functions[name],), functions))
+    reachable_nodes = no_argument_nodes + [
+        functions[name] for name in sorted(reachable_helpers)
+    ]
+    production_calls = sorted(
+        (
+            node
+            for root in reachable_nodes
+            for node in ast.walk(root)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr
+            in {
+                "construct_production_smoke_execution_authorization",
+                "execute_bounded_tiny_smoke",
+            }
+        ),
+        key=lambda node: node.lineno,
+    )
+    assert [node.func.attr for node in production_calls] == [
+        "construct_production_smoke_execution_authorization",
+        "execute_bounded_tiny_smoke",
+    ]
+    assert production_calls[0].args == [] and production_calls[0].keywords == []
+    assert len(production_calls[1].args) == 1
+    assert isinstance(production_calls[1].args[0], ast.Name)
+    assert production_calls[1].args[0].id == "authorization"
+    cli_nodes = [
+        node
+        for root in reachable_nodes
+        for node in ast.walk(root)
+    ]
+    cli_spellings = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for node in cli_nodes
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    forbidden_cli = {
+        "invocation3", "load_authority", "run_controller", "run_worker",
+        "AUTHORITY_PATH", "CONTROLLER_ARGUMENT", "WORKER_ARGUMENT",
+    }
+    assert not (forbidden_cli & cli_spellings)
+    assert not any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and "invocation3" in (node.module or "")
+        )
+        or (
+            isinstance(node, ast.Import)
+            and any("invocation3" in alias.name for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "invocation3" in node.value.lower()
+        )
+        for node in cli_nodes
+    )
+
+    smoke_tree = ast.parse(Path(smoke_module.__file__).read_text(encoding="utf-8"))
+    smoke_functions = {
+        node.name: node
+        for node in smoke_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    factory = smoke_functions["_public_factories"]
+    bindings = {
+        node.targets[0].id: node.value.slice.value
+        for node in ast.walk(factory)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and isinstance(node.value, ast.Subscript)
+        and isinstance(node.value.value, ast.Name)
+        and node.value.value.id == "reviewed"
+        and isinstance(node.value.slice, ast.Constant)
+        and isinstance(node.value.slice.value, str)
+    }
+    assert bindings["production_authority_impl"] == (
+        "_construct_production_smoke_execution_authorization_impl"
+    )
+    assert bindings["production_impl"] == "_execute_bounded_tiny_smoke_impl"
+    nested = {
+        node.name: node
+        for node in factory.body
+        if isinstance(node, ast.FunctionDef)
+    }
+    assert local_callees(
+        (nested["construct_production_authority"],),
+        {"production_authority_impl": None},
+    ) == {"production_authority_impl"}
+    assert local_callees(
+        (nested["production"],),
+        {"production_impl": None},
+    ) == {"production_impl"}
+    reviewed_reachable, queue = set(), [
+        bindings["production_authority_impl"],
+        bindings["production_impl"],
+    ]
+    while queue:
+        name = queue.pop()
+        if name in reviewed_reachable:
+            continue
+        reviewed_reachable.add(name)
+        queue.extend(local_callees((smoke_functions[name],), smoke_functions))
+    forbidden = {"load_authority", "run_controller", "run_worker", "_worker_replay"}
+    spellings = {
+        node.id if isinstance(node, ast.Name) else node.attr
+        for name in reviewed_reachable
+        for node in ast.walk(smoke_functions[name])
+        if isinstance(node, (ast.Name, ast.Attribute))
+    }
+    assert not (forbidden & spellings)
+    assert not any(
+        "invocation3" in name.lower() or "replay_diagnostic" in name.lower()
+        for name in reviewed_reachable | spellings
+    )
     assert tuple(
         inspect.signature(
             smoke_module.construct_production_smoke_execution_authorization
@@ -3599,9 +3804,7 @@ def test_public_type_identity_reload_old_references_and_reverse_import_are_stabl
         ]
     }
     old_update = smoke_module.execute_next_optimizer_update
-    old_production_factory = (
-        smoke_module.construct_production_smoke_execution_authorization
-    )
+    old_production_factory = smoke_module.construct_production_smoke_execution_authorization
     old_error = smoke_module.SmokeTrainingError
     artifact_types = dict(artifact_module.SMOKE_ARTIFACT_PUBLIC_TYPES)
     reloaded_artifacts = importlib.reload(artifact_module)
@@ -3610,8 +3813,7 @@ def test_public_type_identity_reload_old_references_and_reverse_import_are_stabl
     assert all(getattr(reloaded, name) is value for name, value in old_types.items())
     assert old_error is reloaded.SmokeTrainingError
     assert old_update is not reloaded.execute_next_optimizer_update
-    with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        old_production_factory()
+    assert tuple(inspect.signature(old_production_factory).parameters) == ()
     assert not reloaded.SMOKE_EXTERNAL_APPLICATION_CALLABLE_ALLOWLIST
 
 
@@ -3635,8 +3837,10 @@ def test_module_global_replacement_cannot_redirect_closed_public_entrypoints(
     )
     monkeypatch.setattr(smoke_module, "derive_tiny_dropout_seed", permissive)
     result = execute_next_optimizer_update(runtime)
-    with pytest.raises(SmokeTrainingError, match=SMOKE_APPROVAL_MISMATCH):
-        construct_production_smoke_execution_authorization()
+    closure = inspect.getclosurevars(
+        construct_production_smoke_execution_authorization
+    ).nonlocals
+    assert closure["production_authority_impl"] is not permissive
     assert result.completed_update == 1
     assert calls == []
 
