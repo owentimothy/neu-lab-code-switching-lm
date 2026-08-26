@@ -497,7 +497,7 @@ def test_temporary_git_current_identity_accepts_exact_clean_main(
 ) -> None:
     repository = _temporary_repository(tmp_path)
     authority = _current_identity_authority(repository)
-    diagnostic._validate_current_source(authority)
+    diagnostic._validate_current_source(authority, diagnostic.time.monotonic_ns() + diagnostic.HARD_TIMEOUT_NS)
 
 
 @pytest.mark.parametrize(
@@ -556,7 +556,7 @@ def test_temporary_git_current_identity_rejects_every_drift_class(
             encoding="utf-8",
         )
     with pytest.raises(diagnostic.Invocation3DiagnosticError):
-        diagnostic._validate_current_source(authority)
+        diagnostic._validate_current_source(authority, diagnostic.time.monotonic_ns() + diagnostic.HARD_TIMEOUT_NS)
 
 
 def test_source_closure_binds_ordered_runtime_files_only(
@@ -1206,46 +1206,38 @@ def test_shared_replay_exact_updates_validations_and_result(
     ]
 
 
-@pytest.mark.parametrize(
-    ("offset", "expected"),
-    (
-        (-1, (False, False)),
-        (0, (True, False)),
-        (1, (True, False)),
-    ),
-)
-def test_observation_boundary_uses_integer_nanoseconds_and_greater_equal(
-    offset: int,
-    expected: tuple[bool, bool],
-) -> None:
+@pytest.mark.parametrize(("boundary", "offset", "expected"), (("observation", -1, (False, False)), ("observation", 0, (True, False)), ("observation", 1, (True, False)), ("hard", -1, (True, False)), ("hard", 0, (True, True)), ("hard", 1, (True, True))))
+def test_deadline_boundaries_use_integer_nanoseconds_and_greater_equal(boundary: str, offset: int, expected: tuple[bool, bool]) -> None:
     observation = 10_000
     hard = 20_000
-    assert diagnostic._deadline_state(
-        observation + offset,
-        observation,
-        hard,
-    ) == expected
+    assert diagnostic._deadline_state((observation if boundary == "observation" else hard) + offset, observation, hard) == expected
 
 
-@pytest.mark.parametrize(
-    ("offset", "expected"),
-    (
-        (-1, (True, False)),
-        (0, (True, True)),
-        (1, (True, True)),
-    ),
-)
-def test_hard_boundary_uses_integer_nanoseconds_and_greater_equal(
-    offset: int,
-    expected: tuple[bool, bool],
-) -> None:
-    observation = 10_000
-    hard = 20_000
-    assert diagnostic._deadline_state(
-        hard + offset,
-        observation,
-        hard,
-    ) == expected
+@pytest.mark.parametrize("helper", ("git", "process_snapshot"))
+@pytest.mark.parametrize(("case", "clock", "code"), (("success", (999, 999), None), ("nonzero", (999, 999), "INVOCATION3_DIAGNOSTIC_REJECTED"), ("early_timeout", (998, 999), "INVOCATION3_DIAGNOSTIC_REJECTED"), ("deadline_timeout", (999, 1_000), "HARD_TIMEOUT"), ("progressed", (999, 1_000), "HARD_TIMEOUT"), ("exact", (1_000,), "HARD_TIMEOUT")))
+def test_admission_helpers_are_bound_to_remaining_hard_deadline(monkeypatch: pytest.MonkeyPatch, helper: str, case: str, clock: tuple[int, ...], code: str | None) -> None:
+    ticks, calls = iter(clock), []
+    monkeypatch.setattr(diagnostic.time, "monotonic_ns", lambda: next(ticks))
+    def run(arguments, **kwargs):
+        calls.append((arguments, kwargs))
+        if "timeout" in case:
+            raise subprocess.TimeoutExpired(arguments, kwargs["timeout"], output=b"private", stderr=b"private")
+        stdout = b"synthetic\n" if helper == "git" else f"{os.getpid()} {diagnostic.CONTROLLER_ARGUMENT}\n".encode()
+        return SimpleNamespace(returncode=2 if case == "nonzero" else 0, stdout=stdout)
+    monkeypatch.setattr(diagnostic.subprocess, "run", run)
+    def invoke():
+        return diagnostic._git(Path("/synthetic"), "status", hard=1_000) if helper == "git" else diagnostic._process_snapshot(worker=False, hard=1_000)
+    if code is None:
+        result = invoke()
+        assert result == "synthetic\n" if helper == "git" else result[1:] == (1, 0)
+    else:
+        with pytest.raises(diagnostic.Invocation3DiagnosticError) as caught:
+            invoke()
+        assert caught.value.code == code and str(caught.value) == code
+    if case == "exact":
+        assert not calls
+    else:
+        assert calls[0][0][0] == ("/usr/bin/git" if helper == "git" else "/bin/ps") and calls[0][1]["timeout"] == (1_000 - clock[0]) / 1_000_000_000
 
 
 def test_worker_guard_rejects_parent_loss_and_exact_deadline(
@@ -1269,14 +1261,27 @@ def test_worker_guard_rejects_parent_loss_and_exact_deadline(
     )
     with pytest.raises(diagnostic.Invocation3DiagnosticError):
         diagnostic._guard(request)
-    monkeypatch.setattr(
-        diagnostic.time,
-        "monotonic_ns",
-        lambda: 999,
-    )
+    monkeypatch.setattr(diagnostic.time, "monotonic_ns", lambda: 999)
     monkeypatch.setattr(diagnostic.os, "getppid", lambda: 124)
     with pytest.raises(diagnostic.Invocation3DiagnosticError):
         diagnostic._guard(request)
+
+
+def test_worker_passes_authenticated_deadline_to_both_admission_helpers(monkeypatch: pytest.MonkeyPatch) -> None:
+    authority, started = _authority_object(_base_payload()), 100
+    hard, workspace = started + diagnostic.HARD_TIMEOUT_NS, Path("/private/tmp/neu-invocation3-replay-0123456789abcdef0123456789abcdef")
+    request = {"authority_file_sha256": authority.authority_file_sha256, "authority_semantic_sha256": authority.authority_semantic_sha256, "one_shot_attempt_id": authority.one_shot_attempt_id, "workspace_path": str(workspace), "observation_boundary_monotonic_ns": started + diagnostic.OBSERVATION_NS, "attempt_started_monotonic_ns": started, "hard_deadline_monotonic_ns": hard, "relevant_process_count": 1, "other_replay_worker_count": 0, "request_source_closure_sha256": authority.payload["implementation"]["source_closure_sha256"], "interpreter_sha256": authority.payload["command"]["interpreter"]["sha256"], "parent_pid": 42}
+    deadlines: list[int] = []
+    monkeypatch.setattr(diagnostic, "_stable_read", lambda *args, **kwargs: (b"request", None))
+    monkeypatch.setattr(diagnostic, "_parse_request", lambda *args: request)
+    monkeypatch.setattr(diagnostic, "load_authority", lambda *args: authority)
+    monkeypatch.setattr(diagnostic.os, "getppid", lambda: 42)
+    monkeypatch.setattr(diagnostic.time, "monotonic_ns", lambda: hard - 1)
+    monkeypatch.setattr(diagnostic, "bootstrap_runtime", lambda *args, hard, **kwargs: deadlines.append(hard) or object())
+    monkeypatch.setattr(diagnostic, "_process_snapshot", lambda *, worker, hard: deadlines.append(hard) or ("a" * 64, 2, 0))
+    monkeypatch.setattr(diagnostic, "_worker_replay", lambda *args: b"result\n")
+    assert diagnostic.run_worker(workspace / "request.json", "e" * 64, "f" * 64, controller_script=Path("/synthetic/run.py"), argv=(), sink=lambda *args: None) == b"result\n"
+    assert deadlines == [hard, hard]
 
 
 def test_bounded_simultaneous_stdout_stderr_floods_do_not_deadlock() -> None:
@@ -1530,6 +1535,7 @@ def test_controller_spawns_once_kills_reaps_and_preserves_indeterminate_publicat
     workspace.mkdir(mode=0o700)
     os.chown(workspace, 501, 20)
     children: list[object] = []
+    deadlines: list[int] = []
 
     class Child:
         returncode = None
@@ -1552,11 +1558,12 @@ def test_controller_spawns_once_kills_reaps_and_preserves_indeterminate_publicat
         return child
 
     monkeypatch.setattr(diagnostic, "load_authority", lambda *args: authority)
-    monkeypatch.setattr(diagnostic, "bootstrap_runtime", lambda *args, **kwargs: object())
-    monkeypatch.setattr(diagnostic, "_process_snapshot", lambda **kwargs: ("a" * 64, 1, 0))
+    monkeypatch.setattr(diagnostic.time, "monotonic_ns", lambda: 100)
+    monkeypatch.setattr(diagnostic, "bootstrap_runtime", lambda *args, hard, **kwargs: deadlines.append(hard) or object())
+    monkeypatch.setattr(diagnostic, "_process_snapshot", lambda *, worker, hard: deadlines.append(hard) or ("a" * 64, 1, 0))
     monkeypatch.setattr(diagnostic, "_stage_snapshot", lambda value: stage)
     monkeypatch.setattr(diagnostic, "_workspace", lambda value: workspace)
-    monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value: None)
+    monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value, hard: deadlines.append(hard))
     monkeypatch.setattr(diagnostic.subprocess, "Popen", popen)
     monkeypatch.setattr(diagnostic, "_drain_process", lambda *args, **kwargs: diagnostic._reject())
     if publication == "indeterminate":
@@ -1569,6 +1576,7 @@ def test_controller_spawns_once_kills_reaps_and_preserves_indeterminate_publicat
         assert result["diagnostic_disposition"] == "CONTROLLER_REJECTED"
         assert sorted(path.name for path in workspace.iterdir()) == ["completion.json", "events.jsonl", "request.json"]
     assert len(children) == 1 and children[0].returncode == -9 and children[0].waited
+    assert deadlines == [100 + diagnostic.HARD_TIMEOUT_NS] * 3
 
 
 def test_exact_cli_preserves_only_indeterminate_diagnostic_code_without_private_context(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -1618,7 +1626,7 @@ def _bootstrap_case(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     argv = [str(interpreter), "-I", "-B", "-S", str(script), diagnostic.CONTROLLER_ARGUMENT, diagnostic.AUTHORITY_SHA_ARGUMENT, "f" * 64, diagnostic.ATTESTATION_ARGUMENT]
     command["controller_argv_template"] = list(argv)
     fake_smoke, fake_artifacts = SimpleNamespace(__file__=str(smoke_path)), SimpleNamespace(__file__=str(artifact_path))
-    monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value: None)
+    monkeypatch.setattr(diagnostic, "_validate_current_source", lambda value, hard: None)
     monkeypatch.setattr(diagnostic.importlib.metadata, "version", lambda name: command["packages"][name]["version"])
     monkeypatch.setattr(diagnostic, "_package_root", lambda name: command["packages"][name]["root"])
     monkeypatch.setattr(diagnostic.importlib, "import_module", lambda name: fake_smoke if name.endswith("smoke_training") else fake_artifacts)
@@ -1654,10 +1662,10 @@ def test_bootstrap_validates_interpreter_runtime_packages_and_origins(tmp_path: 
     elif mutation == "origin":
         authority.payload["implementation"]["origins"]["smoke_training_module"] = "/wrong"
     if mutation == "none":
-        assert diagnostic.bootstrap_runtime(authority, controller_script=script, argv=argv, worker=False).__file__
+        assert diagnostic.bootstrap_runtime(authority, controller_script=script, argv=argv, worker=False, hard=diagnostic.time.monotonic_ns() + diagnostic.HARD_TIMEOUT_NS).__file__
     else:
         with pytest.raises(diagnostic.Invocation3DiagnosticError):
-            diagnostic.bootstrap_runtime(authority, controller_script=script, argv=argv, worker=False)
+            diagnostic.bootstrap_runtime(authority, controller_script=script, argv=argv, worker=False, hard=diagnostic.time.monotonic_ns() + diagnostic.HARD_TIMEOUT_NS)
 
 
 @pytest.mark.parametrize("substitution", ("none", "tracker_mode", "tracker", "manifest", "crossed_pair", "candidate", "view", "authorization"))
@@ -1722,6 +1730,9 @@ def test_request_event_controller_and_cleanup_static_contract(tmp_path: Path) ->
         diagnostic._parse_request(changed, hashlib.sha256(changed).hexdigest())
     source = Path(diagnostic.__file__).read_text()
     assert source.count("subprocess.Popen(") == 1
+    tree = ast.parse(source)
+    runs = [node for node in ast.walk(tree) if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) and node.func.value.id == "subprocess" and node.func.attr == "run"]
+    assert len(runs) == 1 and any(keyword.arg == "timeout" for keyword in runs[0].keywords)
     assert all(term not in source for term in ("rmtree", "TemporaryDirectory", "sys.meta_path", "SourceFileLoader", "launch_record"))
     assert source.count("os.unlink(") == 2
     controller = source[source.index("def run_controller"):]

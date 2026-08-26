@@ -394,14 +394,31 @@ def load_authority(path: Path, expected_file_sha256: str) -> Invocation3ReplayDi
     object.__setattr__(result, "_factory_token", _DIAGNOSTIC_TOKEN)
     return result
 
-def _git(repository: Path, *arguments: str, allow_one: bool = False) -> str:
-    result = subprocess.run(
-        ("/usr/bin/git", "-C", str(repository), *arguments),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+def _deadline_guard(hard: int) -> int:
+    now = time.monotonic_ns()
+    if now >= hard:
+        raise Invocation3DiagnosticError("HARD_TIMEOUT")
+    return now
+
+def _admission_process(arguments: tuple[str, ...], hard: int) -> subprocess.CompletedProcess[bytes]:
+    now = _deadline_guard(hard)
+    try:
+        result = subprocess.run(
+            arguments,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=(hard - now) / 1_000_000_000,
+        )
+    except subprocess.TimeoutExpired:
+        code = "HARD_TIMEOUT" if time.monotonic_ns() >= hard else "INVOCATION3_DIAGNOSTIC_REJECTED"
+        raise Invocation3DiagnosticError(code) from None
+    _deadline_guard(hard)
+    return result
+
+def _git(repository: Path, *arguments: str, hard: int, allow_one: bool = False) -> str:
+    result = _admission_process(("/usr/bin/git", "-C", str(repository), *arguments), hard)
     if result.returncode != 0 and not (allow_one and result.returncode == 1):
         _reject()
     try:
@@ -416,18 +433,18 @@ def source_closure_sha256(repository: Path) -> str:
         inventory.append([relative, _sha(content)])
     return _sha(_canonical([SOURCE_CLOSURE_PROTOCOL, inventory]))
 
-def _validate_current_source(authority: Invocation3ReplayDiagnosticAuthority) -> None:
+def _validate_current_source(authority: Invocation3ReplayDiagnosticAuthority, hard: int) -> None:
     implementation = authority.payload["implementation"]
     repository = Path(implementation["repository_root"])
     head = implementation["head_commit"]
     if (
-        _git(repository, "symbolic-ref", "--short", "HEAD").strip() != "main"
-        or _git(repository, "rev-parse", "HEAD").strip() != head
-        or _git(repository, "rev-parse", "refs/heads/main").strip() != head
-        or _git(repository, "rev-parse", "refs/remotes/origin/main").strip() != head
-        or _git(repository, "show", "-s", "--format=%P", "HEAD").split() != implementation["ordered_parents"]
-        or _git(repository, "rev-parse", "HEAD^{tree}").strip() != implementation["tree"]
-        or _git(repository, "status", "--porcelain=v1", "--untracked-files=all")
+        _git(repository, "symbolic-ref", "--short", "HEAD", hard=hard).strip() != "main"
+        or _git(repository, "rev-parse", "HEAD", hard=hard).strip() != head
+        or _git(repository, "rev-parse", "refs/heads/main", hard=hard).strip() != head
+        or _git(repository, "rev-parse", "refs/remotes/origin/main", hard=hard).strip() != head
+        or _git(repository, "show", "-s", "--format=%P", "HEAD", hard=hard).split() != implementation["ordered_parents"]
+        or _git(repository, "rev-parse", "HEAD^{tree}", hard=hard).strip() != implementation["tree"]
+        or _git(repository, "status", "--porcelain=v1", "--untracked-files=all", hard=hard)
         or source_closure_sha256(repository) != implementation["source_closure_sha256"]
     ):
         _reject()
@@ -442,10 +459,11 @@ def bootstrap_runtime(
     controller_script: Path,
     argv: Sequence[str],
     worker: bool,
+    hard: int,
 ) -> ModuleType:
     if type(authority) is not Invocation3ReplayDiagnosticAuthority or authority._factory_token is not _DIAGNOSTIC_TOKEN:
         _reject()
-    _validate_current_source(authority)
+    _validate_current_source(authority, hard)
     command = authority.payload["command"]
     interpreter = command["interpreter"]
     expected = list(command["worker_argv_template"] if worker else command["controller_argv_template"])
@@ -592,8 +610,8 @@ def _read_stage_payload(authority: Invocation3ReplayDiagnosticAuthority, snapsho
     finally:
         os.close(directory)
 
-def _process_snapshot(*, worker: bool) -> tuple[str, int, int]:
-    result = subprocess.run(("/bin/ps", "-axo", "pid=,command="), stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+def _process_snapshot(*, worker: bool, hard: int) -> tuple[str, int, int]:
+    result = _admission_process(("/bin/ps", "-axo", "pid=,command="), hard)
     if result.returncode != 0:
         _reject()
     relevant: list[list[object]] = []
@@ -1033,12 +1051,13 @@ def run_worker(request_path: Path, request_sha256: str, authority_sha256: str, *
     authority = load_authority(AUTHORITY_PATH, authority_sha256)
     if request["authority_file_sha256"] != authority.authority_file_sha256 or request["authority_semantic_sha256"] != authority.authority_semantic_sha256 or request["one_shot_attempt_id"] != authority.one_shot_attempt_id or Path(request["workspace_path"]) != Path("/private/tmp") / f"neu-invocation3-replay-{authority.one_shot_attempt_id}" or request_path != Path(request["workspace_path"]) / "request.json" or request["observation_boundary_monotonic_ns"] - request["attempt_started_monotonic_ns"] != OBSERVATION_NS or request["hard_deadline_monotonic_ns"] - request["attempt_started_monotonic_ns"] != HARD_TIMEOUT_NS or request["relevant_process_count"] != 1 or request["other_replay_worker_count"] != 0:
         _reject()
+    hard = request["hard_deadline_monotonic_ns"]
     _guard(request)
-    smoke = bootstrap_runtime(authority, controller_script=controller_script, argv=argv, worker=True)
+    smoke = bootstrap_runtime(authority, controller_script=controller_script, argv=argv, worker=True, hard=hard)
     _guard(request)
     if request["request_source_closure_sha256"] != authority.payload["implementation"]["source_closure_sha256"] or request["interpreter_sha256"] != authority.payload["command"]["interpreter"]["sha256"]:
         _reject()
-    _process_snapshot(worker=True)
+    _process_snapshot(worker=True, hard=hard)
     sink("WORKER_ADMISSION_VALIDATED", None)
     result = _worker_replay(authority, request, smoke, sink)
     _guard(request)
@@ -1087,9 +1106,10 @@ def _event(events: tuple[int, Any, list[int]], authority: Invocation3ReplayDiagn
 
 def run_controller(authority_sha256: str, *, controller_script: Path, argv: Sequence[str]) -> Mapping[str, object]:
     started = time.monotonic_ns()
+    hard = started + HARD_TIMEOUT_NS
     authority = load_authority(AUTHORITY_PATH, authority_sha256)
-    smoke = bootstrap_runtime(authority, controller_script=controller_script, argv=argv, worker=False)
-    process_snapshot = _process_snapshot(worker=False)
+    smoke = bootstrap_runtime(authority, controller_script=controller_script, argv=argv, worker=False, hard=hard)
+    process_snapshot = _process_snapshot(worker=False, hard=hard)
     stage = _stage_snapshot(authority)
     workspace = _workspace(authority)
     request = _request_payload(authority, workspace, stage, process_snapshot, started)
@@ -1103,7 +1123,7 @@ def run_controller(authority_sha256: str, *, controller_script: Path, argv: Sequ
     disposition = "WORKER_FAILED"
     parsed_semantic: str | None = None
     try:
-        _validate_current_source(authority)
+        _validate_current_source(authority, hard)
         if _stage_snapshot(authority).metadata_sha256 != stage.metadata_sha256:
             _reject()
         command = list(authority.payload["command"]["worker_argv_template"])
@@ -1139,7 +1159,7 @@ def run_controller(authority_sha256: str, *, controller_script: Path, argv: Sequ
     except BaseException:
         if process is not None and process.poll() is None:
             _kill_and_reap(process)
-        disposition = "CONTROLLER_REJECTED"
+        disposition = "HARD_TIMEOUT" if time.monotonic_ns() >= hard else "CONTROLLER_REJECTED"
     _event(events, authority, started, "CONTROLLER_DISPOSITION_RECORDED", "result")
     os.close(events[0])
     completion = {
